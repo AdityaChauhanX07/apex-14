@@ -4,7 +4,9 @@ use std::path::Path;
 
 use apex_physics::{qss_lap_sim, CarParams, QssResult};
 use apex_telemetry::{export_qss_csv, render_track_svg};
-use apex_track::{build_track, circle_track, oval_track, Track};
+use apex_track::{
+    build_track, circle_track, monza_circuit, oval_track, silverstone_circuit, Track,
+};
 
 /// Summary statistics for a single QSS run.
 struct LapStats {
@@ -109,19 +111,81 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Track SVG exported to qss_circle_track.svg");
     println!();
 
+    // --- Silverstone Circuit ---
+    let (silver_points, silver_closed) = silverstone_circuit();
+    let silverstone = build_track("Silverstone", &silver_points, silver_closed);
+    let silver_stats = run_circuit(
+        &silverstone,
+        &params,
+        "Silverstone Circuit",
+        "qss_silverstone_telemetry.csv",
+        "qss_silverstone_track.svg",
+        "Apex-14 — Silverstone",
+    )?;
+
+    // --- Monza Circuit ---
+    let (monza_points, monza_closed) = monza_circuit();
+    let monza = build_track("Monza", &monza_points, monza_closed);
+    let monza_stats = run_circuit(
+        &monza,
+        &params,
+        "Monza Circuit",
+        "qss_monza_telemetry.csv",
+        "qss_monza_track.svg",
+        "Apex-14 — Monza",
+    )?;
+
     // --- Comparison ---
     println!("--- Comparison ---");
     println!(
-        "Oval:   {:.3}s lap | {:.1} - {:.1} km/h speed range",
+        "Oval:        {:.3}s lap | {:.1} - {:.1} km/h speed range",
         oval_stats.lap_time,
         oval_stats.min_speed * 3.6,
         oval_stats.top_speed * 3.6
     );
     println!(
-        "Circle: {:.3}s lap | {:.1} km/h constant speed",
+        "Circle:      {:.3}s lap | {:.1} km/h constant speed",
         circle_stats.lap_time,
         circle_stats.top_speed * 3.6
     );
+    println!(
+        "Silverstone: {:.3}s lap | {:.1} - {:.1} km/h speed range",
+        silver_stats.lap_time,
+        silver_stats.min_speed * 3.6,
+        silver_stats.top_speed * 3.6
+    );
+    println!(
+        "Monza:       {:.3}s lap | {:.1} - {:.1} km/h speed range",
+        monza_stats.lap_time,
+        monza_stats.min_speed * 3.6,
+        monza_stats.top_speed * 3.6
+    );
 
     Ok(())
+}
+
+/// Run the simulation for one circuit: print results, export CSV and SVG.
+fn run_circuit(
+    track: &Track,
+    params: &CarParams,
+    title: &str,
+    csv_path: &str,
+    svg_path: &str,
+    svg_title: &str,
+) -> Result<LapStats, Box<dyn std::error::Error>> {
+    println!("Track: {}", title);
+    println!("Track length: {:.1} m", track.total_length);
+    println!();
+
+    let result = qss_lap_sim(track, params);
+    let stats = summarize(&result);
+    println!("{} results:", title);
+    print_results(&stats);
+    export_qss_csv(Path::new(csv_path), track, &result)?;
+    println!("Telemetry exported to {}", csv_path);
+    render_track_svg(Path::new(svg_path), track, &result.speeds, svg_title)?;
+    println!("Track SVG exported to {}", svg_path);
+    println!();
+
+    Ok(stats)
 }

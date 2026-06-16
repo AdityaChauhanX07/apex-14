@@ -299,4 +299,40 @@ mod tests {
             assert!(v < 200.0, "speed too high {}", v);
         }
     }
+
+    #[test]
+    fn silverstone_lap_time_reasonable() {
+        let params = CarParams::default();
+        let (points, closed) = apex_track::silverstone_circuit();
+        let track = build_track("Silverstone", &points, closed);
+        let result = qss_lap_sim(&track, &params);
+        // sanity range (real F1 is ~88 s); this point-mass model with the
+        // aggressive default car runs quicker but should land in 60–120 s
+        assert!(
+            (60.0..=120.0).contains(&result.lap_time),
+            "Silverstone lap time {} out of range",
+            result.lap_time
+        );
+    }
+
+    #[test]
+    fn monza_faster_than_silverstone() {
+        let params = CarParams::default();
+
+        let (sp, sc) = apex_track::silverstone_circuit();
+        let silverstone = build_track("Silverstone", &sp, sc);
+        let silverstone_lap = qss_lap_sim(&silverstone, &params).lap_time;
+
+        let (mp, mc) = apex_track::monza_circuit();
+        let monza = build_track("Monza", &mp, mc);
+        let monza_lap = qss_lap_sim(&monza, &params).lap_time;
+
+        // Monza's long straights and fewer corners -> higher average speed
+        assert!(
+            monza_lap < silverstone_lap,
+            "Monza lap {} should be faster than Silverstone {}",
+            monza_lap,
+            silverstone_lap
+        );
+    }
 }
