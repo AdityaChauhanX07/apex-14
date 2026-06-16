@@ -26,6 +26,7 @@ dependencies = [
 name = "apex-telemetry"
 version = "0.1.0"
 dependencies = [
+ "apex-math",
  "apex-physics",
  "apex-track",
  "csv",

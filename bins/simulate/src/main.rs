@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use apex_physics::{qss_lap_sim, CarParams, QssResult};
-use apex_telemetry::export_qss_csv;
+use apex_telemetry::{export_qss_csv, render_track_svg};
 use apex_track::{build_track, circle_track, oval_track, Track};
 
 /// Summary statistics for a single QSS run.
@@ -78,6 +78,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_results(&oval_stats);
     export_qss_csv(Path::new("qss_oval_telemetry.csv"), &oval, &oval_result)?;
     println!("Telemetry exported to qss_oval_telemetry.csv");
+    render_track_svg(
+        Path::new("qss_oval_track.svg"),
+        &oval,
+        &oval_result.speeds,
+        "Apex-14 — Oval (R=100m)",
+    )?;
+    println!("Track SVG exported to qss_oval_track.svg");
     println!();
 
     // --- Circle track ---
@@ -93,6 +100,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     print_results(&circle_stats);
     export_qss_csv(Path::new("qss_circle_telemetry.csv"), &circle, &circle_result)?;
     println!("Telemetry exported to qss_circle_telemetry.csv");
+    render_track_svg(
+        Path::new("qss_circle_track.svg"),
+        &circle,
+        &circle_result.speeds,
+        "Apex-14 — Circle (R=100m)",
+    )?;
+    println!("Track SVG exported to qss_circle_track.svg");
     println!();
 
     // --- Comparison ---
