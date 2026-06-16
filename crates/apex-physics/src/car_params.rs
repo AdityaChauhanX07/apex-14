@@ -32,6 +32,20 @@ pub struct CarParams {
     pub max_drive_force: f64,
     /// Maximum braking force (N).
     pub max_brake_force: f64,
+
+    // Geometry
+    /// Total wheelbase `L = l_f + l_r` (m).
+    pub wheelbase: f64,
+    /// Distance from CoG to front axle `l_f` (m).
+    pub cog_to_front: f64,
+    /// Distance from CoG to rear axle `l_r` (m).
+    pub cog_to_rear: f64,
+    /// Center of gravity height `h_cog` (m).
+    pub cog_height: f64,
+    /// Yaw moment of inertia `I_z` (kg·m²).
+    pub yaw_inertia: f64,
+    /// Fraction of total downforce acting on the front axle (0.0–1.0).
+    pub aero_balance_front: f64,
 }
 
 impl Default for CarParams {
@@ -46,6 +60,12 @@ impl Default for CarParams {
             rolling_resistance: 0.015,
             max_drive_force: 15000.0,
             max_brake_force: 30000.0,
+            wheelbase: 3.60,
+            cog_to_front: 1.67,
+            cog_to_rear: 1.93,
+            cog_height: 0.30,
+            yaw_inertia: 1200.0,
+            aero_balance_front: 0.45,
         }
     }
 }
@@ -70,6 +90,32 @@ impl CarParams {
     /// Rolling resistance force: `C_rr · m · g`.
     pub fn rolling_resistance_force(&self) -> f64 {
         self.rolling_resistance * self.mass * GRAVITY
+    }
+
+    /// Compute front and rear axle vertical loads (N), including static weight
+    /// distribution, aerodynamic downforce split, and longitudinal weight transfer.
+    ///
+    /// Returns (F_z_front, F_z_rear) — each is the TOTAL for that axle (both wheels combined).
+    pub fn axle_loads(&self, speed: f64, longitudinal_accel: f64) -> (f64, f64) {
+        let weight = self.mass * GRAVITY;
+        let df = self.downforce(speed);
+
+        // Static weight distribution
+        let fz_front_static = weight * self.cog_to_rear / self.wheelbase;
+        let fz_rear_static = weight * self.cog_to_front / self.wheelbase;
+
+        // Aero load distribution
+        let fz_front_aero = df * self.aero_balance_front;
+        let fz_rear_aero = df * (1.0 - self.aero_balance_front);
+
+        // Longitudinal weight transfer: ΔF_z = m·a_x·h_cog / L
+        let wt = self.mass * longitudinal_accel * self.cog_height / self.wheelbase;
+
+        // Under acceleration (a_x > 0), load transfers to rear (front loses, rear gains)
+        let fz_front = (fz_front_static + fz_front_aero - wt).max(0.0);
+        let fz_rear = (fz_rear_static + fz_rear_aero + wt).max(0.0);
+
+        (fz_front, fz_rear)
     }
 }
 
