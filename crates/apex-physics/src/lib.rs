@@ -10,4 +10,4 @@ pub use bicycle::BicycleModel;
 pub use car_params::CarParams;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, QssResult};
-pub use tire::{PacejkaCoeffs, PacejkaTire};
+pub use tire::{CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
