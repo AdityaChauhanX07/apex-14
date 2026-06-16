@@ -75,12 +75,15 @@ impl CsrBuilder {
                 row_ptr[current_row + 1] = values.len();
                 current_row += 1;
             }
-            if let Some(&last_col) = col_indices.last() {
-                if last_col == col && col_indices.len() > row_ptr[current_row] {
-                    // same (row, col) as the previous stored entry → sum
-                    *values.last_mut().unwrap() += value;
-                    continue;
+            // Merge with the previous stored entry when it shares the same
+            // (row, col): the last column matches and it belongs to this row.
+            let can_merge =
+                col_indices.last() == Some(&col) && col_indices.len() > row_ptr[current_row];
+            if can_merge {
+                if let Some(last_value) = values.last_mut() {
+                    *last_value += value;
                 }
+                continue;
             }
             values.push(value);
             col_indices.push(col);
