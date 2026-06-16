@@ -1,5 +1,7 @@
 //! Pacejka "Magic Formula" tire model.
 
+use apex_math::Float;
+
 /// Coefficients for the Pacejka Magic Formula.
 ///
 /// The formula computes force as: D · sin(C · arctan(B·x - E·(B·x - arctan(B·x))))
@@ -128,6 +130,80 @@ impl PacejkaTire {
         let mu_eff = self.effective_mu(self.lateral.mu, fz);
         let d = mu_eff * fz;
         self.lateral.b * self.lateral.c * d
+    }
+
+    /// Generic Pacejka Magic Formula evaluation.
+    ///
+    /// This is the same computation as `magic_formula`, but generic over any
+    /// type implementing `Float` — including `Dual` for automatic differentiation.
+    ///
+    /// When called with `Dual` arguments, the return value's `.dual` field
+    /// contains the derivative of the force with respect to whichever input
+    /// was marked as `Dual::variable`.
+    pub fn magic_formula_generic<T: Float>(&self, coeffs: &PacejkaCoeffs, slip: T, fz: T) -> T {
+        // If fz <= 0, return zero
+        if fz.real_value() <= 0.0 {
+            return T::zero();
+        }
+
+        // Effective mu with load sensitivity
+        let fz_nom = T::from_f64(self.fz_nominal);
+        let load_sens = T::from_f64(self.load_sensitivity);
+        let base_mu = T::from_f64(coeffs.mu);
+        let ratio = (fz - fz_nom) / fz_nom;
+        let mu_eff = (base_mu * (T::one() - load_sens * ratio)).max(T::zero());
+
+        let d = mu_eff * fz; // peak force
+
+        let b = T::from_f64(coeffs.b);
+        let c = T::from_f64(coeffs.c);
+        let e = T::from_f64(coeffs.e);
+
+        let bx = b * slip;
+        let inner = bx - e * (bx - bx.atan());
+
+        d * (c * inner.atan()).sin()
+    }
+
+    /// Generic lateral force computation.
+    pub fn lateral_force_generic<T: Float>(&self, slip_angle: T, fz: T) -> T {
+        self.magic_formula_generic(&self.lateral, slip_angle, fz)
+    }
+
+    /// Generic longitudinal force computation.
+    pub fn longitudinal_force_generic<T: Float>(&self, slip_ratio: T, fz: T) -> T {
+        self.magic_formula_generic(&self.longitudinal, slip_ratio, fz)
+    }
+
+    /// Generic combined forces using the friction circle method.
+    /// Returns (fx, fy) as a tuple of generic Float values.
+    pub fn combined_forces_generic<T: Float>(
+        &self,
+        slip_angle: T,
+        slip_ratio: T,
+        fz: T,
+    ) -> (T, T) {
+        if fz.real_value() <= 0.0 {
+            return (T::zero(), T::zero());
+        }
+
+        let fx_pure = self.longitudinal_force_generic(slip_ratio, fz);
+        let fy_pure = self.lateral_force_generic(slip_angle, fz);
+
+        // Friction circle limit
+        let mu_lat = self.effective_mu(self.lateral.mu, fz.real_value());
+        let mu_lon = self.effective_mu(self.longitudinal.mu, fz.real_value());
+        let mu_avg = T::from_f64(0.5 * (mu_lat + mu_lon));
+        let f_max = mu_avg * fz;
+
+        let f_resultant = (fx_pure * fx_pure + fy_pure * fy_pure).sqrt();
+
+        if f_resultant.real_value() <= f_max.real_value() || f_resultant.real_value() < 1e-6 {
+            (fx_pure, fy_pure)
+        } else {
+            let scale = f_max / f_resultant;
+            (fx_pure * scale, fy_pure * scale)
+        }
     }
 }
 
@@ -283,6 +359,125 @@ mod tests {
             (80_000.0..=200_000.0).contains(&cs),
             "cornering stiffness {} out of realistic range",
             cs
+        );
+    }
+
+    // --- generic / autodiff tests ---
+
+    use apex_math::Dual;
+
+    #[test]
+    fn generic_f64_matches_concrete() {
+        let tire = PacejkaTire::f1_default();
+        for &alpha in &[0.05, 0.1, 0.2] {
+            for &fz in &[3000.0, 4000.0, 5000.0] {
+                let concrete = tire.lateral_force(alpha, fz);
+                let generic = tire.lateral_force_generic::<f64>(alpha, fz);
+                assert!(
+                    approx(concrete, generic, 1e-12),
+                    "alpha {} fz {}: concrete {} vs generic {}",
+                    alpha,
+                    fz,
+                    concrete,
+                    generic
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dual_derivative_near_zero_is_cornering_stiffness() {
+        let tire = PacejkaTire::f1_default();
+        let alpha = Dual::variable(0.001);
+        let fz = Dual::constant(4000.0);
+        let result = tire.lateral_force_generic(alpha, fz);
+
+        let cs = tire.cornering_stiffness(4000.0);
+        assert!(
+            (result.dual - cs).abs() / cs < 0.05,
+            "dFy/dalpha {} vs cornering stiffness {}",
+            result.dual,
+            cs
+        );
+    }
+
+    #[test]
+    fn dual_derivative_near_zero_at_peak() {
+        let tire = PacejkaTire::f1_default();
+        // sweep to find where |dFy/dalpha| is minimized — the peak of the curve
+        let mut best_alpha = 0.0;
+        let mut best_slope = f64::MAX;
+        let mut a = 0.05;
+        while a <= 0.15 {
+            let r = tire.lateral_force_generic(Dual::variable(a), Dual::constant(4000.0));
+            if r.dual.abs() < best_slope {
+                best_slope = r.dual.abs();
+                best_alpha = a;
+            }
+            a += 0.001;
+        }
+        // the peak should sit within the swept window and have a near-flat slope
+        assert!(
+            (0.05..=0.15).contains(&best_alpha),
+            "peak slip {} out of window",
+            best_alpha
+        );
+        // slope at the peak is small relative to the cornering stiffness
+        assert!(
+            best_slope < 0.02 * tire.cornering_stiffness(4000.0),
+            "slope at peak {} not near zero",
+            best_slope
+        );
+    }
+
+    #[test]
+    fn dual_derivative_wrt_load() {
+        let tire = PacejkaTire::f1_default();
+        let alpha = Dual::constant(0.1);
+        let fz = Dual::variable(4000.0);
+        let result = tire.lateral_force_generic(alpha, fz);
+
+        // dFy/dFz: more load -> more force, but below mu due to load sensitivity
+        assert!(result.dual > 0.0, "dFy/dFz {} should be positive", result.dual);
+        assert!(
+            result.dual < tire.lateral.mu,
+            "dFy/dFz {} should be below mu {}",
+            result.dual,
+            tire.lateral.mu
+        );
+    }
+
+    #[test]
+    fn combined_generic_f64_matches_concrete() {
+        let tire = PacejkaTire::f1_default();
+        let r = tire.combined_forces(0.1, 0.05, 4000.0);
+        let (fx, fy) = tire.combined_forces_generic::<f64>(0.1, 0.05, 4000.0);
+        assert!(approx(fx, r.fx, 1e-12), "fx {} vs {}", fx, r.fx);
+        assert!(approx(fy, r.fy, 1e-12), "fy {} vs {}", fy, r.fy);
+    }
+
+    #[test]
+    fn combined_dual_derivative_wrt_slip_angle() {
+        let tire = PacejkaTire::f1_default();
+        let fz = 4000.0;
+
+        // combined: slip_angle is the variable
+        let (_fx, fy) = tire.combined_forces_generic(
+            Dual::variable(0.1),
+            Dual::constant(0.05),
+            Dual::constant(fz),
+        );
+        assert!(fy.dual.is_finite() && fy.dual != 0.0, "combined dFy/dalpha {}", fy.dual);
+
+        // pure lateral derivative at the same operating point
+        let pure = tire.lateral_force_generic(Dual::variable(0.1), Dual::constant(fz));
+
+        // combined slip reduces the force, so its slope magnitude is smaller
+        assert!(
+            fy.dual.abs() < pure.dual.abs(),
+            "combined slope {} should be smaller than pure {}",
+            fy.dual,
+            pure.dual
         );
     }
 }
