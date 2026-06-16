@@ -1,0 +1,16 @@
+/target/
+**/*.rs.bk
+
+# Output files from binaries (generated, not checked in)
+*.csv
+*.svg
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
