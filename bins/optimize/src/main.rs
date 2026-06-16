@@ -8,6 +8,9 @@ use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
 /// Optimize one track, print a summary, and export CSV + SVG.
+///
+/// Output file names and the SVG title are derived from `label` (e.g. "Oval"
+/// → `opt_oval_telemetry.csv`, `opt_oval_track.svg`).
 /// Returns `(qss_lap_time, optimized_lap_time)`.
 fn run_track(
     label: &str,
@@ -15,10 +18,12 @@ fn run_track(
     car: &CarParams,
     collocation: CollocationConfig,
     solver: &SolverConfig,
-    csv_path: &str,
-    svg_path: &str,
-    svg_title: &str,
 ) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let slug = label.to_lowercase();
+    let csv_path = format!("opt_{}_telemetry.csv", slug);
+    let svg_path = format!("opt_{}_track.svg", slug);
+    let svg_title = format!("Apex-14 — Optimized {}", label);
+
     let qss_lap = qss_lap_sim(track, car).lap_time;
 
     println!("Optimizing: {} (N={} nodes)...", label, collocation.n_nodes);
@@ -35,10 +40,10 @@ fn run_track(
     println!("  Converged: {}", result.converged);
     println!("  Speed range: {:.1} - {:.1} km/h", min * 3.6, top * 3.6);
 
-    export_optimized(&result, csv_path)?;
+    export_optimized(&result, &csv_path)?;
     println!("  Telemetry exported to {}", csv_path);
 
-    render_track_svg(Path::new(svg_path), track, &result.speeds, svg_title)?;
+    render_track_svg(Path::new(&svg_path), track, &result.speeds, &svg_title)?;
     println!("  Track SVG exported to {}", svg_path);
     println!();
 
@@ -85,16 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_interval: 10,
         ..SolverConfig::default()
     };
-    let (oval_qss, oval_opt) = run_track(
-        "Oval",
-        &oval,
-        &car,
-        oval_collocation,
-        &oval_solver,
-        "opt_oval_telemetry.csv",
-        "opt_oval_track.svg",
-        "Apex-14 — Optimized Oval",
-    )?;
+    let (oval_qss, oval_opt) = run_track("Oval", &oval, &car, oval_collocation, &oval_solver)?;
 
     // --- Circle track ---
     let (circle_pts, circle_closed) = apex_track::circle_track(100.0, 12.0, 200);
@@ -111,16 +107,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_interval: 10,
         ..SolverConfig::default()
     };
-    let (circle_qss, circle_opt) = run_track(
-        "Circle",
-        &circle,
-        &car,
-        circle_collocation,
-        &circle_solver,
-        "opt_circle_telemetry.csv",
-        "opt_circle_track.svg",
-        "Apex-14 — Optimized Circle",
-    )?;
+    let (circle_qss, circle_opt) =
+        run_track("Circle", &circle, &car, circle_collocation, &circle_solver)?;
 
     // --- Comparison ---
     let pct = |qss: f64, opt: f64| 100.0 * (opt - qss) / qss;
