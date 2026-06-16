@@ -46,6 +46,20 @@ pub struct CarParams {
     pub yaw_inertia: f64,
     /// Fraction of total downforce acting on the front axle (0.0–1.0).
     pub aero_balance_front: f64,
+
+    // Wheels and drivetrain
+    /// Tire radius `R` (m).
+    pub wheel_radius: f64,
+    /// Rotational inertia of each wheel `I_w` (kg·m²).
+    pub wheel_inertia: f64,
+    /// Front axle track width (m).
+    pub track_width_front: f64,
+    /// Rear axle track width (m).
+    pub track_width_rear: f64,
+    /// Fraction of brake force on the front axle (0.0–1.0).
+    pub brake_bias_front: f64,
+    /// Fraction of drive torque to the rear axle (0.0 = FWD, 1.0 = RWD, 0.5 = AWD).
+    pub drive_distribution: f64,
 }
 
 impl Default for CarParams {
@@ -66,6 +80,12 @@ impl Default for CarParams {
             cog_height: 0.30,
             yaw_inertia: 1200.0,
             aero_balance_front: 0.45,
+            wheel_radius: 0.330,
+            wheel_inertia: 1.2,
+            track_width_front: 1.60,
+            track_width_rear: 1.60,
+            brake_bias_front: 0.60,
+            drive_distribution: 1.0, // rear-wheel drive (F1 is RWD)
         }
     }
 }
@@ -116,6 +136,39 @@ impl CarParams {
         let fz_rear = (fz_rear_static + fz_rear_aero + wt).max(0.0);
 
         (fz_front, fz_rear)
+    }
+
+    /// Compute vertical load on each individual tire (N).
+    ///
+    /// Accounts for static distribution, aero downforce, longitudinal weight transfer,
+    /// and lateral weight transfer (split by roll stiffness distribution).
+    ///
+    /// Returns [F_z_fl, F_z_fr, F_z_rl, F_z_rr] (front-left, front-right, rear-left, rear-right).
+    ///
+    /// Convention: positive lateral_accel = turning left = load transfers to right wheels.
+    pub fn corner_loads(
+        &self,
+        speed: f64,
+        longitudinal_accel: f64,
+        lateral_accel: f64,
+        roll_stiffness_front_fraction: f64,
+    ) -> [f64; 4] {
+        let (front_total, rear_total) = self.axle_loads(speed, longitudinal_accel);
+
+        // Lateral load transfer per axle (positive a_y -> right wheels gain).
+        let dfz_front =
+            self.mass * lateral_accel * self.cog_height * roll_stiffness_front_fraction
+                / self.track_width_front;
+        let dfz_rear = self.mass * lateral_accel * self.cog_height
+            * (1.0 - roll_stiffness_front_fraction)
+            / self.track_width_rear;
+
+        let fz_fl = (front_total / 2.0 - dfz_front).max(0.0);
+        let fz_fr = (front_total / 2.0 + dfz_front).max(0.0);
+        let fz_rl = (rear_total / 2.0 - dfz_rear).max(0.0);
+        let fz_rr = (rear_total / 2.0 + dfz_rear).max(0.0);
+
+        [fz_fl, fz_fr, fz_rl, fz_rr]
     }
 }
 
