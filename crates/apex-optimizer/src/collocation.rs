@@ -75,6 +75,8 @@ pub struct OptimizationResult {
     pub time_steps: Vec<f64>,
     /// Total optimized lap time (s).
     pub lap_time: f64,
+    /// Maximum equality (dynamics-defect) violation at the solution.
+    pub eq_violation: f64,
     /// Whether the optimizer converged.
     pub converged: bool,
 }
@@ -266,6 +268,7 @@ impl<'a> CollocationOptimizer<'a> {
             curvature_cmds: vars.curvature_cmd,
             time_steps: vars.dt,
             lap_time,
+            eq_violation: solver_result.eq_violation,
             converged: solver_result.converged,
         }
     }
@@ -277,6 +280,34 @@ impl<'a> CollocationOptimizer<'a> {
         let evaluator = CollocationEvaluator { optimizer: self };
         let result = solve_nlp(&problem, &evaluator, &x0, solver_config);
         self.extract_result(&result)
+    }
+
+    /// Run optimization using the Gauss-Newton solver.
+    pub fn optimize_gn(&self, config: &crate::gauss_newton::GaussNewtonConfig) -> OptimizationResult {
+        let x0 = self.initial_guess();
+        let problem = self.build_nlp_problem();
+        let evaluator = CollocationEvaluator { optimizer: self };
+        let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, config);
+        self.extract_result_gn(&result)
+    }
+
+    fn extract_result_gn(
+        &self,
+        result: &crate::gauss_newton::GaussNewtonResult,
+    ) -> OptimizationResult {
+        let vars = self.unpack(&result.x);
+        OptimizationResult {
+            speeds: vars.v.clone(),
+            offsets: vars.n.clone(),
+            headings: vars.alpha.clone(),
+            stations: vars.s.clone(),
+            drive_forces: vars.f_drive.clone(),
+            curvature_cmds: vars.curvature_cmd.clone(),
+            time_steps: vars.dt.clone(),
+            lap_time: result.objective,
+            eq_violation: result.eq_violation,
+            converged: result.converged,
+        }
     }
 }
 
@@ -440,6 +471,32 @@ impl CollocationEvaluator<'_, '_> {
                     }
                 }
             }
+
+            // Curvature-chain correction for the s-columns: the defects depend
+            // on s through κ(s), which `defect_with_dual` holds constant. Add
+            // -(dt/2)·(∂f/∂κ)·(dκ/ds). On constant-curvature stretches dκ/ds ≈ 0
+            // so this vanishes; at corner entry/exit it matters and makes the
+            // Gauss-Newton step effective.
+            let half_dt = vars.dt[k] / 2.0;
+            let dfk_dkappa = dynamics_dkappa(opt.car, &node_k, kappa_k);
+            let dfk1_dkappa = dynamics_dkappa(opt.car, &node_k1, kappa_k1);
+            let h = 1e-3;
+            let dkk_ds = (opt.track.curvature_at(node_k[0] + h)
+                - opt.track.curvature_at(node_k[0] - h))
+                / (2.0 * h);
+            let dkk1_ds = (opt.track.curvature_at(node_k1[0] + h)
+                - opt.track.curvature_at(node_k1[0] - h))
+                / (2.0 * h);
+            for j in 0..4 {
+                let ck = -half_dt * dfk_dkappa[j] * dkk_ds;
+                if ck.abs() > 1e-15 {
+                    builder.add(4 * k + j, k, ck); // s_k column
+                }
+                let ck1 = -half_dt * dfk1_dkappa[j] * dkk1_ds;
+                if ck1.abs() > 1e-15 {
+                    builder.add(4 * k + j, k + 1, ck1); // s_{k+1} column
+                }
+            }
         }
 
         // Periodicity constraints (linear: ±1 entries).
@@ -547,6 +604,21 @@ fn point_mass_derivatives_generic<T: Float>(
     let dalpha_dt = curvature_cmd * v_safe - kappa * ds_dt;
 
     [ds_dt, dn_dt, dv_dt, dalpha_dt]
+}
+
+/// Partial derivative of the point-mass dynamics w.r.t. track curvature `kappa`
+/// at a node `[s, n, v, alpha, f_drive, curv]`, via forward-mode autodiff.
+fn dynamics_dkappa(car: &CarParams, node: &[f64; 6], kappa: f64) -> [f64; 4] {
+    let f = point_mass_derivatives_generic::<Dual>(
+        car,
+        Dual::constant(node[1]),
+        Dual::constant(node[2]),
+        Dual::constant(node[3]),
+        Dual::constant(node[4]),
+        Dual::constant(node[5]),
+        Dual::variable(kappa),
+    );
+    [f[0].dual, f[1].dual, f[2].dual, f[3].dual]
 }
 
 /// Generic grip-circle constraint `(f_drive/F_max)² + (m·v²·curv/F_max)² - 1`,
@@ -870,6 +942,46 @@ mod tests {
             "lap time {} vs QSS {}",
             result.lap_time,
             qss_lap
+        );
+    }
+
+    #[test]
+    fn gn_beats_al_on_oval() {
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::default();
+        let config = CollocationConfig {
+            n_nodes: 50,
+            closed: true,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x0 = opt.initial_guess();
+        let problem = opt.build_nlp_problem();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        // Augmented Lagrangian
+        let al_cfg = SolverConfig {
+            max_outer_iter: 15,
+            max_inner_iter: 30,
+            constraint_tol: 1e-3,
+            ..SolverConfig::default()
+        };
+        let al = solve_nlp(&problem, &evaluator, &x0, &al_cfg);
+
+        // Gauss-Newton
+        let gn_cfg = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 50,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+        let gn = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, &gn_cfg);
+
+        assert!(
+            gn.eq_violation < al.eq_violation,
+            "GN eq_viol {:.3e} should beat AL eq_viol {:.3e}",
+            gn.eq_violation,
+            al.eq_violation
         );
     }
 }

@@ -1,24 +1,34 @@
 //! Apex-14 collocation racing-line optimizer demo binary.
+//!
+//! Runs both the Augmented Lagrangian (AL) and Gauss-Newton (GN) solvers on
+//! each track and exports the (better) GN result.
 
 use std::path::Path;
 
-use apex_optimizer::{CollocationConfig, CollocationOptimizer, OptimizationResult, SolverConfig};
+use apex_optimizer::{
+    CollocationConfig, CollocationOptimizer, GaussNewtonConfig, OptimizationResult, SolverConfig,
+};
 use apex_physics::{qss_lap_sim, CarParams};
 use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
-/// Optimize one track, print a summary, and export CSV + SVG.
-///
-/// Output file names and the SVG title are derived from `label` (e.g. "Oval"
-/// → `opt_oval_telemetry.csv`, `opt_oval_track.svg`).
-/// Returns `(qss_lap_time, optimized_lap_time)`.
+/// Per-track outcome: the QSS baseline and both solvers' results.
+struct Outcome {
+    qss_lap: f64,
+    al: OptimizationResult,
+    gn: OptimizationResult,
+}
+
+/// Optimize one track with both solvers, print a summary, and export the GN
+/// result as CSV + SVG. File names are derived from `label`.
 fn run_track(
     label: &str,
     track: &Track,
     car: &CarParams,
     collocation: CollocationConfig,
-    solver: &SolverConfig,
-) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    al_solver: &SolverConfig,
+    gn_solver: &GaussNewtonConfig,
+) -> Result<Outcome, Box<dyn std::error::Error>> {
     let slug = label.to_lowercase();
     let csv_path = format!("opt_{}_telemetry.csv", slug);
     let svg_path = format!("opt_{}_track.svg", slug);
@@ -28,26 +38,28 @@ fn run_track(
 
     println!("Optimizing: {} (N={} nodes)...", label, collocation.n_nodes);
     let optimizer = CollocationOptimizer::new(collocation, track, car);
-    let result = optimizer.optimize(solver);
 
-    let top = result.speeds.iter().cloned().fold(f64::MIN, f64::max);
-    let min = result.speeds.iter().cloned().fold(f64::MAX, f64::min);
+    let al = optimizer.optimize(al_solver);
+    let gn = optimizer.optimize_gn(gn_solver);
 
+    println!("  QSS baseline: {:.3}s", qss_lap);
     println!(
-        "  Lap time: {:.3}s (QSS baseline: {:.3}s)",
-        result.lap_time, qss_lap
+        "  AL solver:  {:.3}s | eq_viol {:.2e} | converged: {}",
+        al.lap_time, al.eq_violation, al.converged
     );
-    println!("  Converged: {}", result.converged);
-    println!("  Speed range: {:.1} - {:.1} km/h", min * 3.6, top * 3.6);
+    println!(
+        "  GN solver:  {:.3}s | eq_viol {:.2e} | converged: {}",
+        gn.lap_time, gn.eq_violation, gn.converged
+    );
 
-    export_optimized(&result, &csv_path)?;
+    // Export the GN result (the better-conditioned solution).
+    export_optimized(&gn, &csv_path)?;
     println!("  Telemetry exported to {}", csv_path);
-
-    render_track_svg(Path::new(&svg_path), track, &result.speeds, &svg_title)?;
+    render_track_svg(Path::new(&svg_path), track, &gn.speeds, &svg_title)?;
     println!("  Track SVG exported to {}", svg_path);
     println!();
 
-    Ok((qss_lap, result.lap_time))
+    Ok(Outcome { qss_lap, al, gn })
 }
 
 /// Export the optimized racing line as columnar CSV.
@@ -75,6 +87,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let car = CarParams::default();
 
+    let al_solver = SolverConfig {
+        max_outer_iter: 30,
+        max_inner_iter: 200,
+        constraint_tol: 1e-3,
+        print_interval: 0,
+        ..SolverConfig::default()
+    };
+    let gn_solver = GaussNewtonConfig {
+        max_iterations: 50,
+        constraint_tol: 1e-3,
+        damping: 0.5,
+        regularization: 1e-4,
+        print_interval: 0,
+        ..GaussNewtonConfig::default()
+    };
+
     // --- Oval track ---
     let (oval_pts, oval_closed) = apex_track::oval_track(500.0, 80.0, 12.0, 300);
     let oval = apex_track::build_track("Oval", &oval_pts, oval_closed);
@@ -83,14 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: true,
         ..CollocationConfig::default()
     };
-    let oval_solver = SolverConfig {
-        max_outer_iter: 30,
-        max_inner_iter: 200,
-        constraint_tol: 1e-3,
-        print_interval: 10,
-        ..SolverConfig::default()
-    };
-    let (oval_qss, oval_opt) = run_track("Oval", &oval, &car, oval_collocation, &oval_solver)?;
+    let oval = run_track("Oval", &oval, &car, oval_collocation, &al_solver, &gn_solver)?;
 
     // --- Circle track ---
     let (circle_pts, circle_closed) = apex_track::circle_track(100.0, 12.0, 200);
@@ -100,31 +121,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: true,
         ..CollocationConfig::default()
     };
-    let circle_solver = SolverConfig {
-        max_outer_iter: 20,
-        max_inner_iter: 200,
-        constraint_tol: 1e-3,
-        print_interval: 10,
-        ..SolverConfig::default()
-    };
-    let (circle_qss, circle_opt) =
-        run_track("Circle", &circle, &car, circle_collocation, &circle_solver)?;
+    let circle = run_track(
+        "Circle",
+        &circle,
+        &car,
+        circle_collocation,
+        &al_solver,
+        &gn_solver,
+    )?;
 
     // --- Comparison ---
-    let pct = |qss: f64, opt: f64| 100.0 * (opt - qss) / qss;
-    println!("--- Comparison ---");
-    println!(
-        "Oval:   QSS {:.3}s → Optimized {:.3}s ({:+.1}%)",
-        oval_qss,
-        oval_opt,
-        pct(oval_qss, oval_opt)
-    );
-    println!(
-        "Circle: QSS {:.3}s → Optimized {:.3}s ({:+.1}%)",
-        circle_qss,
-        circle_opt,
-        pct(circle_qss, circle_opt)
-    );
+    println!("--- Comparison (lap time | eq_viol) ---");
+    print_comparison("Oval", &oval);
+    print_comparison("Circle", &circle);
 
     Ok(())
+}
+
+fn print_comparison(label: &str, o: &Outcome) {
+    println!(
+        "{:7} QSS {:.3}s | AL {:.3}s ({:.1e}) | GN {:.3}s ({:.1e})",
+        format!("{}:", label),
+        o.qss_lap,
+        o.al.lap_time,
+        o.al.eq_violation,
+        o.gn.lap_time,
+        o.gn.eq_violation
+    );
 }
