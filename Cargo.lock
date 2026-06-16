@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "apex-integrator"
 version = "0.1.0"
+dependencies = [
+ "apex-math",
+]
 
 [[package]]
 name = "apex-math"

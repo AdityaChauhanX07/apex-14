@@ -2,9 +2,11 @@
 //! dual numbers for automatic differentiation.
 
 pub mod dual;
+pub mod float;
 pub mod mat3;
 pub mod vec3;
 
 pub use dual::Dual;
+pub use float::Float;
 pub use mat3::Mat3;
 pub use vec3::Vec3;
