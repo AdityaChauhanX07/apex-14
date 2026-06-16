@@ -14,6 +14,16 @@ name = "apex-math"
 version = "0.1.0"
 
 [[package]]
+name = "apex-optimizer"
+version = "0.1.0"
+dependencies = [
+ "apex-integrator",
+ "apex-math",
+ "apex-physics",
+ "apex-track",
+]
+
+[[package]]
 name = "apex-physics"
 version = "0.1.0"
 dependencies = [
