@@ -14,6 +14,14 @@ name = "apex-math"
 version = "0.1.0"
 
 [[package]]
+name = "apex-physics"
+version = "0.1.0"
+dependencies = [
+ "apex-integrator",
+ "apex-math",
+]
+
+[[package]]
 name = "apex-track"
 version = "0.1.0"
 dependencies = [

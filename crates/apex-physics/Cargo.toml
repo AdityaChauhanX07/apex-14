@@ -1,0 +1,8 @@
+[package]
+name = "apex-physics"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+apex-math = { path = "../apex-math" }
+apex-integrator = { path = "../apex-integrator" }
