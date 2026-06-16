@@ -47,20 +47,20 @@ pub fn build_track(name: &str, points: &[TrackPoint], closed: bool) -> Track {
 
     // (b) heading via central finite differences
     let mut heading = vec![0.0; n];
-    for i in 0..n {
+    for (i, h) in heading.iter_mut().enumerate() {
         let (a, b) = neighbor_indices(i, n, closed);
         let dx = points[b].x - points[a].x;
         let dy = points[b].y - points[a].y;
-        heading[i] = dy.atan2(dx);
+        *h = dy.atan2(dx);
     }
 
     // (c) curvature = d(heading)/ds, normalizing the heading difference
     let mut curvature = vec![0.0; n];
-    for i in 0..n {
+    for (i, c) in curvature.iter_mut().enumerate() {
         let (a, b) = neighbor_indices(i, n, closed);
         let ds = arc_between(i, a, b, n, closed, &seg_dist);
         let dh = normalize_angle(heading[b] - heading[a]);
-        curvature[i] = if ds > 0.0 { dh / ds } else { 0.0 };
+        *c = if ds > 0.0 { dh / ds } else { 0.0 };
     }
 
     // (d) assemble segments

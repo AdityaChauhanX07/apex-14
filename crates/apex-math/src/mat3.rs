@@ -175,10 +175,7 @@ impl Add for Mat3 {
     type Output = Mat3;
 
     fn add(self, rhs: Mat3) -> Mat3 {
-        let mut data = [0.0; 9];
-        for i in 0..9 {
-            data[i] = self.data[i] + rhs.data[i];
-        }
+        let data = std::array::from_fn(|i| self.data[i] + rhs.data[i]);
         Mat3 { data }
     }
 }
@@ -187,10 +184,7 @@ impl Mul<f64> for Mat3 {
     type Output = Mat3;
 
     fn mul(self, rhs: f64) -> Mat3 {
-        let mut data = [0.0; 9];
-        for i in 0..9 {
-            data[i] = self.data[i] * rhs;
-        }
+        let data = std::array::from_fn(|i| self.data[i] * rhs);
         Mat3 { data }
     }
 }
