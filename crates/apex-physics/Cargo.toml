@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 apex-math = { path = "../apex-math" }
 apex-integrator = { path = "../apex-integrator" }
+apex-track = { path = "../apex-track" }
