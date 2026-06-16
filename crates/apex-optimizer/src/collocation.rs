@@ -8,6 +8,8 @@
 //! ```
 //! Block offsets: s=0, n=N, v=2N, alpha=3N, f_drive=4N, curv=5N, dt=6N.
 
+use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
+use apex_physics::car_params::GRAVITY;
 use apex_physics::{qss_lap_sim, CarParams};
 use apex_track::Track;
 
@@ -364,16 +366,139 @@ impl NlpEvaluator for CollocationEvaluator<'_, '_> {
         constraints
     }
 
-    fn equality_jacobian(&self, x: &[f64]) -> apex_math::CsrMatrix {
-        numerical_jacobian(x, self.optimizer.n_eq_constraints(), |x| {
-            self.equality_constraints(x)
-        })
+    fn equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        self.autodiff_equality_jacobian(x)
     }
 
-    fn inequality_jacobian(&self, x: &[f64]) -> apex_math::CsrMatrix {
-        numerical_jacobian(x, self.optimizer.n_ineq_constraints(), |x| {
-            self.inequality_constraints(x)
-        })
+    fn inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        self.autodiff_inequality_jacobian(x)
+    }
+}
+
+impl CollocationEvaluator<'_, '_> {
+    /// Exact equality-constraint Jacobian via forward-mode autodiff.
+    ///
+    /// Exploits the banded structure: each interval-`k` defect depends only on
+    /// the 13 variables at nodes `k` and `k+1` plus `dt_k`. The track curvature
+    /// is held fixed at each node (its dependence on `s` is neglected, exactly
+    /// as the trapezoidal defect treats it), so on constant-curvature stretches
+    /// this matches finite differences to machine precision.
+    fn autodiff_equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let n_vars = x.len();
+        let n_defects = 4 * (n - 1);
+        let n_eq = opt.n_eq_constraints();
+
+        let mut builder = CsrBuilder::new(n_eq, n_vars);
+        let vars = opt.unpack(x);
+
+        for k in 0..n - 1 {
+            let kappa_k = opt.track.curvature_at(vars.s[k]);
+            let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
+
+            let node_k = [
+                vars.s[k],
+                vars.n[k],
+                vars.v[k],
+                vars.alpha[k],
+                vars.f_drive[k],
+                vars.curvature_cmd[k],
+            ];
+            let node_k1 = [
+                vars.s[k + 1],
+                vars.n[k + 1],
+                vars.v[k + 1],
+                vars.alpha[k + 1],
+                vars.f_drive[k + 1],
+                vars.curvature_cmd[k + 1],
+            ];
+
+            // Global column index of each of the 13 local variables.
+            let global_indices = [
+                k,
+                n + k,
+                2 * n + k,
+                3 * n + k,
+                4 * n + k,
+                5 * n + k,
+                k + 1,
+                n + k + 1,
+                2 * n + k + 1,
+                3 * n + k + 1,
+                4 * n + k + 1,
+                5 * n + k + 1,
+                6 * n + k,
+            ];
+
+            for (wrt, &col) in global_indices.iter().enumerate() {
+                let defects =
+                    defect_with_dual(opt.car, &node_k, &node_k1, vars.dt[k], [kappa_k, kappa_k1], wrt);
+                for (j, d) in defects.iter().enumerate() {
+                    if d.dual.abs() > 1e-15 {
+                        builder.add(4 * k + j, col, d.dual);
+                    }
+                }
+            }
+        }
+
+        // Periodicity constraints (linear: ±1 entries).
+        if opt.config.closed {
+            let base = n_defects;
+            builder.add(base, n - 1, 1.0); // s[N-1] - L
+            builder.add(base + 1, n + n - 1, 1.0); // n[N-1] - n[0]
+            builder.add(base + 1, n, -1.0);
+            builder.add(base + 2, 2 * n + n - 1, 1.0); // v[N-1] - v[0]
+            builder.add(base + 2, 2 * n, -1.0);
+            builder.add(base + 3, 3 * n + n - 1, 1.0); // alpha[N-1] - alpha[0]
+            builder.add(base + 3, 3 * n, -1.0);
+        }
+
+        builder.build()
+    }
+
+    /// Exact inequality-constraint Jacobian via autodiff for the grip circle and
+    /// analytic ±1 entries for the (constant-width) track boundaries.
+    fn autodiff_inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let n_vars = x.len();
+
+        let mut builder = CsrBuilder::new(opt.n_ineq_constraints(), n_vars);
+        let vars = opt.unpack(x);
+
+        for k in 0..n {
+            let row = 3 * k;
+            let n_col = n + k;
+
+            // boundary: n_k - wl <= 0  (d/dn = 1); -wr - n_k <= 0  (d/dn = -1)
+            builder.add(row, n_col, 1.0);
+            builder.add(row + 1, n_col, -1.0);
+
+            // grip circle: derivatives w.r.t. v_k, f_drive_k, curvature_cmd_k
+            let v = vars.v[k];
+            let fd = vars.f_drive[k];
+            let cv = vars.curvature_cmd[k];
+            if opt.car.max_grip_force(v) > 0.0 {
+                let dv =
+                    grip_constraint_generic(opt.car, Dual::variable(v), Dual::constant(fd), Dual::constant(cv)).dual;
+                let dfd =
+                    grip_constraint_generic(opt.car, Dual::constant(v), Dual::variable(fd), Dual::constant(cv)).dual;
+                let dcv =
+                    grip_constraint_generic(opt.car, Dual::constant(v), Dual::constant(fd), Dual::variable(cv)).dual;
+                if dv.abs() > 1e-15 {
+                    builder.add(row + 2, 2 * n + k, dv);
+                }
+                if dfd.abs() > 1e-15 {
+                    builder.add(row + 2, 4 * n + k, dfd);
+                }
+                if dcv.abs() > 1e-15 {
+                    builder.add(row + 2, 5 * n + k, dcv);
+                }
+            }
+        }
+
+        builder.build()
     }
 }
 
@@ -400,15 +525,104 @@ fn point_mass_derivatives(car: &CarParams, state: &[f64; 4], control: &[f64; 2],
     [ds_dt, dn_dt, dv_dt, dalpha_dt]
 }
 
+/// Generic point-mass dynamics, usable with `f64` or [`Dual`] for autodiff.
+fn point_mass_derivatives_generic<T: Float>(
+    car: &CarParams,
+    n: T,
+    v: T,
+    alpha: T,
+    f_drive: T,
+    curvature_cmd: T,
+    kappa: T,
+) -> [T; 4] {
+    let f_drag =
+        T::from_f64(0.5 * car.air_density * car.drag_coeff * car.frontal_area) * v * v;
+    let f_roll = T::from_f64(car.rolling_resistance_force());
+    let v_safe = v.max(T::from_f64(0.1));
+    let mass = T::from_f64(car.mass);
+
+    let ds_dt = v_safe * alpha.cos() / (T::one() - n * kappa);
+    let dn_dt = v_safe * alpha.sin();
+    let dv_dt = (f_drive - f_drag - f_roll) / mass;
+    let dalpha_dt = curvature_cmd * v_safe - kappa * ds_dt;
+
+    [ds_dt, dn_dt, dv_dt, dalpha_dt]
+}
+
+/// Generic grip-circle constraint `(f_drive/F_max)² + (m·v²·curv/F_max)² - 1`,
+/// matching the `f64` formulation in `inequality_constraints`.
+fn grip_constraint_generic<T: Float>(car: &CarParams, v: T, f_drive: T, curvature_cmd: T) -> T {
+    let mg = T::from_f64(car.mass * GRAVITY);
+    let aero = T::from_f64(0.5 * car.air_density * car.lift_coeff * car.frontal_area);
+    let mu = T::from_f64(car.tire_mu);
+    let mass = T::from_f64(car.mass);
+
+    let f_max = mu * (mg + aero * v * v);
+    let f_lon = f_drive;
+    let f_lat = mass * v * v * curvature_cmd;
+
+    (f_lon / f_max) * (f_lon / f_max) + (f_lat / f_max) * (f_lat / f_max) - T::one()
+}
+
+/// Evaluate the four trapezoidal defects for interval `k` as [`Dual`] numbers,
+/// with local variable `wrt` (0..13) seeded as the differentiation variable.
+///
+/// Local indices: 0..6 = node-k `[s,n,v,alpha,f_drive,curv]`, 6..12 = node-k+1
+/// of the same, 12 = `dt`.
+fn defect_with_dual(
+    car: &CarParams,
+    node_k: &[f64; 6],
+    node_k1: &[f64; 6],
+    dt: f64,
+    kappas: [f64; 2],
+    wrt: usize,
+) -> [Dual; 4] {
+    let mk = |val: f64, idx: usize| {
+        if idx == wrt {
+            Dual::variable(val)
+        } else {
+            Dual::constant(val)
+        }
+    };
+
+    let s_k = mk(node_k[0], 0);
+    let n_k = mk(node_k[1], 1);
+    let v_k = mk(node_k[2], 2);
+    let a_k = mk(node_k[3], 3);
+    let fd_k = mk(node_k[4], 4);
+    let cv_k = mk(node_k[5], 5);
+    let s_k1 = mk(node_k1[0], 6);
+    let n_k1 = mk(node_k1[1], 7);
+    let v_k1 = mk(node_k1[2], 8);
+    let a_k1 = mk(node_k1[3], 9);
+    let fd_k1 = mk(node_k1[4], 10);
+    let cv_k1 = mk(node_k1[5], 11);
+    let dt_d = mk(dt, 12);
+
+    let kk = Dual::constant(kappas[0]);
+    let kk1 = Dual::constant(kappas[1]);
+
+    let f_k = point_mass_derivatives_generic::<Dual>(car, n_k, v_k, a_k, fd_k, cv_k, kk);
+    let f_k1 = point_mass_derivatives_generic::<Dual>(car, n_k1, v_k1, a_k1, fd_k1, cv_k1, kk1);
+
+    let half = dt_d * Dual::constant(0.5);
+    let state_k = [s_k, n_k, v_k, a_k];
+    let state_k1 = [s_k1, n_k1, v_k1, a_k1];
+
+    std::array::from_fn(|j| state_k1[j] - state_k[j] - half * (f_k[j] + f_k1[j]))
+}
+
 /// Compute a Jacobian numerically using central finite differences.
-fn numerical_jacobian(
+/// Retained as a reference/validation tool (used in tests only).
+#[cfg(test)]
+fn numerical_jacobian_fd(
     x: &[f64],
     n_constraints: usize,
     eval: impl Fn(&[f64]) -> Vec<f64>,
-) -> apex_math::CsrMatrix {
+) -> CsrMatrix {
     let eps = 1e-7;
     let n_vars = x.len();
-    let mut builder = apex_math::CsrBuilder::new(n_constraints, n_vars);
+    let mut builder = CsrBuilder::new(n_constraints, n_vars);
 
     let mut x_pert = x.to_vec();
 
@@ -559,6 +773,101 @@ mod tests {
         assert!(
             result.lap_time <= qss_lap * 1.10,
             "lap time {} much worse than QSS {}",
+            result.lap_time,
+            qss_lap
+        );
+    }
+
+    // --- auto-diff Jacobian tests ---
+
+    /// First (row, col) where two matrices' dense forms differ by more than `tol`.
+    fn first_diff(a: &CsrMatrix, b: &CsrMatrix, tol: f64) -> Option<(usize, usize, f64, f64)> {
+        let da = a.to_dense();
+        let db = b.to_dense();
+        for (i, (ra, rb)) in da.iter().zip(db.iter()).enumerate() {
+            for (j, (&va, &vb)) in ra.iter().zip(rb.iter()).enumerate() {
+                if (va - vb).abs() > tol {
+                    return Some((i, j, va, vb));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn autodiff_equality_matches_numerical() {
+        let (track, car, config) = circle(20);
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x = opt.initial_guess();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        let ad = evaluator.autodiff_equality_jacobian(&x);
+        let fd = numerical_jacobian_fd(&x, opt.n_eq_constraints(), |x| {
+            evaluator.equality_constraints(x)
+        });
+
+        assert_eq!(ad.nrows(), fd.nrows());
+        assert_eq!(ad.ncols(), fd.ncols());
+        if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
+            panic!("eq jacobian mismatch at ({}, {}): autodiff {} vs fd {}", i, j, a, b);
+        }
+    }
+
+    #[test]
+    fn autodiff_inequality_matches_numerical() {
+        let (track, car, config) = circle(20);
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x = opt.initial_guess();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        let ad = evaluator.autodiff_inequality_jacobian(&x);
+        let fd = numerical_jacobian_fd(&x, opt.n_ineq_constraints(), |x| {
+            evaluator.inequality_constraints(x)
+        });
+
+        assert_eq!(ad.nrows(), fd.nrows());
+        assert_eq!(ad.ncols(), fd.ncols());
+        if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
+            panic!("ineq jacobian mismatch at ({}, {}): autodiff {} vs fd {}", i, j, a, b);
+        }
+    }
+
+    #[test]
+    fn autodiff_jacobian_valid_large() {
+        let (track, car, config) = circle(50);
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x = opt.initial_guess();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        let jac = evaluator.autodiff_equality_jacobian(&x);
+        assert_eq!(jac.nrows(), opt.n_eq_constraints());
+        assert_eq!(jac.ncols(), x.len());
+        assert!(jac.nnz() > 0, "jacobian has no entries");
+        for row in jac.to_dense() {
+            for v in row {
+                assert!(v.is_finite(), "non-finite jacobian entry");
+            }
+        }
+    }
+
+    #[test]
+    fn optimizer_works_with_autodiff() {
+        let (track, car, config) = circle(30);
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let qss_lap = qss_lap_sim(&track, &car).lap_time;
+
+        let solver_config = SolverConfig {
+            max_outer_iter: 10,
+            max_inner_iter: 25,
+            constraint_tol: 1e-2,
+            ..SolverConfig::default()
+        };
+        let result = opt.optimize(&solver_config);
+
+        assert!(result.converged, "should converge on the circle");
+        assert!(
+            (result.lap_time - qss_lap).abs() / qss_lap < 0.01,
+            "lap time {} vs QSS {}",
             result.lap_time,
             qss_lap
         );

@@ -8,7 +8,7 @@
   <line x1="157.3" y1="450.0" x2="176.1" y2="450.0" stroke="#00b9ff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="176.1" y1="450.0" x2="195.0" y2="450.0" stroke="#00ffca" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="195.0" y1="450.0" x2="213.8" y2="450.0" stroke="#00ff5f" stroke-width="11.28" stroke-linecap="round"/>
-  <line x1="213.8" y1="450.0" x2="232.7" y2="450.0" stroke="#00ff02" stroke-width="11.28" stroke-linecap="round"/>
+  <line x1="213.8" y1="450.0" x2="232.7" y2="450.0" stroke="#00ff03" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="232.7" y1="450.0" x2="251.5" y2="450.0" stroke="#50ff00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="251.5" y1="450.0" x2="270.3" y2="450.0" stroke="#99ff00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="270.3" y1="450.0" x2="289.2" y2="450.0" stroke="#dbff00" stroke-width="11.28" stroke-linecap="round"/>
@@ -19,12 +19,12 @@
   <line x1="364.5" y1="450.0" x2="383.4" y2="450.0" stroke="#ff0000" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="383.4" y1="450.0" x2="402.2" y2="450.0" stroke="#ff3700" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="402.2" y1="450.0" x2="421.0" y2="450.0" stroke="#faff00" stroke-width="11.28" stroke-linecap="round"/>
-  <line x1="421.0" y1="450.0" x2="439.9" y2="450.0" stroke="#00ff37" stroke-width="11.28" stroke-linecap="round"/>
+  <line x1="421.0" y1="450.0" x2="439.9" y2="450.0" stroke="#00ff38" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="439.9" y1="450.0" x2="458.7" y2="450.0" stroke="#00adff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="458.7" y1="450.0" x2="477.6" y2="450.0" stroke="#004bff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="477.6" y1="450.0" x2="496.4" y2="450.0" stroke="#0037ff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="496.4" y1="450.0" x2="515.2" y2="450.0" stroke="#0026ff" stroke-width="11.28" stroke-linecap="round"/>
-  <line x1="515.2" y1="450.0" x2="534.1" y2="450.0" stroke="#0019ff" stroke-width="11.28" stroke-linecap="round"/>
+  <line x1="515.2" y1="450.0" x2="534.1" y2="450.0" stroke="#001aff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="534.1" y1="450.0" x2="552.9" y2="450.0" stroke="#0011ff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="552.9" y1="450.0" x2="571.7" y2="450.0" stroke="#0008ff" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="571.7" y1="450.0" x2="590.6" y2="450.0" stroke="#0000ff" stroke-width="11.28" stroke-linecap="round"/>
@@ -36,7 +36,7 @@
   <line x1="684.8" y1="450.0" x2="703.6" y2="450.0" stroke="#29ff00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="703.6" y1="450.0" x2="722.4" y2="450.0" stroke="#76ff00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="722.4" y1="450.0" x2="741.3" y2="450.0" stroke="#bbff00" stroke-width="11.28" stroke-linecap="round"/>
-  <line x1="741.3" y1="450.0" x2="760.1" y2="450.0" stroke="#fbff00" stroke-width="11.28" stroke-linecap="round"/>
+  <line x1="741.3" y1="450.0" x2="760.1" y2="450.0" stroke="#faff00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="760.1" y1="450.0" x2="779.0" y2="450.0" stroke="#ffc800" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="779.0" y1="450.0" x2="797.8" y2="450.0" stroke="#ff8e00" stroke-width="11.28" stroke-linecap="round"/>
   <line x1="797.8" y1="450.0" x2="816.6" y2="450.0" stroke="#ff5400" stroke-width="11.28" stroke-linecap="round"/>
