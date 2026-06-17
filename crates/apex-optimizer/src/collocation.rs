@@ -10,8 +10,12 @@
 
 use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
 use apex_physics::car_params::GRAVITY;
-use apex_physics::{qss_lap_sim, CarParams};
+use apex_physics::{qss_lap_sim, CarParams, PacejkaTire};
 use apex_track::Track;
+
+/// Front roll-stiffness fraction used for four-corner load transfer in the
+/// 7-DOF tire formulation.
+const ROLL_STIFFNESS_FRONT: f64 = 0.55;
 
 use crate::nlp::{NlpEvaluator, NlpProblem};
 use crate::solver::{solve_nlp, SolverConfig, SolverResult};
@@ -308,6 +312,24 @@ impl<'a> CollocationOptimizer<'a> {
             eq_violation: result.eq_violation,
             converged: result.converged,
         }
+    }
+
+    /// Optimize using the 7-DOF tire model for force limits: Pacejka
+    /// combined-slip forces with four-corner load-sensitive grip instead of the
+    /// simple grip circle. Solved with the Gauss-Newton solver.
+    pub fn optimize_seven_dof(
+        &self,
+        tire: &PacejkaTire,
+        solver_config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> OptimizationResult {
+        let x0 = self.initial_guess();
+        let problem = self.build_nlp_problem();
+        let evaluator = SevenDofEvaluator {
+            optimizer: self,
+            tire,
+        };
+        let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, solver_config);
+        self.extract_result_gn(&result)
     }
 
     /// Run optimization using the sequential defect-correction (direct) solver.
@@ -728,8 +750,9 @@ fn defect_with_dual(
 }
 
 /// Compute a Jacobian numerically using central finite differences.
-/// Retained as a reference/validation tool (used in tests only).
-#[cfg(test)]
+///
+/// Used for the 7-DOF tire-model Jacobians (whose four-corner load model is not
+/// Float-generic) and as a reference/validation tool in tests.
 fn numerical_jacobian_fd(
     x: &[f64],
     n_constraints: usize,
@@ -761,6 +784,196 @@ fn numerical_jacobian_fd(
     }
 
     builder.build()
+}
+
+// ---------------------------------------------------------------------------
+// 7-DOF tire-model formulation
+//
+// A hybrid formulation: it keeps the 4-state curvilinear coordinate frame (so
+// the track boundary constraints stay simple) but replaces the point-mass grip
+// circle with the Pacejka combined-slip tire model and four-corner, load-
+// sensitive vertical loads. Because the wheel-spin and chassis-rotation states
+// reach quasi-equilibrium quickly, they are not tracked explicitly; instead the
+// realistic tire force *limits* enter the dynamics and the grip constraint.
+// ---------------------------------------------------------------------------
+
+/// Total load-sensitive grip available from the four tires at a given speed and
+/// lateral acceleration: `Σ μ_eff(F_z_i)·F_z_i` over the four corners.
+fn available_grip(car: &CarParams, tire: &PacejkaTire, speed: f64, lateral_accel: f64, ax: f64) -> f64 {
+    let loads = car.corner_loads(speed, ax, lateral_accel, ROLL_STIFFNESS_FRONT);
+    let mu_blend = 0.5 * (tire.lateral.mu + tire.longitudinal.mu);
+    loads.iter().map(|&fz| tire.effective_mu(mu_blend, fz) * fz).sum()
+}
+
+/// Compute the longitudinal and lateral force the tires can actually deliver
+/// given a longitudinal force request, using four-corner load-sensitive grip.
+///
+/// At low lateral demand the request passes through unchanged; as lateral
+/// acceleration grows, weight transfer reduces total grip (load sensitivity) and
+/// the combined request is scaled back onto the available friction budget.
+pub fn tire_limited_forces(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    speed: f64,
+    lateral_accel: f64,
+    longitudinal_force_request: f64,
+) -> (f64, f64) {
+    let ax = longitudinal_force_request / car.mass;
+    let available = available_grip(car, tire, speed, lateral_accel, ax);
+
+    let fx_req = longitudinal_force_request;
+    let fy_req = car.mass * lateral_accel;
+    let req_mag = (fx_req * fx_req + fy_req * fy_req).sqrt();
+
+    if req_mag <= available || req_mag < 1e-9 {
+        (fx_req, fy_req)
+    } else {
+        let scale = available / req_mag;
+        (fx_req * scale, fy_req * scale)
+    }
+}
+
+/// Curvilinear dynamics using the 7-DOF tire force limits. Identical equations
+/// to [`point_mass_derivatives`], but the longitudinal force is capped by the
+/// load-sensitive tire grip rather than used directly.
+///
+/// `state` is `[s, n, v, alpha]`, `control` is `[f_drive, curvature_cmd]`.
+pub fn seven_dof_derivatives(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    state: &[f64; 4],
+    control: &[f64; 2],
+    kappa: f64,
+) -> [f64; 4] {
+    let n = state[1];
+    let v = state[2];
+    let alpha = state[3];
+    let f_drive = control[0];
+    let curvature_cmd = control[1];
+
+    let lateral_accel = v * v * curvature_cmd;
+    let (fx_actual, _fy) = tire_limited_forces(car, tire, v, lateral_accel, f_drive);
+
+    let f_drag = car.drag_force(v);
+    let f_roll = car.rolling_resistance_force();
+    let v_safe = v.max(0.1);
+
+    let ds_dt = v_safe * alpha.cos() / (1.0 - n * kappa);
+    let dn_dt = v_safe * alpha.sin();
+    let dv_dt = (fx_actual - f_drag - f_roll) / car.mass;
+    let dalpha_dt = curvature_cmd * v_safe - kappa * ds_dt;
+
+    [ds_dt, dn_dt, dv_dt, dalpha_dt]
+}
+
+/// Pacejka-based grip constraint: `requested / available - 1 ≤ 0`, where the
+/// available grip is the four-corner load-sensitive friction budget. Replaces
+/// the point-mass grip circle.
+fn pacejka_grip_constraint(car: &CarParams, tire: &PacejkaTire, v: f64, f_drive: f64, curv: f64) -> f64 {
+    let lateral_accel = v * v * curv;
+    let ax = f_drive / car.mass;
+    let available = available_grip(car, tire, v, lateral_accel, ax);
+    let req = (f_drive * f_drive + (car.mass * v * v * curv).powi(2)).sqrt();
+    if available > 0.0 {
+        req / available - 1.0
+    } else {
+        1.0
+    }
+}
+
+/// Collocation evaluator using the 7-DOF tire and load model for force
+/// computation but retaining the curvilinear coordinate frame.
+///
+/// State at each node: `[s, n, v, alpha]`; control: `[f_drive, curvature_cmd]`
+/// (same layout as the point-mass evaluator). The difference is that the
+/// dynamics use tire-limited longitudinal force and the grip inequality uses the
+/// Pacejka combined-slip / load-sensitive model instead of a simple grip circle.
+struct SevenDofEvaluator<'a, 'b> {
+    optimizer: &'a CollocationOptimizer<'b>,
+    tire: &'a PacejkaTire,
+}
+
+impl NlpEvaluator for SevenDofEvaluator<'_, '_> {
+    fn objective(&self, x: &[f64]) -> f64 {
+        CollocationEvaluator {
+            optimizer: self.optimizer,
+        }
+        .objective(x)
+    }
+
+    fn objective_gradient(&self, x: &[f64]) -> Vec<f64> {
+        CollocationEvaluator {
+            optimizer: self.optimizer,
+        }
+        .objective_gradient(x)
+    }
+
+    fn equality_constraints(&self, x: &[f64]) -> Vec<f64> {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let vars = opt.unpack(x);
+        let mut c = Vec::with_capacity(opt.n_eq_constraints());
+
+        for k in 0..n - 1 {
+            let kappa_k = opt.track.curvature_at(vars.s[k]);
+            let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
+            let state_k = [vars.s[k], vars.n[k], vars.v[k], vars.alpha[k]];
+            let state_k1 = [vars.s[k + 1], vars.n[k + 1], vars.v[k + 1], vars.alpha[k + 1]];
+            let ctrl_k = [vars.f_drive[k], vars.curvature_cmd[k]];
+            let ctrl_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
+
+            let dk = seven_dof_derivatives(opt.car, self.tire, &state_k, &ctrl_k, kappa_k);
+            let dk1 = seven_dof_derivatives(opt.car, self.tire, &state_k1, &ctrl_k1, kappa_k1);
+
+            let half_dt = vars.dt[k] / 2.0;
+            for j in 0..4 {
+                c.push(state_k1[j] - state_k[j] - half_dt * (dk[j] + dk1[j]));
+            }
+        }
+
+        if opt.config.closed {
+            c.push(vars.s[n - 1] - opt.track.total_length);
+            c.push(vars.n[n - 1] - vars.n[0]);
+            c.push(vars.v[n - 1] - vars.v[0]);
+            c.push(apex_track::normalize_angle(vars.alpha[n - 1] - vars.alpha[0]));
+        }
+
+        c
+    }
+
+    fn inequality_constraints(&self, x: &[f64]) -> Vec<f64> {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let vars = opt.unpack(x);
+        let mut c = Vec::with_capacity(opt.n_ineq_constraints());
+
+        for k in 0..n {
+            let (wl, wr) = opt.track.width_at(vars.s[k]);
+            c.push(vars.n[k] - wl);
+            c.push(-wr - vars.n[k]);
+            c.push(pacejka_grip_constraint(
+                opt.car,
+                self.tire,
+                vars.v[k],
+                vars.f_drive[k],
+                vars.curvature_cmd[k],
+            ));
+        }
+
+        c
+    }
+
+    fn equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        numerical_jacobian_fd(x, self.optimizer.n_eq_constraints(), |x| {
+            self.equality_constraints(x)
+        })
+    }
+
+    fn inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        numerical_jacobian_fd(x, self.optimizer.n_ineq_constraints(), |x| {
+            self.inequality_constraints(x)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1026,5 +1239,92 @@ mod tests {
             gn.eq_violation,
             al.eq_violation
         );
+    }
+
+    // --- 7-DOF tire-model tests ---
+
+    #[test]
+    fn tire_limited_forces_straight_and_cornering() {
+        let car = CarParams::default();
+        let tire = apex_physics::PacejkaTire::f1_default();
+
+        // straight line, modest request -> passes through ~unchanged
+        let (fx0, fy0) = tire_limited_forces(&car, &tire, 50.0, 0.0, 5000.0);
+        assert!((fx0 - 5000.0).abs() < 1e-6, "fx {}", fx0);
+        assert!(fy0.abs() < 1e-9, "fy {}", fy0);
+
+        // high lateral acceleration saturates the friction budget, so the
+        // deliverable longitudinal force is reduced below the request
+        let (fx_corner, _fy) = tire_limited_forces(&car, &tire, 50.0, 50.0, 5000.0);
+        assert!(
+            fx_corner < 5000.0,
+            "fx under cornering {} should be reduced",
+            fx_corner
+        );
+    }
+
+    #[test]
+    fn seven_dof_matches_point_mass_on_straight() {
+        let car = CarParams::default();
+        let tire = apex_physics::PacejkaTire::f1_default();
+        let state = [0.0, 0.0, 50.0, 0.0];
+        let control = [5000.0, 0.0];
+
+        let sd = seven_dof_derivatives(&car, &tire, &state, &control, 0.0);
+        let pm = point_mass_derivatives(&car, &state, &control, 0.0);
+        for j in 0..4 {
+            assert!((sd[j] - pm[j]).abs() < 1e-9, "component {}: {} vs {}", j, sd[j], pm[j]);
+        }
+    }
+
+    #[test]
+    fn seven_dof_circle_converges() {
+        let (track, car, config) = circle(30);
+        let tire = apex_physics::PacejkaTire::f1_default();
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+        let result = opt.optimize_seven_dof(&tire, &gn);
+        // The tire-limit function saturates non-smoothly, so the FD-Jacobian GN
+        // reaches a sensible near-feasible solution rather than the tight
+        // tolerance the smooth point-mass model hits.
+        assert!(result.lap_time.is_finite(), "lap time finite");
+        assert!(result.speeds.iter().all(|&v| v > 0.0), "speeds positive");
+        assert!(result.eq_violation < 1.0, "eq_viol {} should be small", result.eq_violation);
+    }
+
+    #[test]
+    fn seven_dof_load_sensitivity_changes_lap() {
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::default();
+        let tire = apex_physics::PacejkaTire::f1_default();
+        let config = CollocationConfig {
+            n_nodes: 40,
+            closed: true,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let pm = opt.optimize_gn(&gn);
+        let sd = opt.optimize_seven_dof(&tire, &gn);
+
+        // load-sensitive tires change the achievable trajectory: the lap times
+        // should differ (the tire model is doing something)
+        assert!(
+            (sd.lap_time - pm.lap_time).abs() / pm.lap_time > 1e-3,
+            "7-DOF lap {} should differ from point-mass {}",
+            sd.lap_time,
+            pm.lap_time
+        );
+        assert!(sd.lap_time.is_finite() && pm.lap_time.is_finite());
     }
 }

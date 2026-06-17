@@ -7,7 +7,10 @@ pub mod gauss_newton;
 pub mod nlp;
 pub mod solver;
 
-pub use collocation::{CollocationConfig, CollocationOptimizer, OptimizationResult};
+pub use collocation::{
+    seven_dof_derivatives, tire_limited_forces, CollocationConfig, CollocationOptimizer,
+    OptimizationResult,
+};
 pub use direct_solver::{
     solve_direct, CollocationStructure, DirectSolverConfig, DirectSolverResult,
 };

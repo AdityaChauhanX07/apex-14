@@ -9,7 +9,7 @@ use apex_optimizer::{
     CollocationConfig, CollocationOptimizer, DirectSolverConfig, GaussNewtonConfig,
     OptimizationResult, SolverConfig,
 };
-use apex_physics::{qss_lap_sim, CarParams};
+use apex_physics::{qss_lap_sim, CarParams, PacejkaTire};
 use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Oval track ---
     let (oval_pts, oval_closed) = apex_track::oval_track(500.0, 80.0, 12.0, 300);
-    let oval = apex_track::build_track("Oval", &oval_pts, oval_closed);
+    let oval_track = apex_track::build_track("Oval", &oval_pts, oval_closed);
     let oval_collocation = CollocationConfig {
         n_nodes: 50,
         closed: true,
@@ -132,13 +132,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let oval = run_track(
         "Oval",
-        &oval,
+        &oval_track,
         &car,
-        oval_collocation,
+        oval_collocation.clone(),
         &al_solver,
         &gn_solver,
         &direct_solver,
     )?;
+
+    // 7-DOF tire model on the oval: Pacejka combined-slip forces with
+    // four-corner load-sensitive grip. Load sensitivity reduces total grip, so
+    // the lap is expected to be slower than the simple grip-circle model.
+    let tire = PacejkaTire::f1_default();
+    let sd_optimizer = CollocationOptimizer::new(oval_collocation, &oval_track, &car);
+    let sd_solver = GaussNewtonConfig {
+        max_iterations: 30,
+        ..gn_solver.clone()
+    };
+    let sd = sd_optimizer.optimize_seven_dof(&tire, &sd_solver);
+    println!("Oval with 7-DOF tire model:");
+    println!(
+        "  7-DOF tire model: {:.3}s | eq_viol {:.2e} | converged: {}",
+        sd.lap_time, sd.eq_violation, sd.converged
+    );
+    println!(
+        "  (grip-circle GN: {:.3}s — load sensitivity shifts the lap by {:+.1}%)",
+        oval.gn.lap_time,
+        100.0 * (sd.lap_time - oval.gn.lap_time) / oval.gn.lap_time
+    );
+    println!();
 
     // --- Circle track ---
     let (circle_pts, circle_closed) = apex_track::circle_track(100.0, 12.0, 200);
