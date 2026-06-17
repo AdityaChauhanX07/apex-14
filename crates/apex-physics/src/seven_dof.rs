@@ -186,8 +186,8 @@ mod tests {
         // drag decelerates
         assert!(d[3] < 0.0, "dvx/dt {} should be negative", d[3]);
         // wheels in equilibrium (no net torque at zero slip)
-        for k in 6..10 {
-            assert!(approx(d[k], 0.0, 1e-6), "wheel {} spin deriv {}", k, d[k]);
+        for (k, dk) in d[6..10].iter().enumerate() {
+            assert!(approx(*dk, 0.0, 1e-6), "wheel {} spin deriv {}", k + 6, dk);
         }
     }
 
@@ -237,12 +237,12 @@ mod tests {
         let d = m.derivatives(&state, &control, 0.0);
 
         // every wheel decelerates under braking
-        for k in 6..10 {
+        for (k, dk) in d[6..10].iter().enumerate() {
             assert!(
-                d[k] < 0.0,
+                *dk < 0.0,
                 "wheel {} spin deriv {} should be negative",
-                k,
-                d[k]
+                k + 6,
+                dk
             );
         }
         // front brakes harder (60% bias) -> more negative

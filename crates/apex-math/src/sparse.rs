@@ -270,9 +270,9 @@ mod tests {
         assert_eq!(m.nnz(), 5);
 
         let expected = [[1.0, 0.0, 2.0], [0.0, 3.0, 0.0], [4.0, 0.0, 5.0]];
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(m.get(i, j), expected[i][j], "({}, {})", i, j);
+        for (i, row) in expected.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert_eq!(m.get(i, j), val, "({}, {})", i, j);
             }
         }
 
@@ -301,9 +301,9 @@ mod tests {
 
         // transpose of [1 0 2; 0 3 0; 4 0 5] is [1 0 4; 0 3 0; 2 0 5]
         let expected_t = [[1.0, 0.0, 4.0], [0.0, 3.0, 0.0], [2.0, 0.0, 5.0]];
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_eq!(t.get(i, j), expected_t[i][j], "({}, {})", i, j);
+        for (i, row) in expected_t.iter().enumerate() {
+            for (j, &val) in row.iter().enumerate() {
+                assert_eq!(t.get(i, j), val, "({}, {})", i, j);
             }
         }
 

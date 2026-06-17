@@ -8,3 +8,22 @@ apex-math = { path = "../apex-math" }
 apex-integrator = { path = "../apex-integrator" }
 apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "integrator_bench"
+harness = false
+
+[[bench]]
+name = "tire_model_bench"
+harness = false
+
+[[bench]]
+name = "optimizer_bench"
+harness = false
+
+[[bench]]
+name = "suspension_bench"
+harness = false

@@ -415,11 +415,11 @@ mod tests {
         assert!(d[8].abs() < 0.05, "dvz/dt {}", d[8]); // heave
         assert!(d[9].abs() < 0.05, "domega_x/dt {}", d[9]); // roll
         assert!(d[10].abs() < 0.05, "domega_y/dt {}", d[10]); // pitch
-        for k in 20..24 {
-            assert!(d[k].abs() < 0.5, "susp accel {} = {}", k, d[k]);
+        for (k, dk) in d[20..24].iter().enumerate() {
+            assert!(dk.abs() < 0.5, "susp accel {} = {}", k + 20, dk);
         }
-        for k in 12..16 {
-            assert!(d[k].abs() < 1e-3, "wheel spin {} = {}", k, d[k]);
+        for (k, dk) in d[12..16].iter().enumerate() {
+            assert!(dk.abs() < 1e-3, "wheel spin {} = {}", k + 12, dk);
         }
         assert!(d[6] < 0.0, "dvx/dt {} should be negative (drag)", d[6]);
     }
@@ -511,14 +511,14 @@ mod tests {
         // Place all corners at the design ride height (z_s = 0 -> ride = design),
         // where ground effect is at its peak.
         let mut at_design = equilibrium_state(&model, 50.0);
-        for k in 16..20 {
-            at_design[k] = 0.0;
+        for z in &mut at_design[16..20] {
+            *z = 0.0;
         }
         // Raise the car well above design (extend suspension 20mm): in the
         // above-design regime ground effect fades, so downforce must drop.
         let mut raised = at_design;
-        for k in 16..20 {
-            raised[k] -= 0.020;
+        for z in &mut raised[16..20] {
+            *z -= 0.020;
         }
 
         let base = model.aero_forces(&at_design);

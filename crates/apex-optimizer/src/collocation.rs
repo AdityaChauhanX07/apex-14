@@ -316,6 +316,29 @@ impl<'a> CollocationOptimizer<'a> {
         self.extract_result_gn(&result)
     }
 
+    /// Grip-circle QSS warm-start decision vector (public for benchmarking and
+    /// introspection).
+    pub fn warm_start(&self) -> Vec<f64> {
+        self.initial_guess()
+    }
+
+    /// Equality-constraint residuals at `x` for the point-mass formulation
+    /// (public for benchmarking; e.g. to time a numerical Jacobian).
+    pub fn equality_residuals(&self, x: &[f64]) -> Vec<f64> {
+        CollocationEvaluator { optimizer: self }.equality_constraints(x)
+    }
+
+    /// Auto-diff equality Jacobian at `x` for the point-mass formulation
+    /// (public for benchmarking).
+    pub fn equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        CollocationEvaluator { optimizer: self }.equality_jacobian(x)
+    }
+
+    /// Number of equality constraints (public for benchmarking/introspection).
+    pub fn equality_count(&self) -> usize {
+        self.n_eq_constraints()
+    }
+
     fn extract_result_gn(
         &self,
         result: &crate::gauss_newton::GaussNewtonResult,
