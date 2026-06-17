@@ -14,13 +14,13 @@ pub use collocation::{
     fourteen_dof_grip_budget, seven_dof_derivatives, tire_limited_forces, CollocationConfig,
     CollocationOptimizer, OptimizationResult,
 };
-pub use mesh_refinement::{
-    optimize_with_refinement, LevelResult, MeshRefinementConfig, RefinedResult,
-};
 pub use direct_solver::{
     solve_direct, CollocationStructure, DirectSolverConfig, DirectSolverResult,
 };
 pub use forward_sim::{DetailedTelemetry, ForwardSimulator};
 pub use gauss_newton::{solve_gauss_newton, GaussNewtonConfig, GaussNewtonResult};
+pub use mesh_refinement::{
+    optimize_with_refinement, LevelResult, MeshRefinementConfig, RefinedResult,
+};
 pub use nlp::{NlpEvaluator, NlpProblem};
 pub use solver::{solve_nlp, SolverConfig, SolverResult};

@@ -172,7 +172,13 @@ mod tests {
             let b = parsed.curvature_at(s);
             // curvature ~ 1/50 = 0.02; compare on an absolute scale to avoid
             // dividing by near-zero on any low-curvature sample
-            assert!((a - b).abs() < 0.05 * 0.02 + 1e-6, "curvature {} vs {} at s={}", a, b, s);
+            assert!(
+                (a - b).abs() < 0.05 * 0.02 + 1e-6,
+                "curvature {} vs {} at s={}",
+                a,
+                b,
+                s
+            );
         }
     }
 
@@ -222,8 +228,8 @@ mod tests {
 
     #[test]
     fn load_committed_test_circle() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tracks/test_circle.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tracks/test_circle.json");
         let track = load_track_json(&path).expect("load test_circle.json");
 
         assert_eq!(track.segments.len(), 36);

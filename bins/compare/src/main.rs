@@ -200,8 +200,7 @@ fn main() {
     // (f) Collocation, 14-DOF force model.
     let coll_14dof = opt.optimize_fourteen_dof(&tire, &suspension, &aero, &gn);
     // (g) 14-DOF forward simulation along the optimized oval line.
-    let (_oval_opt, oval_fwd) =
-        opt.optimize_fourteen_dof_full(&tire, &suspension, &aero, &gn);
+    let (_oval_opt, oval_fwd) = opt.optimize_fourteen_dof_full(&tire, &suspension, &aero, &gn);
 
     let rows = [
         row_from_qss("QSS (grip circle)", &qss_grip),
@@ -266,7 +265,10 @@ fn main() {
         ("R=30 circle", summarize_chassis(&circle_fwd))
     };
     println!();
-    println!("14-DOF Chassis Dynamics (from {} forward sim):", chassis_src);
+    println!(
+        "14-DOF Chassis Dynamics (from {} forward sim):",
+        chassis_src
+    );
     println!("  Max roll:    {:.3} deg", chassis.0);
     println!("  Max pitch:   {:.3} deg", chassis.1);
     println!("  Max susp:    {:.1} mm", chassis.2);

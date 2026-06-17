@@ -3,7 +3,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use apex_integrator::{rk4_integrate, rk4_step, rk45_adaptive_step, AdaptiveConfig, OdeSystem};
+use apex_integrator::{rk45_adaptive_step, rk4_integrate, rk4_step, AdaptiveConfig, OdeSystem};
 use apex_physics::{CarParams, PointMassModel};
 
 /// A 10-state system of coupled linear oscillators, standing in for the size of

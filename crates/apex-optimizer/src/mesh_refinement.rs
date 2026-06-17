@@ -139,8 +139,7 @@ mod tests {
         let stations: Vec<f64> = (0..n)
             .map(|k| track.total_length * (k as f64) / ((n - 1) as f64))
             .collect();
-        let curvature_cmds: Vec<f64> =
-            stations.iter().map(|&s| track.curvature_at(s)).collect();
+        let curvature_cmds: Vec<f64> = stations.iter().map(|&s| track.curvature_at(s)).collect();
         let dt: Vec<f64> = (0..n - 1)
             .map(|k| (stations[k + 1] - stations[k]) / speed)
             .collect();
@@ -181,7 +180,13 @@ mod tests {
         let step = track.total_length / (n_fine as f64 - 1.0);
         for (i, &s) in stations.iter().enumerate() {
             let expected = step * i as f64;
-            assert!((s - expected).abs() < 1e-6, "station {} = {} != {}", i, s, expected);
+            assert!(
+                (s - expected).abs() < 1e-6,
+                "station {} = {} != {}",
+                i,
+                s,
+                expected
+            );
         }
     }
 
@@ -197,7 +202,11 @@ mod tests {
 
         assert_eq!(refined.level_results.len(), 3);
         for lvl in &refined.level_results {
-            assert!(lvl.lap_time.is_finite() && lvl.lap_time > 0.0, "lap {}", lvl.lap_time);
+            assert!(
+                lvl.lap_time.is_finite() && lvl.lap_time > 0.0,
+                "lap {}",
+                lvl.lap_time
+            );
         }
 
         // The fine solve converges to tolerance. (Absolute eq_violation is not
@@ -271,8 +280,8 @@ mod tests {
         assert_eq!(refined.level_results.len(), 1);
 
         // A single level must match a plain optimize_gn at the same N.
-        let plain = CollocationOptimizer::new(level_config(50, &track), &track, &car)
-            .optimize_gn(&solver);
+        let plain =
+            CollocationOptimizer::new(level_config(50, &track), &track, &car).optimize_gn(&solver);
 
         assert!(
             (refined.final_result.lap_time - plain.lap_time).abs() < 1e-9,

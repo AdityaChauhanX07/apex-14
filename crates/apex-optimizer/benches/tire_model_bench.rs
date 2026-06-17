@@ -18,24 +18,16 @@ fn bench_tire(c: &mut Criterion) {
     let mut group = c.benchmark_group("tire");
 
     group.bench_function("lateral_force_f64", |b| {
-        b.iter(|| {
-            tire.lateral_force(black_box(slip_angle), black_box(fz))
-        })
+        b.iter(|| tire.lateral_force(black_box(slip_angle), black_box(fz)))
     });
 
     group.bench_function("combined_forces", |b| {
-        b.iter(|| {
-            tire.combined_forces(black_box(slip_angle), black_box(slip_ratio), black_box(fz))
-        })
+        b.iter(|| tire.combined_forces(black_box(slip_angle), black_box(slip_ratio), black_box(fz)))
     });
 
     group.bench_function("combined_forces_smooth", |b| {
         b.iter(|| {
-            tire.combined_forces_smooth(
-                black_box(slip_angle),
-                black_box(slip_ratio),
-                black_box(fz),
-            )
+            tire.combined_forces_smooth(black_box(slip_angle), black_box(slip_ratio), black_box(fz))
         })
     });
 
@@ -51,9 +43,7 @@ fn bench_tire(c: &mut Criterion) {
     // The same lateral-force evaluation over f64 for a direct cost comparison
     // (the generic path through `T: Float` instantiated at f64).
     group.bench_function("lateral_force_generic_f64", |b| {
-        b.iter(|| {
-            tire.lateral_force_generic::<f64>(black_box(slip_angle), black_box(fz))
-        })
+        b.iter(|| tire.lateral_force_generic::<f64>(black_box(slip_angle), black_box(fz)))
     });
 
     group.finish();

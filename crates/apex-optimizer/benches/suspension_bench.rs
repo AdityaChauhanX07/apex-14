@@ -49,9 +49,7 @@ fn bench_suspension(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("fourteen_dof");
     group.bench_function("derivatives", |b| {
-        b.iter(|| {
-            model.derivatives(black_box(&state), black_box(&control), black_box(0.0))
-        })
+        b.iter(|| model.derivatives(black_box(&state), black_box(&control), black_box(0.0)))
     });
     group.finish();
 }
