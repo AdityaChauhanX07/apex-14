@@ -10,7 +10,7 @@
 
 use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
 use apex_physics::car_params::GRAVITY;
-use apex_physics::{qss_lap_sim, CarParams, PacejkaTire};
+use apex_physics::{qss_lap_sim, smooth_min, CarParams, PacejkaTire};
 use apex_track::Track;
 
 /// Front roll-stiffness fraction used for four-corner load transfer in the
@@ -750,9 +750,8 @@ fn defect_with_dual(
 }
 
 /// Compute a Jacobian numerically using central finite differences.
-///
-/// Used for the 7-DOF tire-model Jacobians (whose four-corner load model is not
-/// Float-generic) and as a reference/validation tool in tests.
+/// Retained as a reference/validation tool (used in tests only).
+#[cfg(test)]
 fn numerical_jacobian_fd(
     x: &[f64],
     n_constraints: usize,
@@ -797,20 +796,133 @@ fn numerical_jacobian_fd(
 // realistic tire force *limits* enter the dynamics and the grip constraint.
 // ---------------------------------------------------------------------------
 
-/// Total load-sensitive grip available from the four tires at a given speed and
-/// lateral acceleration: `Σ μ_eff(F_z_i)·F_z_i` over the four corners.
-fn available_grip(car: &CarParams, tire: &PacejkaTire, speed: f64, lateral_accel: f64, ax: f64) -> f64 {
-    let loads = car.corner_loads(speed, ax, lateral_accel, ROLL_STIFFNESS_FRONT);
-    let mu_blend = 0.5 * (tire.lateral.mu + tire.longitudinal.mu);
-    loads.iter().map(|&fz| tire.effective_mu(mu_blend, fz) * fz).sum()
+/// Generic four-corner load-sensitive grip budget `Σ μ_eff(F_z_i)·F_z_i`.
+///
+/// Mirrors `CarParams::corner_loads` + `effective_mu` but is `Float`-generic, so
+/// it can be autodiffed. All car/tire constants are lifted via `T::from_f64`.
+fn available_grip_generic<T: Float>(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    speed: T,
+    lateral_accel: T,
+    ax: T,
+) -> T {
+    let m = T::from_f64(car.mass);
+    let weight = m * T::from_f64(GRAVITY);
+    let df = T::from_f64(0.5 * car.air_density * car.lift_coeff * car.frontal_area) * speed * speed;
+
+    let lf = T::from_f64(car.cog_to_front);
+    let lr = T::from_f64(car.cog_to_rear);
+    let wb = T::from_f64(car.wheelbase);
+    let abf = T::from_f64(car.aero_balance_front);
+    let h = T::from_f64(car.cog_height);
+    let rsf = T::from_f64(ROLL_STIFFNESS_FRONT);
+    let twf = T::from_f64(car.track_width_front);
+    let twr = T::from_f64(car.track_width_rear);
+    let half = T::from_f64(0.5);
+
+    // longitudinal (axle) loads
+    let front_static = weight * lr / wb;
+    let rear_static = weight * lf / wb;
+    let front_aero = df * abf;
+    let rear_aero = df * (T::one() - abf);
+    let wt = m * ax * h / wb;
+    let front_total = (front_static + front_aero - wt).max(T::zero());
+    let rear_total = (rear_static + rear_aero + wt).max(T::zero());
+
+    // lateral transfer split by roll stiffness
+    let dfz_front = m * lateral_accel * h * rsf / twf;
+    let dfz_rear = m * lateral_accel * h * (T::one() - rsf) / twr;
+    let fz_fl = (front_total * half - dfz_front).max(T::zero());
+    let fz_fr = (front_total * half + dfz_front).max(T::zero());
+    let fz_rl = (rear_total * half - dfz_rear).max(T::zero());
+    let fz_rr = (rear_total * half + dfz_rear).max(T::zero());
+
+    let mu_blend = T::from_f64(0.5 * (tire.lateral.mu + tire.longitudinal.mu));
+    let fz_nom = T::from_f64(tire.fz_nominal);
+    let load_sens = T::from_f64(tire.load_sensitivity);
+    let eff = |fz: T| (mu_blend * (T::one() - load_sens * (fz - fz_nom) / fz_nom)).max(T::zero()) * fz;
+    eff(fz_fl) + eff(fz_fr) + eff(fz_rl) + eff(fz_rr)
+}
+
+/// Generic deliverable tire forces with a smooth (C¹) saturation onto the
+/// load-sensitive grip budget. Returns `(fx, fy)`.
+fn tire_limited_forces_generic<T: Float>(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    speed: T,
+    lateral_accel: T,
+    longitudinal_force_request: T,
+) -> (T, T) {
+    let m = T::from_f64(car.mass);
+    let ax = longitudinal_force_request / m;
+    let available = available_grip_generic(car, tire, speed, lateral_accel, ax);
+
+    let fx_req = longitudinal_force_request;
+    let fy_req = m * lateral_accel;
+    let r = (fx_req * fx_req + fy_req * fy_req).sqrt();
+    if r.real_value() < 1e-9 {
+        return (fx_req, fy_req);
+    }
+
+    // smooth saturation removes the kink at the grip boundary
+    let sharpness = T::from_f64(10.0) / available;
+    let r_limited = smooth_min(r, available, sharpness);
+    let scale = r_limited / r;
+    (fx_req * scale, fy_req * scale)
+}
+
+/// Generic curvilinear 7-DOF dynamics: same equations as
+/// [`point_mass_derivatives`], with the longitudinal force smoothly capped by
+/// the load-sensitive tire grip. `Float`-generic for exact autodiff Jacobians.
+fn seven_dof_derivatives_generic<T: Float>(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    state: &[T; 4],
+    control: &[T; 2],
+    kappa: T,
+) -> [T; 4] {
+    let n = state[1];
+    let v = state[2];
+    let alpha = state[3];
+    let f_drive = control[0];
+    let curvature_cmd = control[1];
+
+    let lateral_accel = v * v * curvature_cmd;
+    let (fx_actual, _fy) = tire_limited_forces_generic(car, tire, v, lateral_accel, f_drive);
+
+    let f_drag = T::from_f64(0.5 * car.air_density * car.drag_coeff * car.frontal_area) * v * v;
+    let f_roll = T::from_f64(car.rolling_resistance_force());
+    let v_safe = v.max(T::from_f64(0.1));
+    let m = T::from_f64(car.mass);
+
+    let ds_dt = v_safe * alpha.cos() / (T::one() - n * kappa);
+    let dn_dt = v_safe * alpha.sin();
+    let dv_dt = (fx_actual - f_drag - f_roll) / m;
+    let dalpha_dt = curvature_cmd * v_safe - kappa * ds_dt;
+
+    [ds_dt, dn_dt, dv_dt, dalpha_dt]
+}
+
+/// Generic Pacejka grip constraint: `requested / available - 1 ≤ 0`.
+fn pacejka_grip_constraint_generic<T: Float>(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    v: T,
+    f_drive: T,
+    curv: T,
+) -> T {
+    let m = T::from_f64(car.mass);
+    let lateral_accel = v * v * curv;
+    let ax = f_drive / m;
+    let available = available_grip_generic(car, tire, v, lateral_accel, ax);
+    let f_lat = m * v * v * curv;
+    let req = (f_drive * f_drive + f_lat * f_lat).sqrt();
+    req / available - T::one()
 }
 
 /// Compute the longitudinal and lateral force the tires can actually deliver
-/// given a longitudinal force request, using four-corner load-sensitive grip.
-///
-/// At low lateral demand the request passes through unchanged; as lateral
-/// acceleration grows, weight transfer reduces total grip (load sensitivity) and
-/// the combined request is scaled back onto the available friction budget.
+/// (f64 entry point; uses the smooth saturation).
 pub fn tire_limited_forces(
     car: &CarParams,
     tire: &PacejkaTire,
@@ -818,24 +930,10 @@ pub fn tire_limited_forces(
     lateral_accel: f64,
     longitudinal_force_request: f64,
 ) -> (f64, f64) {
-    let ax = longitudinal_force_request / car.mass;
-    let available = available_grip(car, tire, speed, lateral_accel, ax);
-
-    let fx_req = longitudinal_force_request;
-    let fy_req = car.mass * lateral_accel;
-    let req_mag = (fx_req * fx_req + fy_req * fy_req).sqrt();
-
-    if req_mag <= available || req_mag < 1e-9 {
-        (fx_req, fy_req)
-    } else {
-        let scale = available / req_mag;
-        (fx_req * scale, fy_req * scale)
-    }
+    tire_limited_forces_generic::<f64>(car, tire, speed, lateral_accel, longitudinal_force_request)
 }
 
-/// Curvilinear dynamics using the 7-DOF tire force limits. Identical equations
-/// to [`point_mass_derivatives`], but the longitudinal force is capped by the
-/// load-sensitive tire grip rather than used directly.
+/// Curvilinear 7-DOF dynamics (f64 entry point).
 ///
 /// `state` is `[s, n, v, alpha]`, `control` is `[f_drive, curvature_cmd]`.
 pub fn seven_dof_derivatives(
@@ -845,40 +943,7 @@ pub fn seven_dof_derivatives(
     control: &[f64; 2],
     kappa: f64,
 ) -> [f64; 4] {
-    let n = state[1];
-    let v = state[2];
-    let alpha = state[3];
-    let f_drive = control[0];
-    let curvature_cmd = control[1];
-
-    let lateral_accel = v * v * curvature_cmd;
-    let (fx_actual, _fy) = tire_limited_forces(car, tire, v, lateral_accel, f_drive);
-
-    let f_drag = car.drag_force(v);
-    let f_roll = car.rolling_resistance_force();
-    let v_safe = v.max(0.1);
-
-    let ds_dt = v_safe * alpha.cos() / (1.0 - n * kappa);
-    let dn_dt = v_safe * alpha.sin();
-    let dv_dt = (fx_actual - f_drag - f_roll) / car.mass;
-    let dalpha_dt = curvature_cmd * v_safe - kappa * ds_dt;
-
-    [ds_dt, dn_dt, dv_dt, dalpha_dt]
-}
-
-/// Pacejka-based grip constraint: `requested / available - 1 ≤ 0`, where the
-/// available grip is the four-corner load-sensitive friction budget. Replaces
-/// the point-mass grip circle.
-fn pacejka_grip_constraint(car: &CarParams, tire: &PacejkaTire, v: f64, f_drive: f64, curv: f64) -> f64 {
-    let lateral_accel = v * v * curv;
-    let ax = f_drive / car.mass;
-    let available = available_grip(car, tire, v, lateral_accel, ax);
-    let req = (f_drive * f_drive + (car.mass * v * v * curv).powi(2)).sqrt();
-    if available > 0.0 {
-        req / available - 1.0
-    } else {
-        1.0
-    }
+    seven_dof_derivatives_generic::<f64>(car, tire, state, control, kappa)
 }
 
 /// Collocation evaluator using the 7-DOF tire and load model for force
@@ -951,7 +1016,7 @@ impl NlpEvaluator for SevenDofEvaluator<'_, '_> {
             let (wl, wr) = opt.track.width_at(vars.s[k]);
             c.push(vars.n[k] - wl);
             c.push(-wr - vars.n[k]);
-            c.push(pacejka_grip_constraint(
+            c.push(pacejka_grip_constraint_generic::<f64>(
                 opt.car,
                 self.tire,
                 vars.v[k],
@@ -964,16 +1029,209 @@ impl NlpEvaluator for SevenDofEvaluator<'_, '_> {
     }
 
     fn equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
-        numerical_jacobian_fd(x, self.optimizer.n_eq_constraints(), |x| {
-            self.equality_constraints(x)
-        })
+        self.autodiff_equality_jacobian(x)
     }
 
     fn inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
-        numerical_jacobian_fd(x, self.optimizer.n_ineq_constraints(), |x| {
-            self.inequality_constraints(x)
-        })
+        self.autodiff_inequality_jacobian(x)
     }
+}
+
+impl SevenDofEvaluator<'_, '_> {
+    /// Exact equality Jacobian for the 7-DOF dynamics via forward-mode autodiff
+    /// of the smooth, generic tire dynamics, plus the curvature-chain term in
+    /// the s-columns (same banded structure as the point-mass solver).
+    fn autodiff_equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let n_defects = 4 * (n - 1);
+        let mut builder = CsrBuilder::new(opt.n_eq_constraints(), x.len());
+        let vars = opt.unpack(x);
+
+        for k in 0..n - 1 {
+            let kappa_k = opt.track.curvature_at(vars.s[k]);
+            let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
+            let node_k = [
+                vars.s[k],
+                vars.n[k],
+                vars.v[k],
+                vars.alpha[k],
+                vars.f_drive[k],
+                vars.curvature_cmd[k],
+            ];
+            let node_k1 = [
+                vars.s[k + 1],
+                vars.n[k + 1],
+                vars.v[k + 1],
+                vars.alpha[k + 1],
+                vars.f_drive[k + 1],
+                vars.curvature_cmd[k + 1],
+            ];
+            let global_indices = [
+                k,
+                n + k,
+                2 * n + k,
+                3 * n + k,
+                4 * n + k,
+                5 * n + k,
+                k + 1,
+                n + k + 1,
+                2 * n + k + 1,
+                3 * n + k + 1,
+                4 * n + k + 1,
+                5 * n + k + 1,
+                6 * n + k,
+            ];
+
+            for (wrt, &col) in global_indices.iter().enumerate() {
+                let d = seven_dof_defect_with_dual(
+                    opt.car,
+                    self.tire,
+                    &node_k,
+                    &node_k1,
+                    vars.dt[k],
+                    [kappa_k, kappa_k1],
+                    wrt,
+                );
+                for (j, dj) in d.iter().enumerate() {
+                    if dj.dual.abs() > 1e-15 {
+                        builder.add(4 * k + j, col, dj.dual);
+                    }
+                }
+            }
+
+            // curvature-chain correction in the s-columns
+            let half_dt = vars.dt[k] / 2.0;
+            let dfk = seven_dof_dynamics_dkappa(opt.car, self.tire, &node_k, kappa_k);
+            let dfk1 = seven_dof_dynamics_dkappa(opt.car, self.tire, &node_k1, kappa_k1);
+            let h = 1e-3;
+            let dkk = (opt.track.curvature_at(node_k[0] + h) - opt.track.curvature_at(node_k[0] - h)) / (2.0 * h);
+            let dkk1 =
+                (opt.track.curvature_at(node_k1[0] + h) - opt.track.curvature_at(node_k1[0] - h)) / (2.0 * h);
+            for j in 0..4 {
+                let ck = -half_dt * dfk[j] * dkk;
+                if ck.abs() > 1e-15 {
+                    builder.add(4 * k + j, k, ck);
+                }
+                let ck1 = -half_dt * dfk1[j] * dkk1;
+                if ck1.abs() > 1e-15 {
+                    builder.add(4 * k + j, k + 1, ck1);
+                }
+            }
+        }
+
+        if opt.config.closed {
+            let base = n_defects;
+            builder.add(base, n - 1, 1.0);
+            builder.add(base + 1, n + n - 1, 1.0);
+            builder.add(base + 1, n, -1.0);
+            builder.add(base + 2, 2 * n + n - 1, 1.0);
+            builder.add(base + 2, 2 * n, -1.0);
+            builder.add(base + 3, 3 * n + n - 1, 1.0);
+            builder.add(base + 3, 3 * n, -1.0);
+        }
+
+        builder.build()
+    }
+
+    /// Exact inequality Jacobian: analytic ±1 for the boundaries and autodiff of
+    /// the Pacejka grip constraint w.r.t. (v, f_drive, curvature_cmd).
+    fn autodiff_inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let mut builder = CsrBuilder::new(opt.n_ineq_constraints(), x.len());
+        let vars = opt.unpack(x);
+
+        for k in 0..n {
+            let row = 3 * k;
+            builder.add(row, n + k, 1.0);
+            builder.add(row + 1, n + k, -1.0);
+
+            let v = vars.v[k];
+            let fd = vars.f_drive[k];
+            let cv = vars.curvature_cmd[k];
+            let dv = pacejka_grip_constraint_generic(
+                opt.car,
+                self.tire,
+                Dual::variable(v),
+                Dual::constant(fd),
+                Dual::constant(cv),
+            )
+            .dual;
+            let dfd = pacejka_grip_constraint_generic(
+                opt.car,
+                self.tire,
+                Dual::constant(v),
+                Dual::variable(fd),
+                Dual::constant(cv),
+            )
+            .dual;
+            let dcv = pacejka_grip_constraint_generic(
+                opt.car,
+                self.tire,
+                Dual::constant(v),
+                Dual::constant(fd),
+                Dual::variable(cv),
+            )
+            .dual;
+            if dv.abs() > 1e-15 {
+                builder.add(row + 2, 2 * n + k, dv);
+            }
+            if dfd.abs() > 1e-15 {
+                builder.add(row + 2, 4 * n + k, dfd);
+            }
+            if dcv.abs() > 1e-15 {
+                builder.add(row + 2, 5 * n + k, dcv);
+            }
+        }
+
+        builder.build()
+    }
+}
+
+/// Partial derivative of the 7-DOF dynamics w.r.t. track curvature `kappa`.
+fn seven_dof_dynamics_dkappa(car: &CarParams, tire: &PacejkaTire, node: &[f64; 6], kappa: f64) -> [f64; 4] {
+    let state = [
+        Dual::constant(node[0]),
+        Dual::constant(node[1]),
+        Dual::constant(node[2]),
+        Dual::constant(node[3]),
+    ];
+    let control = [Dual::constant(node[4]), Dual::constant(node[5])];
+    let f = seven_dof_derivatives_generic::<Dual>(car, tire, &state, &control, Dual::variable(kappa));
+    [f[0].dual, f[1].dual, f[2].dual, f[3].dual]
+}
+
+/// Evaluate the four 7-DOF trapezoidal defects for interval `k` as duals, with
+/// local variable `wrt` (0..13) seeded as the differentiation variable.
+fn seven_dof_defect_with_dual(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    node_k: &[f64; 6],
+    node_k1: &[f64; 6],
+    dt: f64,
+    kappas: [f64; 2],
+    wrt: usize,
+) -> [Dual; 4] {
+    let mk = |val: f64, idx: usize| {
+        if idx == wrt {
+            Dual::variable(val)
+        } else {
+            Dual::constant(val)
+        }
+    };
+
+    let state_k = [mk(node_k[0], 0), mk(node_k[1], 1), mk(node_k[2], 2), mk(node_k[3], 3)];
+    let ctrl_k = [mk(node_k[4], 4), mk(node_k[5], 5)];
+    let state_k1 = [mk(node_k1[0], 6), mk(node_k1[1], 7), mk(node_k1[2], 8), mk(node_k1[3], 9)];
+    let ctrl_k1 = [mk(node_k1[4], 10), mk(node_k1[5], 11)];
+    let dt_d = mk(dt, 12);
+
+    let f_k = seven_dof_derivatives_generic::<Dual>(car, tire, &state_k, &ctrl_k, Dual::constant(kappas[0]));
+    let f_k1 = seven_dof_derivatives_generic::<Dual>(car, tire, &state_k1, &ctrl_k1, Dual::constant(kappas[1]));
+
+    let half = dt_d * Dual::constant(0.5);
+    std::array::from_fn(|j| state_k1[j] - state_k[j] - half * (f_k[j] + f_k1[j]))
 }
 
 #[cfg(test)]
@@ -1248,9 +1506,10 @@ mod tests {
         let car = CarParams::default();
         let tire = apex_physics::PacejkaTire::f1_default();
 
-        // straight line, modest request -> passes through ~unchanged
+        // straight line, modest request -> passes through ~unchanged (the smooth
+        // saturation clips a fraction of a percent early, by design)
         let (fx0, fy0) = tire_limited_forces(&car, &tire, 50.0, 0.0, 5000.0);
-        assert!((fx0 - 5000.0).abs() < 1e-6, "fx {}", fx0);
+        assert!((fx0 - 5000.0).abs() / 5000.0 < 0.01, "fx {}", fx0);
         assert!(fy0.abs() < 1e-9, "fy {}", fy0);
 
         // high lateral acceleration saturates the friction budget, so the
@@ -1272,8 +1531,10 @@ mod tests {
 
         let sd = seven_dof_derivatives(&car, &tire, &state, &control, 0.0);
         let pm = point_mass_derivatives(&car, &state, &control, 0.0);
+        // On a straight the tire limit barely binds; the smooth saturation
+        // leaves a fraction-of-a-percent difference in the speed derivative.
         for j in 0..4 {
-            assert!((sd[j] - pm[j]).abs() < 1e-9, "component {}: {} vs {}", j, sd[j], pm[j]);
+            assert!((sd[j] - pm[j]).abs() < 0.01, "component {}: {} vs {}", j, sd[j], pm[j]);
         }
     }
 
@@ -1288,9 +1549,11 @@ mod tests {
             ..crate::gauss_newton::GaussNewtonConfig::default()
         };
         let result = opt.optimize_seven_dof(&tire, &gn);
-        // The tire-limit function saturates non-smoothly, so the FD-Jacobian GN
-        // reaches a sensible near-feasible solution rather than the tight
-        // tolerance the smooth point-mass model hits.
+        // The smooth tire model gives exact (autodiff) Jacobians, but the GN
+        // solver still cannot fully repair the QSS warm start — that start uses
+        // point-mass grip, which overestimates the load-sensitive 7-DOF grip, so
+        // the seed speed is mildly infeasible for the tire model. The result is
+        // a sensible near-feasible trajectory rather than a tight solve.
         assert!(result.lap_time.is_finite(), "lap time finite");
         assert!(result.speeds.iter().all(|&v| v > 0.0), "speeds positive");
         assert!(result.eq_violation < 1.0, "eq_viol {} should be small", result.eq_violation);

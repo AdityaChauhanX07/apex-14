@@ -51,6 +51,8 @@ pub trait Float:
     fn max(self, other: Self) -> Self;
     fn min(self, other: Self) -> Self;
     fn recip(self) -> Self;
+    fn exp(self) -> Self;
+    fn ln(self) -> Self;
 
     /// Returns the underlying real value, for branching in physics code.
     fn real_value(&self) -> f64;
@@ -137,6 +139,14 @@ impl Float for f64 {
         f64::recip(self)
     }
 
+    fn exp(self) -> Self {
+        f64::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f64::ln(self)
+    }
+
     fn real_value(&self) -> f64 {
         *self
     }
@@ -201,6 +211,14 @@ impl Float for Dual {
 
     fn recip(self) -> Self {
         Dual::recip(self)
+    }
+
+    fn exp(self) -> Self {
+        Dual::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        Dual::ln(self)
     }
 
     fn real_value(&self) -> f64 {

@@ -4,8 +4,28 @@
 //! scaled so the resultant force vector stays within the friction circle. This
 //! captures the core behavior that using grip in one direction reduces the grip
 //! available in the other.
+//!
+//! Two variants are provided: [`PacejkaTire::combined_forces`] uses a hard
+//! if/else clamp at the friction boundary (a kink in the derivative), while
+//! [`PacejkaTire::combined_forces_smooth`] uses a C¹-continuous saturation that
+//! is differentiable everywhere — essential for gradient-based optimization.
+
+use apex_math::Float;
 
 use super::pacejka::PacejkaTire;
+
+/// Numerically stable smooth minimum of `a` and `b`.
+///
+/// `smooth_min(a, b, k) = -ln(e^(-k·a) + e^(-k·b)) / k`, evaluated via the
+/// log-sum-exp trick so it never overflows. Larger `sharpness` makes it
+/// approach the hard `min`. C∞ continuous.
+pub fn smooth_min<T: Float>(a: T, b: T, sharpness: T) -> T {
+    let ka = -sharpness * a;
+    let kb = -sharpness * b;
+    let m = ka.max(kb);
+    let lse = m + ((ka - m).exp() + (kb - m).exp()).ln();
+    -lse / sharpness
+}
 
 /// Result of a combined slip tire force computation.
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +116,95 @@ impl PacejkaTire {
                 grip_utilization,
             }
         }
+    }
+
+    /// Compute combined tire forces using a smooth (C¹-continuous) friction limit.
+    ///
+    /// Instead of the hard if/else branch at the friction circle boundary, this
+    /// uses a smooth saturation of the resultant force magnitude, so the result
+    /// (and its derivative) is continuous across the grip-limit transition. This
+    /// is critical for gradient-based optimization.
+    pub fn combined_forces_smooth(
+        &self,
+        slip_angle: f64,
+        slip_ratio: f64,
+        fz: f64,
+    ) -> CombinedSlipResult {
+        if fz <= 0.0 {
+            return CombinedSlipResult {
+                fy: 0.0,
+                fx: 0.0,
+                fy_pure: 0.0,
+                fx_pure: 0.0,
+                grip_utilization: 0.0,
+            };
+        }
+
+        let fx_pure = self.longitudinal_force(slip_ratio, fz);
+        let fy_pure = self.lateral_force(slip_angle, fz);
+
+        let mu_avg = 0.5
+            * (self.effective_mu(self.lateral.mu, fz)
+                + self.effective_mu(self.longitudinal.mu, fz));
+        let f_max = mu_avg * fz;
+
+        let r = (fx_pure * fx_pure + fy_pure * fy_pure).sqrt();
+        let grip_utilization = if f_max > 0.0 { r / f_max } else { 0.0 };
+
+        if r < 1e-10 || f_max <= 0.0 {
+            return CombinedSlipResult {
+                fy: fy_pure,
+                fx: fx_pure,
+                fy_pure,
+                fx_pure,
+                grip_utilization,
+            };
+        }
+
+        // smooth saturation: r_limited approaches f_max as r grows, C∞ smooth
+        let r_limited = smooth_min(r, f_max, 10.0 / f_max);
+        let scale = r_limited / r;
+        CombinedSlipResult {
+            fy: fy_pure * scale,
+            fx: fx_pure * scale,
+            fy_pure,
+            fx_pure,
+            grip_utilization,
+        }
+    }
+
+    /// Generic, autodiff-ready smooth combined forces. Returns `(fx, fy)`.
+    pub fn combined_forces_smooth_generic<T: Float>(
+        &self,
+        slip_angle: T,
+        slip_ratio: T,
+        fz: T,
+    ) -> (T, T) {
+        if fz.real_value() <= 0.0 {
+            return (T::zero(), T::zero());
+        }
+
+        let fx_pure = self.longitudinal_force_generic(slip_ratio, fz);
+        let fy_pure = self.lateral_force_generic(slip_angle, fz);
+
+        let fz_nom = T::from_f64(self.fz_nominal);
+        let load_sens = T::from_f64(self.load_sensitivity);
+        let ratio = (fz - fz_nom) / fz_nom;
+        let mu_lat = (T::from_f64(self.lateral.mu) * (T::one() - load_sens * ratio)).max(T::zero());
+        let mu_lon =
+            (T::from_f64(self.longitudinal.mu) * (T::one() - load_sens * ratio)).max(T::zero());
+        let mu_avg = (mu_lat + mu_lon) * T::from_f64(0.5);
+        let f_max = mu_avg * fz;
+
+        let r = (fx_pure * fx_pure + fy_pure * fy_pure).sqrt();
+        if r.real_value() < 1e-10 || f_max.real_value() <= 0.0 {
+            return (fx_pure, fy_pure);
+        }
+
+        let sharpness = T::from_f64(10.0) / f_max;
+        let r_limited = smooth_min(r, f_max, sharpness);
+        let scale = r_limited / r;
+        (fx_pure * scale, fy_pure * scale)
     }
 }
 
@@ -234,5 +343,79 @@ mod tests {
         let scaled = tire.combined_forces(0.15, 0.15, fz);
         assert_eq!(scaled.fy_pure, tire.lateral_force(0.15, fz));
         assert_eq!(scaled.fx_pure, tire.longitudinal_force(0.15, fz));
+    }
+
+    // --- smooth saturation tests ---
+
+    use apex_math::Dual;
+
+    #[test]
+    fn smooth_matches_hard_within_and_clamps_outside() {
+        let tire = PacejkaTire::f1_default();
+        let fz = 4000.0;
+        let f_max = 0.5
+            * (tire.effective_mu(tire.lateral.mu, fz) + tire.effective_mu(tire.longitudinal.mu, fz))
+            * fz;
+
+        // well within the circle: smooth ≈ hard within 5%
+        let lo_smooth = tire.combined_forces_smooth(0.01, 0.0, fz);
+        let lo_hard = tire.combined_forces(0.01, 0.0, fz);
+        assert!(
+            (lo_smooth.fy - lo_hard.fy).abs() <= 0.05 * lo_hard.fy.abs().max(1.0),
+            "low slip: smooth {} vs hard {}",
+            lo_smooth.fy,
+            lo_hard.fy
+        );
+
+        // well past the limit: both resultants approach f_max
+        let hi_smooth = tire.combined_forces_smooth(0.4, 0.4, fz);
+        let hi_hard = tire.combined_forces(0.4, 0.4, fz);
+        let r_smooth = (hi_smooth.fx * hi_smooth.fx + hi_smooth.fy * hi_smooth.fy).sqrt();
+        let r_hard = (hi_hard.fx * hi_hard.fx + hi_hard.fy * hi_hard.fy).sqrt();
+        assert!((r_hard - f_max).abs() < 1.0, "hard resultant {} vs f_max {}", r_hard, f_max);
+        assert!(r_smooth <= f_max + 1.0, "smooth resultant {} exceeds f_max {}", r_smooth, f_max);
+        assert!(r_smooth > 0.6 * f_max, "smooth resultant {} too low", r_smooth);
+    }
+
+    #[test]
+    fn smooth_is_differentiable_at_grip_limit() {
+        let tire = PacejkaTire::f1_default();
+        let fz = 4000.0;
+        // operate near the grip limit (where the hard model has a kink)
+        let alpha0 = 0.12;
+
+        let (_fx, fy) = tire.combined_forces_smooth_generic(
+            Dual::variable(alpha0),
+            Dual::constant(0.05),
+            Dual::constant(fz),
+        );
+        assert!(fy.dual.is_finite(), "derivative not finite");
+
+        // compare with central finite difference of the f64 smooth function
+        let h = 1e-6;
+        let fy_p = tire.combined_forces_smooth(alpha0 + h, 0.05, fz).fy;
+        let fy_m = tire.combined_forces_smooth(alpha0 - h, 0.05, fz).fy;
+        let fd = (fy_p - fy_m) / (2.0 * h);
+        assert!(
+            (fy.dual - fd).abs() / fd.abs().max(1.0) < 1e-3,
+            "autodiff {} vs fd {}",
+            fy.dual,
+            fd
+        );
+    }
+
+    #[test]
+    fn smooth_preserves_force_direction() {
+        let tire = PacejkaTire::f1_default();
+        let fz = 4000.0;
+        let s = tire.combined_forces_smooth(0.1, 0.05, fz);
+        let h = tire.combined_forces(0.1, 0.05, fz);
+        // scaling preserves direction: Fy/Fx ratio identical
+        assert!(
+            ((s.fy / s.fx) - (h.fy / h.fx)).abs() < 1e-9,
+            "direction differs: smooth {} hard {}",
+            s.fy / s.fx,
+            h.fy / h.fx
+        );
     }
 }

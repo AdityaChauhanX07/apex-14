@@ -12,4 +12,4 @@ pub use car_params::CarParams;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, QssResult};
 pub use seven_dof::SevenDofModel;
-pub use tire::{CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
+pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};

@@ -3,5 +3,5 @@
 pub mod combined_slip;
 pub mod pacejka;
 
-pub use combined_slip::CombinedSlipResult;
+pub use combined_slip::{smooth_min, CombinedSlipResult};
 pub use pacejka::{PacejkaCoeffs, PacejkaTire};

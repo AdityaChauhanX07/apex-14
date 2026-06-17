@@ -144,6 +144,23 @@ impl Dual {
             dual: -self.dual / (self.real * self.real),
         }
     }
+
+    /// Exponential, with derivative `a' · exp(a)`.
+    pub fn exp(self) -> Dual {
+        let e = self.real.exp();
+        Dual {
+            real: e,
+            dual: self.dual * e,
+        }
+    }
+
+    /// Natural logarithm, with derivative `a' / a`.
+    pub fn ln(self) -> Dual {
+        Dual {
+            real: self.real.ln(),
+            dual: self.dual / self.real,
+        }
+    }
 }
 
 impl Add for Dual {
@@ -479,6 +496,23 @@ mod tests {
         let x = Dual::variable(2.0);
         let r = x.recip();
         assert!(approx_eq_dual(r, Dual::new(0.5, -0.25), TOL));
+    }
+
+    #[test]
+    fn deriv_exp() {
+        // d/dx exp(x) = exp(x); at x = 1 -> e
+        let x = Dual::variable(1.0);
+        let r = x.exp();
+        let e = 1.0_f64.exp();
+        assert!(approx_eq_dual(r, Dual::new(e, e), TOL));
+    }
+
+    #[test]
+    fn deriv_ln() {
+        // d/dx ln(x) = 1/x; at x = 2 -> 0.5
+        let x = Dual::variable(2.0);
+        let r = x.ln();
+        assert!(approx_eq_dual(r, Dual::new(2.0_f64.ln(), 0.5), TOL));
     }
 
     #[test]
