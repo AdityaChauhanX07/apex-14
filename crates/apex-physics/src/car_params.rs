@@ -60,6 +60,16 @@ pub struct CarParams {
     pub brake_bias_front: f64,
     /// Fraction of drive torque to the rear axle (0.0 = FWD, 1.0 = RWD, 0.5 = AWD).
     pub drive_distribution: f64,
+
+    // 14-DOF chassis additions
+    /// Unsprung mass per corner (kg) — wheel + upright + brake assembly.
+    pub unsprung_mass: f64,
+    /// Tire radial (vertical) stiffness (N/m).
+    pub tire_radial_stiffness: f64,
+    /// Roll moment of inertia `I_xx` (kg·m²).
+    pub inertia_xx: f64,
+    /// Pitch moment of inertia `I_yy` (kg·m²).
+    pub inertia_yy: f64,
 }
 
 impl Default for CarParams {
@@ -86,6 +96,10 @@ impl Default for CarParams {
             track_width_rear: 1.60,
             brake_bias_front: 0.60,
             drive_distribution: 1.0, // rear-wheel drive (F1 is RWD)
+            unsprung_mass: 15.0,
+            tire_radial_stiffness: 250_000.0,
+            inertia_xx: 400.0,
+            inertia_yy: 1400.0,
         }
     }
 }
