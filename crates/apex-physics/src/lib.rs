@@ -5,6 +5,7 @@ pub mod car_params;
 pub mod point_mass;
 pub mod qss;
 pub mod seven_dof;
+pub mod suspension;
 pub mod tire;
 
 pub use bicycle::BicycleModel;
@@ -12,4 +13,5 @@ pub use car_params::CarParams;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
 pub use seven_dof::SevenDofModel;
+pub use suspension::{AntiRollBar, SuspensionParams, SuspensionSystem};
 pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
