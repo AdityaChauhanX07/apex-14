@@ -6,7 +6,7 @@
 
 Apex-14 takes a racetrack definition and a mathematical model of an F1 car and computes the
 theoretical minimum lap time along with the exact racing line required to achieve it. It couples a
-multi-fidelity vehicle dynamics solver — ranging from a 2-DOF point mass up to a planned 14-DOF full
+multi-fidelity vehicle dynamics solver — ranging from a 2-DOF point mass up to a 14-DOF full
 chassis — with a direct collocation trajectory optimizer. Everything is built from first principles:
 no physics engine, no linear algebra crate, no off-the-shelf optimizer. The tire model, automatic
 differentiation, sparse matrices, ODE integrator, and nonlinear program solver are all implemented in
@@ -16,6 +16,7 @@ this repository.
 
 - Pacejka Magic Formula tire model with combined slip (friction ellipse) and load sensitivity
 - 4th-order Runge-Kutta integrator with fixed-size arrays and zero-allocation inner loops
+- Dormand-Prince RK45 adaptive integrator with embedded error estimation and step-size control
 - Forward-mode automatic differentiation engine using dual numbers
 - Generic `Float` trait — the same physics code computes forces (`f64`) and exact Jacobians (`Dual`)
 - Direct collocation with trapezoidal defects for trajectory optimization
@@ -33,7 +34,7 @@ so results can be validated at low fidelity before adding complexity.
 | Point Mass   | 2    | `[s, n, v, alpha]`                               | Curvilinear coordinates, grip-circle limit               |
 | Bicycle      | 3    | `[X, Y, psi, vx, vy, omega_z]`                  | Single-track, per-axle loads, understeer gradient        |
 | Four-Wheel   | 7    | chassis (6) + four wheel speeds                  | Per-corner load transfer, combined-slip tire forces      |
-| Full Chassis | 14   | chassis + suspension + ride-height states        | Suspension, ride-height-sensitive aero — *In Development* |
+| Full Chassis | 14   | chassis + suspension + ride-height states        | Chassis heave/pitch/roll, progressive suspension, asymmetric dampers, anti-roll bars, ride-height-sensitive aero |
 
 ## Architecture
 
@@ -59,7 +60,9 @@ internal dependencies; everything else builds on it.
 
 Run `cargo run --release --bin simulate` to generate QSS lap times and SVG track visualizations for
 the oval, circle, Silverstone, and Monza circuits. Each track produces a CSV telemetry file and a
-speed-colored SVG of the racing line.
+speed-colored SVG of the racing line. It also runs a transient 14-DOF forward simulation around the
+oval, driving the full chassis model with a centerline-tracking controller and the adaptive RK45
+integrator.
 
 Run `cargo run --release --bin optimize` to run the collocation optimizer on the oval and circle
 tracks, comparing the augmented-Lagrangian and Gauss-Newton solvers side by side.
@@ -67,6 +70,9 @@ tracks, comparing the augmented-Lagrangian and Gauss-Newton solvers side by side
 Representative results:
 
 - Silverstone QSS lap time of approximately 68 s on the default car parameters.
+- The 14-DOF forward simulation completes a full oval lap with peak chassis attitudes of about 1.5°
+  roll, 0.3° pitch, and 35 mm of suspension travel — transient behavior the steady-state models
+  cannot capture.
 - On the circle, the Gauss-Newton optimizer converges to an equality-constraint violation of
   `2.6e-6` (a dynamically consistent trajectory).
 - Switching the collocation Jacobian from finite differences to forward-mode automatic
@@ -77,7 +83,7 @@ Representative results:
 ```sh
 cargo build --release
 
-cargo test --workspace          # 161 tests, zero warnings
+cargo test --workspace          # 207 tests, zero warnings
 
 cargo clippy -- -D warnings     # enforced zero-warning policy
 ```
@@ -87,18 +93,18 @@ cargo clippy -- -D warnings     # enforced zero-warning policy
 ```
 crates/
   apex-math          Vectors, 3x3 matrices, dual numbers, the Float trait, and CSR sparse matrices.
-  apex-integrator    Generic fixed-step RK4 ODE integrator and the OdeSystem trait.
+  apex-integrator    Fixed-step RK4 and adaptive Dormand-Prince RK45 ODE integrators, and the OdeSystem trait.
   apex-track         Track geometry: arc length, heading, curvature, queries, and circuit generators.
-  apex-physics       Car parameters, Pacejka tire models, QSS lap simulator, and vehicle dynamics models.
+  apex-physics       Car parameters, Pacejka tire models, QSS lap simulator, suspension, ride-height aero, and the 2/3/7/14-DOF vehicle dynamics models.
   apex-telemetry     CSV telemetry export and standalone SVG racing-line rendering.
   apex-optimizer     NLP definition, collocation formulation, augmented-Lagrangian and Gauss-Newton solvers.
 
 bins/
-  simulate           Runs the QSS lap simulator across several circuits and exports CSV + SVG.
+  simulate           Runs the QSS lap simulator across several circuits, a 14-DOF forward simulation, and exports CSV + SVG.
   optimize           Runs the collocation optimizer and compares solvers on the oval and circle.
 ```
 
-The workspace is approximately 7,937 lines of Rust across six library crates and two binaries.
+The workspace is approximately 11,236 lines of Rust across six library crates and two binaries.
 
 ## Mathematical References
 
@@ -110,7 +116,7 @@ The workspace is approximately 7,937 lines of Rust across six library crates and
 
 ## Roadmap
 
-- 14-DOF full chassis model with suspension and ride-height-sensitive aerodynamics
 - SQP solver upgrade for robust convergence on complex circuits
 - Adaptive mesh refinement for the collocation discretization
+- Full-lap 14-DOF trajectory optimization
 - Real-time telemetry dashboard
