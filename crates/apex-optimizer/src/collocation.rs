@@ -218,6 +218,71 @@ impl<'a> CollocationOptimizer<'a> {
         self.guess_from_speeds(s, v)
     }
 
+    /// Create an initial guess from an existing optimization result (for mesh
+    /// refinement warm-starting).
+    ///
+    /// Interpolates the result's per-node fields (speed, lateral offset, heading,
+    /// drive force, curvature command) onto this optimizer's mesh — which may
+    /// have a different node count — and recomputes `dt` from the new spacing.
+    pub fn initial_guess_from_result(&self, result: &OptimizationResult) -> Vec<f64> {
+        let n = self.config.n_nodes;
+        let s_fine = self.node_stations();
+        let src = &result.stations;
+
+        let v: Vec<f64> = s_fine
+            .iter()
+            .map(|&s| interp(src, &result.speeds, s).max(self.config.v_min))
+            .collect();
+        let nn: Vec<f64> = s_fine
+            .iter()
+            .map(|&s| interp(src, &result.offsets, s))
+            .collect();
+        let alpha: Vec<f64> = s_fine
+            .iter()
+            .map(|&s| interp(src, &result.headings, s))
+            .collect();
+        let f_drive: Vec<f64> = s_fine
+            .iter()
+            .map(|&s| interp(src, &result.drive_forces, s))
+            .collect();
+        let curvature_cmd: Vec<f64> = s_fine
+            .iter()
+            .map(|&s| interp(src, &result.curvature_cmds, s))
+            .collect();
+
+        let dt: Vec<f64> = (0..n - 1)
+            .map(|k| {
+                let ds = s_fine[k + 1] - s_fine[k];
+                let v_avg = 0.5 * (v[k] + v[k + 1]);
+                (ds / v_avg).clamp(self.config.dt_min, self.config.dt_max)
+            })
+            .collect();
+
+        self.pack(&UnpackedVars {
+            s: s_fine,
+            n: nn,
+            v,
+            alpha,
+            f_drive,
+            curvature_cmd,
+            dt,
+        })
+    }
+
+    /// Run the Gauss-Newton solver from an explicit initial guess `x0` (used for
+    /// mesh-refinement warm starts, where `x0` is interpolated from a coarser
+    /// solution rather than the QSS warm start).
+    pub fn optimize_gn_from(
+        &self,
+        x0: &[f64],
+        config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> OptimizationResult {
+        let problem = self.build_nlp_problem();
+        let evaluator = CollocationEvaluator { optimizer: self };
+        let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, x0, config);
+        self.extract_result_gn(&result)
+    }
+
     /// Unpack the decision variable vector into individual arrays.
     fn unpack(&self, x: &[f64]) -> UnpackedVars {
         let n = self.config.n_nodes;
