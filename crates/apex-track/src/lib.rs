@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Track representation and processing for Apex-14: raw point ingestion,
 //! arc-length/heading/curvature computation, parametric generators, and
 //! arc-length interpolation queries.

@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Vehicle dynamics models for Apex-14, from a 2-DOF point mass upward.
 
 pub mod aero;

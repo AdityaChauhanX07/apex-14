@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Trajectory optimization for Apex-14: NLP problem definition and an
 //! Augmented Lagrangian solver.
 

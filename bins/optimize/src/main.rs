@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Apex-14 collocation racing-line optimizer demo binary.
 //!
 //! Runs the Augmented Lagrangian (AL), Gauss-Newton (GN), and direct

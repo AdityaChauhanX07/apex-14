@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Telemetry export for Apex-14: writing simulation output to disk.
 
 pub mod csv_export;

@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Apex-14 Quasi-Steady-State lap simulator demo binary.
 
 use std::path::Path;
