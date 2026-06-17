@@ -200,6 +200,13 @@ fn silverstone_moves() -> Vec<Seg> {
     ]
 }
 
+/// Generate a simplified Silverstone Circuit layout.
+///
+/// Captures the essential geometry of the modern Grand Prix circuit: fast sweeps
+/// (Maggotts/Becketts), heavy braking zones (Stowe, Village), and long straights
+/// (Hangar, Wellington). Track width is 12m throughout.
+///
+/// Returns `(points, closed=true)`. Track length is approximately 5.89 km.
 pub fn silverstone_circuit() -> (Vec<TrackPoint>, bool) {
     // Close the loop on the Hangar straight and the following connector, then
     // scale to the real lap length (~1.07× — corner radii stay near design).
@@ -207,10 +214,7 @@ pub fn silverstone_circuit() -> (Vec<TrackPoint>, bool) {
     (scale_to_length(pts, 5891.0), true)
 }
 
-/// Generate a simplified Monza circuit — a very different character from Silverstone.
-/// Long straights, heavy braking chicanes, two Lesmo corners, Parabolica.
-/// Track length approximately 5.79 km.
-/// The Monza layout primitives (before closure and scaling).
+// The Monza layout primitives (before closure and scaling).
 fn monza_moves() -> Vec<Seg> {
     use Seg::*;
     vec![
@@ -235,6 +239,12 @@ fn monza_moves() -> Vec<Seg> {
     ]
 }
 
+/// Generate a simplified Monza circuit layout.
+///
+/// A power circuit with long straights, heavy braking chicanes, the two Lesmo
+/// corners, Ascari chicane, and Parabolica. Track width is 12m throughout.
+///
+/// Returns `(points, closed=true)`. Track length is approximately 5.79 km.
 pub fn monza_circuit() -> (Vec<TrackPoint>, bool) {
     // Close on the main straight and the post-Lesmo straight, then scale to the
     // real lap length (~0.94× — keeps the chicanes tight).
