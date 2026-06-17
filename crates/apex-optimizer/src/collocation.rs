@@ -309,6 +309,44 @@ impl<'a> CollocationOptimizer<'a> {
             converged: result.converged,
         }
     }
+
+    /// Run optimization using the sequential defect-correction (direct) solver.
+    pub fn optimize_direct(
+        &self,
+        config: &crate::direct_solver::DirectSolverConfig,
+    ) -> OptimizationResult {
+        let x0 = self.initial_guess();
+        let problem = self.build_nlp_problem();
+        let evaluator = CollocationEvaluator { optimizer: self };
+        let structure = crate::direct_solver::CollocationStructure {
+            n_nodes: self.config.n_nodes,
+            n_states: 4,
+            n_controls: 2,
+        };
+        let result = crate::direct_solver::solve_direct(
+            &problem, &evaluator, &x0, config, structure, self.track, self.car,
+        );
+        self.extract_result_direct(&result)
+    }
+
+    fn extract_result_direct(
+        &self,
+        result: &crate::direct_solver::DirectSolverResult,
+    ) -> OptimizationResult {
+        let vars = self.unpack(&result.x);
+        OptimizationResult {
+            speeds: vars.v.clone(),
+            offsets: vars.n.clone(),
+            headings: vars.alpha.clone(),
+            stations: vars.s.clone(),
+            drive_forces: vars.f_drive.clone(),
+            curvature_cmds: vars.curvature_cmd.clone(),
+            time_steps: vars.dt.clone(),
+            lap_time: result.objective,
+            eq_violation: result.eq_violation,
+            converged: result.converged,
+        }
+    }
 }
 
 /// Implements [`NlpEvaluator`] for the collocation problem.
@@ -563,7 +601,12 @@ impl CollocationEvaluator<'_, '_> {
 ///
 /// `state` is `[s, n, v, alpha]`, `control` is `[f_drive, curvature_cmd]`, and
 /// `kappa` is the track curvature at the node.
-fn point_mass_derivatives(car: &CarParams, state: &[f64; 4], control: &[f64; 2], kappa: f64) -> [f64; 4] {
+pub(crate) fn point_mass_derivatives(
+    car: &CarParams,
+    state: &[f64; 4],
+    control: &[f64; 2],
+    kappa: f64,
+) -> [f64; 4] {
     let n = state[1];
     let v = state[2];
     let alpha = state[3];

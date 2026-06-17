@@ -1,26 +1,28 @@
 //! Apex-14 collocation racing-line optimizer demo binary.
 //!
-//! Runs both the Augmented Lagrangian (AL) and Gauss-Newton (GN) solvers on
-//! each track and exports the (better) GN result.
+//! Runs the Augmented Lagrangian (AL), Gauss-Newton (GN), and direct
+//! defect-correction solvers on each track and exports the GN result.
 
 use std::path::Path;
 
 use apex_optimizer::{
-    CollocationConfig, CollocationOptimizer, GaussNewtonConfig, OptimizationResult, SolverConfig,
+    CollocationConfig, CollocationOptimizer, DirectSolverConfig, GaussNewtonConfig,
+    OptimizationResult, SolverConfig,
 };
 use apex_physics::{qss_lap_sim, CarParams};
 use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
-/// Per-track outcome: the QSS baseline and both solvers' results.
+/// Per-track outcome: the QSS baseline and the three solvers' results.
 struct Outcome {
     qss_lap: f64,
     al: OptimizationResult,
     gn: OptimizationResult,
+    direct: OptimizationResult,
 }
 
-/// Optimize one track with both solvers, print a summary, and export the GN
-/// result as CSV + SVG. File names are derived from `label`.
+/// Optimize one track with all three solvers, print a summary, and export the
+/// GN result as CSV + SVG. File names are derived from `label`.
 fn run_track(
     label: &str,
     track: &Track,
@@ -28,6 +30,7 @@ fn run_track(
     collocation: CollocationConfig,
     al_solver: &SolverConfig,
     gn_solver: &GaussNewtonConfig,
+    direct_solver: &DirectSolverConfig,
 ) -> Result<Outcome, Box<dyn std::error::Error>> {
     let slug = label.to_lowercase();
     let csv_path = format!("opt_{}_telemetry.csv", slug);
@@ -41,25 +44,35 @@ fn run_track(
 
     let al = optimizer.optimize(al_solver);
     let gn = optimizer.optimize_gn(gn_solver);
+    let direct = optimizer.optimize_direct(direct_solver);
 
     println!("  QSS baseline: {:.3}s", qss_lap);
     println!(
-        "  AL solver:  {:.3}s | eq_viol {:.2e} | converged: {}",
+        "  AL solver:     {:.3}s | eq_viol {:.2e} | converged: {}",
         al.lap_time, al.eq_violation, al.converged
     );
     println!(
-        "  GN solver:  {:.3}s | eq_viol {:.2e} | converged: {}",
+        "  GN solver:     {:.3}s | eq_viol {:.2e} | converged: {}",
         gn.lap_time, gn.eq_violation, gn.converged
     );
+    println!(
+        "  Direct solver: {:.3}s | eq_viol {:.2e} | converged: {}",
+        direct.lap_time, direct.eq_violation, direct.converged
+    );
 
-    // Export the GN result (the better-conditioned solution).
+    // Export the GN result (the best-conditioned solution overall).
     export_optimized(&gn, &csv_path)?;
     println!("  Telemetry exported to {}", csv_path);
     render_track_svg(Path::new(&svg_path), track, &gn.speeds, &svg_title)?;
     println!("  Track SVG exported to {}", svg_path);
     println!();
 
-    Ok(Outcome { qss_lap, al, gn })
+    Ok(Outcome {
+        qss_lap,
+        al,
+        gn,
+        direct,
+    })
 }
 
 /// Export the optimized racing line as columnar CSV.
@@ -102,6 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_interval: 0,
         ..GaussNewtonConfig::default()
     };
+    let direct_solver = DirectSolverConfig {
+        max_iterations: 200,
+        constraint_tol: 1e-3,
+        damping: 0.6,
+        print_interval: 0,
+    };
 
     // --- Oval track ---
     let (oval_pts, oval_closed) = apex_track::oval_track(500.0, 80.0, 12.0, 300);
@@ -111,7 +130,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: true,
         ..CollocationConfig::default()
     };
-    let oval = run_track("Oval", &oval, &car, oval_collocation, &al_solver, &gn_solver)?;
+    let oval = run_track(
+        "Oval",
+        &oval,
+        &car,
+        oval_collocation,
+        &al_solver,
+        &gn_solver,
+        &direct_solver,
+    )?;
 
     // --- Circle track ---
     let (circle_pts, circle_closed) = apex_track::circle_track(100.0, 12.0, 200);
@@ -128,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circle_collocation,
         &al_solver,
         &gn_solver,
+        &direct_solver,
     )?;
 
     // --- Comparison ---
@@ -140,12 +168,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn print_comparison(label: &str, o: &Outcome) {
     println!(
-        "{:7} QSS {:.3}s | AL {:.3}s ({:.1e}) | GN {:.3}s ({:.1e})",
+        "{:8} QSS {:.3}s | AL {:.3}s ({:.1e}) | GN {:.3}s ({:.1e}) | Direct {:.3}s ({:.1e})",
         format!("{}:", label),
         o.qss_lap,
         o.al.lap_time,
         o.al.eq_violation,
         o.gn.lap_time,
-        o.gn.eq_violation
+        o.gn.eq_violation,
+        o.direct.lap_time,
+        o.direct.eq_violation
     );
 }
