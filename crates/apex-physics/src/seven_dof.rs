@@ -62,7 +62,12 @@ impl OdeSystem<10, 3> for SevenDofModel<'_> {
         // Vertical loads from longitudinal (approx 0) and lateral (centripetal) accel.
         let ax_approx = 0.0;
         let ay_approx = vx_safe * omega_z;
-        let fz = p.corner_loads(vx_safe, ax_approx, ay_approx, self.roll_stiffness_front_fraction);
+        let fz = p.corner_loads(
+            vx_safe,
+            ax_approx,
+            ay_approx,
+            self.roll_stiffness_front_fraction,
+        );
 
         // Wheel layout: [FL, FR, RL, RR]
         let x_off = [lf, lf, -lr, -lr];
@@ -197,8 +202,16 @@ mod tests {
         let d = m.derivatives(&state, &control, 0.0);
 
         // rear wheels spin up from drive torque, fronts (no drive) stay ~0
-        assert!(d[8] > 0.0, "rear-left spin deriv {} should be positive", d[8]);
-        assert!(d[9] > 0.0, "rear-right spin deriv {} should be positive", d[9]);
+        assert!(
+            d[8] > 0.0,
+            "rear-left spin deriv {} should be positive",
+            d[8]
+        );
+        assert!(
+            d[9] > 0.0,
+            "rear-right spin deriv {} should be positive",
+            d[9]
+        );
         assert!(approx(d[6], 0.0, 1e-6), "front-left spin deriv {}", d[6]);
         assert!(approx(d[7], 0.0, 1e-6), "front-right spin deriv {}", d[7]);
 
@@ -225,11 +238,26 @@ mod tests {
 
         // every wheel decelerates under braking
         for k in 6..10 {
-            assert!(d[k] < 0.0, "wheel {} spin deriv {} should be negative", k, d[k]);
+            assert!(
+                d[k] < 0.0,
+                "wheel {} spin deriv {} should be negative",
+                k,
+                d[k]
+            );
         }
         // front brakes harder (60% bias) -> more negative
-        assert!(d[6] < d[8], "front-left {} should brake harder than rear-left {}", d[6], d[8]);
-        assert!(d[7] < d[9], "front-right {} should brake harder than rear-right {}", d[7], d[9]);
+        assert!(
+            d[6] < d[8],
+            "front-left {} should brake harder than rear-left {}",
+            d[6],
+            d[8]
+        );
+        assert!(
+            d[7] < d[9],
+            "front-right {} should brake harder than rear-right {}",
+            d[7],
+            d[9]
+        );
 
         // integrate: the car should slow significantly
         let mut s = state;
@@ -246,7 +274,8 @@ mod tests {
         let m = model(&params, &tire);
 
         // drive torque to roughly offset drag at 30 m/s
-        let drive = (params.drag_force(30.0) + params.rolling_resistance_force()) * params.wheel_radius;
+        let drive =
+            (params.drag_force(30.0) + params.rolling_resistance_force()) * params.wheel_radius;
         let control = [0.02, drive, 0.0];
 
         let mut s = rolling_state(30.0, params.wheel_radius);
@@ -258,7 +287,11 @@ mod tests {
         }
         // a left steer produces a positive yaw rate, and the car is turning
         assert!(s[5].abs() > 1e-3, "yaw rate {} should be nonzero", s[5]);
-        assert!(s[5] > 0.0, "left steer should give positive yaw rate, got {}", s[5]);
+        assert!(
+            s[5] > 0.0,
+            "left steer should give positive yaw rate, got {}",
+            s[5]
+        );
     }
 
     #[test]
@@ -268,20 +301,49 @@ mod tests {
 
         // no lateral accel -> left/right symmetric
         let flat = params.corner_loads(50.0, 0.0, 0.0, rsf);
-        assert!(approx(flat[0], flat[1], 1e-9), "FL {} FR {}", flat[0], flat[1]);
-        assert!(approx(flat[2], flat[3], 1e-9), "RL {} RR {}", flat[2], flat[3]);
+        assert!(
+            approx(flat[0], flat[1], 1e-9),
+            "FL {} FR {}",
+            flat[0],
+            flat[1]
+        );
+        assert!(
+            approx(flat[2], flat[3], 1e-9),
+            "RL {} RR {}",
+            flat[2],
+            flat[3]
+        );
 
         // total equals weight + downforce
         let total: f64 = flat.iter().sum();
         let expected = params.mass * GRAVITY + params.downforce(50.0);
-        assert!(approx(total, expected, 1e-6), "total {} vs {}", total, expected);
+        assert!(
+            approx(total, expected, 1e-6),
+            "total {} vs {}",
+            total,
+            expected
+        );
 
         // left turn (positive a_y) -> right wheels gain load
         let turning = params.corner_loads(50.0, 0.0, 15.0, rsf);
-        assert!(turning[1] > turning[0], "FR {} should exceed FL {}", turning[1], turning[0]);
-        assert!(turning[3] > turning[2], "RR {} should exceed RL {}", turning[3], turning[2]);
+        assert!(
+            turning[1] > turning[0],
+            "FR {} should exceed FL {}",
+            turning[1],
+            turning[0]
+        );
+        assert!(
+            turning[3] > turning[2],
+            "RR {} should exceed RL {}",
+            turning[3],
+            turning[2]
+        );
         let total_turn: f64 = turning.iter().sum();
-        assert!(approx(total_turn, expected, 1e-6), "turning total {}", total_turn);
+        assert!(
+            approx(total_turn, expected, 1e-6),
+            "turning total {}",
+            total_turn
+        );
     }
 
     #[test]

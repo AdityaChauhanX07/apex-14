@@ -148,7 +148,9 @@ impl<'a> CollocationOptimizer<'a> {
     fn node_stations(&self) -> Vec<f64> {
         let n = self.config.n_nodes;
         let length = self.track.total_length;
-        (0..n).map(|k| length * (k as f64) / ((n - 1) as f64)).collect()
+        (0..n)
+            .map(|k| length * (k as f64) / ((n - 1) as f64))
+            .collect()
     }
 
     /// Assemble a full decision vector from arc-length stations and a speed
@@ -303,7 +305,10 @@ impl<'a> CollocationOptimizer<'a> {
     }
 
     /// Run optimization using the Gauss-Newton solver.
-    pub fn optimize_gn(&self, config: &crate::gauss_newton::GaussNewtonConfig) -> OptimizationResult {
+    pub fn optimize_gn(
+        &self,
+        config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> OptimizationResult {
         let x0 = self.initial_guess();
         let problem = self.build_nlp_problem();
         let evaluator = CollocationEvaluator { optimizer: self };
@@ -344,7 +349,8 @@ impl<'a> CollocationOptimizer<'a> {
             optimizer: self,
             tire,
         };
-        let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, solver_config);
+        let result =
+            crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, solver_config);
         self.extract_result_gn(&result)
     }
 
@@ -478,7 +484,12 @@ impl NlpEvaluator for CollocationEvaluator<'_, '_> {
             let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
 
             let state_k = [vars.s[k], vars.n[k], vars.v[k], vars.alpha[k]];
-            let state_k1 = [vars.s[k + 1], vars.n[k + 1], vars.v[k + 1], vars.alpha[k + 1]];
+            let state_k1 = [
+                vars.s[k + 1],
+                vars.n[k + 1],
+                vars.v[k + 1],
+                vars.alpha[k + 1],
+            ];
             let control_k = [vars.f_drive[k], vars.curvature_cmd[k]];
             let control_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
 
@@ -496,7 +507,9 @@ impl NlpEvaluator for CollocationEvaluator<'_, '_> {
             constraints.push(vars.s[n - 1] - opt.track.total_length);
             constraints.push(vars.n[n - 1] - vars.n[0]);
             constraints.push(vars.v[n - 1] - vars.v[0]);
-            constraints.push(apex_track::normalize_angle(vars.alpha[n - 1] - vars.alpha[0]));
+            constraints.push(apex_track::normalize_angle(
+                vars.alpha[n - 1] - vars.alpha[0],
+            ));
         }
 
         constraints
@@ -596,8 +609,14 @@ impl CollocationEvaluator<'_, '_> {
             ];
 
             for (wrt, &col) in global_indices.iter().enumerate() {
-                let defects =
-                    defect_with_dual(opt.car, &node_k, &node_k1, vars.dt[k], [kappa_k, kappa_k1], wrt);
+                let defects = defect_with_dual(
+                    opt.car,
+                    &node_k,
+                    &node_k1,
+                    vars.dt[k],
+                    [kappa_k, kappa_k1],
+                    wrt,
+                );
                 for (j, d) in defects.iter().enumerate() {
                     if d.dual.abs() > 1e-15 {
                         builder.add(4 * k + j, col, d.dual);
@@ -670,12 +689,27 @@ impl CollocationEvaluator<'_, '_> {
             let fd = vars.f_drive[k];
             let cv = vars.curvature_cmd[k];
             if opt.car.max_grip_force(v) > 0.0 {
-                let dv =
-                    grip_constraint_generic(opt.car, Dual::variable(v), Dual::constant(fd), Dual::constant(cv)).dual;
-                let dfd =
-                    grip_constraint_generic(opt.car, Dual::constant(v), Dual::variable(fd), Dual::constant(cv)).dual;
-                let dcv =
-                    grip_constraint_generic(opt.car, Dual::constant(v), Dual::constant(fd), Dual::variable(cv)).dual;
+                let dv = grip_constraint_generic(
+                    opt.car,
+                    Dual::variable(v),
+                    Dual::constant(fd),
+                    Dual::constant(cv),
+                )
+                .dual;
+                let dfd = grip_constraint_generic(
+                    opt.car,
+                    Dual::constant(v),
+                    Dual::variable(fd),
+                    Dual::constant(cv),
+                )
+                .dual;
+                let dcv = grip_constraint_generic(
+                    opt.car,
+                    Dual::constant(v),
+                    Dual::constant(fd),
+                    Dual::variable(cv),
+                )
+                .dual;
                 if dv.abs() > 1e-15 {
                     builder.add(row + 2, 2 * n + k, dv);
                 }
@@ -730,8 +764,7 @@ fn point_mass_derivatives_generic<T: Float>(
     curvature_cmd: T,
     kappa: T,
 ) -> [T; 4] {
-    let f_drag =
-        T::from_f64(0.5 * car.air_density * car.drag_coeff * car.frontal_area) * v * v;
+    let f_drag = T::from_f64(0.5 * car.air_density * car.drag_coeff * car.frontal_area) * v * v;
     let f_roll = T::from_f64(car.rolling_resistance_force());
     let v_safe = v.max(T::from_f64(0.1));
     let mass = T::from_f64(car.mass);
@@ -914,7 +947,8 @@ fn available_grip_generic<T: Float>(
     let mu_blend = T::from_f64(0.5 * (tire.lateral.mu + tire.longitudinal.mu));
     let fz_nom = T::from_f64(tire.fz_nominal);
     let load_sens = T::from_f64(tire.load_sensitivity);
-    let eff = |fz: T| (mu_blend * (T::one() - load_sens * (fz - fz_nom) / fz_nom)).max(T::zero()) * fz;
+    let eff =
+        |fz: T| (mu_blend * (T::one() - load_sens * (fz - fz_nom) / fz_nom)).max(T::zero()) * fz;
     eff(fz_fl) + eff(fz_fr) + eff(fz_rl) + eff(fz_rr)
 }
 
@@ -1056,7 +1090,12 @@ impl NlpEvaluator for SevenDofEvaluator<'_, '_> {
             let kappa_k = opt.track.curvature_at(vars.s[k]);
             let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
             let state_k = [vars.s[k], vars.n[k], vars.v[k], vars.alpha[k]];
-            let state_k1 = [vars.s[k + 1], vars.n[k + 1], vars.v[k + 1], vars.alpha[k + 1]];
+            let state_k1 = [
+                vars.s[k + 1],
+                vars.n[k + 1],
+                vars.v[k + 1],
+                vars.alpha[k + 1],
+            ];
             let ctrl_k = [vars.f_drive[k], vars.curvature_cmd[k]];
             let ctrl_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
 
@@ -1073,7 +1112,9 @@ impl NlpEvaluator for SevenDofEvaluator<'_, '_> {
             c.push(vars.s[n - 1] - opt.track.total_length);
             c.push(vars.n[n - 1] - vars.n[0]);
             c.push(vars.v[n - 1] - vars.v[0]);
-            c.push(apex_track::normalize_angle(vars.alpha[n - 1] - vars.alpha[0]));
+            c.push(apex_track::normalize_angle(
+                vars.alpha[n - 1] - vars.alpha[0],
+            ));
         }
 
         c
@@ -1178,9 +1219,12 @@ impl SevenDofEvaluator<'_, '_> {
             let dfk = seven_dof_dynamics_dkappa(opt.car, self.tire, &node_k, kappa_k);
             let dfk1 = seven_dof_dynamics_dkappa(opt.car, self.tire, &node_k1, kappa_k1);
             let h = 1e-3;
-            let dkk = (opt.track.curvature_at(node_k[0] + h) - opt.track.curvature_at(node_k[0] - h)) / (2.0 * h);
-            let dkk1 =
-                (opt.track.curvature_at(node_k1[0] + h) - opt.track.curvature_at(node_k1[0] - h)) / (2.0 * h);
+            let dkk = (opt.track.curvature_at(node_k[0] + h)
+                - opt.track.curvature_at(node_k[0] - h))
+                / (2.0 * h);
+            let dkk1 = (opt.track.curvature_at(node_k1[0] + h)
+                - opt.track.curvature_at(node_k1[0] - h))
+                / (2.0 * h);
             for j in 0..4 {
                 let ck = -half_dt * dfk[j] * dkk;
                 if ck.abs() > 1e-15 {
@@ -1263,7 +1307,12 @@ impl SevenDofEvaluator<'_, '_> {
 }
 
 /// Partial derivative of the 7-DOF dynamics w.r.t. track curvature `kappa`.
-fn seven_dof_dynamics_dkappa(car: &CarParams, tire: &PacejkaTire, node: &[f64; 6], kappa: f64) -> [f64; 4] {
+fn seven_dof_dynamics_dkappa(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    node: &[f64; 6],
+    kappa: f64,
+) -> [f64; 4] {
     let state = [
         Dual::constant(node[0]),
         Dual::constant(node[1]),
@@ -1271,7 +1320,8 @@ fn seven_dof_dynamics_dkappa(car: &CarParams, tire: &PacejkaTire, node: &[f64; 6
         Dual::constant(node[3]),
     ];
     let control = [Dual::constant(node[4]), Dual::constant(node[5])];
-    let f = seven_dof_derivatives_generic::<Dual>(car, tire, &state, &control, Dual::variable(kappa));
+    let f =
+        seven_dof_derivatives_generic::<Dual>(car, tire, &state, &control, Dual::variable(kappa));
     [f[0].dual, f[1].dual, f[2].dual, f[3].dual]
 }
 
@@ -1294,14 +1344,36 @@ fn seven_dof_defect_with_dual(
         }
     };
 
-    let state_k = [mk(node_k[0], 0), mk(node_k[1], 1), mk(node_k[2], 2), mk(node_k[3], 3)];
+    let state_k = [
+        mk(node_k[0], 0),
+        mk(node_k[1], 1),
+        mk(node_k[2], 2),
+        mk(node_k[3], 3),
+    ];
     let ctrl_k = [mk(node_k[4], 4), mk(node_k[5], 5)];
-    let state_k1 = [mk(node_k1[0], 6), mk(node_k1[1], 7), mk(node_k1[2], 8), mk(node_k1[3], 9)];
+    let state_k1 = [
+        mk(node_k1[0], 6),
+        mk(node_k1[1], 7),
+        mk(node_k1[2], 8),
+        mk(node_k1[3], 9),
+    ];
     let ctrl_k1 = [mk(node_k1[4], 10), mk(node_k1[5], 11)];
     let dt_d = mk(dt, 12);
 
-    let f_k = seven_dof_derivatives_generic::<Dual>(car, tire, &state_k, &ctrl_k, Dual::constant(kappas[0]));
-    let f_k1 = seven_dof_derivatives_generic::<Dual>(car, tire, &state_k1, &ctrl_k1, Dual::constant(kappas[1]));
+    let f_k = seven_dof_derivatives_generic::<Dual>(
+        car,
+        tire,
+        &state_k,
+        &ctrl_k,
+        Dual::constant(kappas[0]),
+    );
+    let f_k1 = seven_dof_derivatives_generic::<Dual>(
+        car,
+        tire,
+        &state_k1,
+        &ctrl_k1,
+        Dual::constant(kappas[1]),
+    );
 
     let half = dt_d * Dual::constant(0.5);
     std::array::from_fn(|j| state_k1[j] - state_k[j] - half * (f_k[j] + f_k1[j]))
@@ -1568,7 +1640,11 @@ mod tests {
         // QSS warm start is approximately dynamically consistent
         let max_defect = eq.iter().fold(0.0_f64, |m, &c| m.max(c.abs()));
         assert!(max_defect.is_finite(), "defect not finite");
-        assert!(max_defect < 100.0, "defect {} unexpectedly large", max_defect);
+        assert!(
+            max_defect < 100.0,
+            "defect {} unexpectedly large",
+            max_defect
+        );
     }
 
     #[test]
@@ -1665,7 +1741,10 @@ mod tests {
         assert_eq!(ad.nrows(), fd.nrows());
         assert_eq!(ad.ncols(), fd.ncols());
         if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
-            panic!("eq jacobian mismatch at ({}, {}): autodiff {} vs fd {}", i, j, a, b);
+            panic!(
+                "eq jacobian mismatch at ({}, {}): autodiff {} vs fd {}",
+                i, j, a, b
+            );
         }
     }
 
@@ -1684,7 +1763,10 @@ mod tests {
         assert_eq!(ad.nrows(), fd.nrows());
         assert_eq!(ad.ncols(), fd.ncols());
         if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
-            panic!("ineq jacobian mismatch at ({}, {}): autodiff {} vs fd {}", i, j, a, b);
+            panic!(
+                "ineq jacobian mismatch at ({}, {}): autodiff {} vs fd {}",
+                i, j, a, b
+            );
         }
     }
 
@@ -1804,7 +1886,13 @@ mod tests {
         // On a straight the tire limit barely binds; the smooth saturation
         // leaves a fraction-of-a-percent difference in the speed derivative.
         for j in 0..4 {
-            assert!((sd[j] - pm[j]).abs() < 0.01, "component {}: {} vs {}", j, sd[j], pm[j]);
+            assert!(
+                (sd[j] - pm[j]).abs() < 0.01,
+                "component {}: {} vs {}",
+                j,
+                sd[j],
+                pm[j]
+            );
         }
     }
 
@@ -1826,7 +1914,11 @@ mod tests {
         // a sensible near-feasible trajectory rather than a tight solve.
         assert!(result.lap_time.is_finite(), "lap time finite");
         assert!(result.speeds.iter().all(|&v| v > 0.0), "speeds positive");
-        assert!(result.eq_violation < 1.0, "eq_viol {} should be small", result.eq_violation);
+        assert!(
+            result.eq_violation < 1.0,
+            "eq_viol {} should be small",
+            result.eq_violation
+        );
     }
 
     #[test]
@@ -1880,7 +1972,9 @@ mod tests {
         // the grip constraint is every third inequality (index 3k+2)
         let n = opt.config.n_nodes;
         let max_grip_viol = |c: &[f64]| {
-            (0..n).map(|k| c[3 * k + 2].max(0.0)).fold(0.0_f64, f64::max)
+            (0..n)
+                .map(|k| c[3 * k + 2].max(0.0))
+                .fold(0.0_f64, f64::max)
         };
 
         let grip_circle = max_grip_viol(&ineq_grip);
@@ -1907,7 +2001,11 @@ mod tests {
         let seven = available_grip_generic::<f64>(&car, &tire, speed, 0.0, 0.0);
 
         // positive and finite
-        assert!(g0.is_finite() && g0 > 0.0, "budget {} must be positive finite", g0);
+        assert!(
+            g0.is_finite() && g0 > 0.0,
+            "budget {} must be positive finite",
+            g0
+        );
 
         // comparable to the 7-DOF value: ride-height aero shifts the downforce
         // (the equilibrium ride height sits below design, trimming downforce a
@@ -1948,7 +2046,11 @@ mod tests {
         let sd = opt.optimize_seven_dof(&tire, &gn);
         let fd = opt.optimize_fourteen_dof(&tire, &susp, &aero, &gn);
 
-        assert!(fd.lap_time.is_finite() && fd.lap_time > 0.0, "14-DOF lap {} finite", fd.lap_time);
+        assert!(
+            fd.lap_time.is_finite() && fd.lap_time > 0.0,
+            "14-DOF lap {} finite",
+            fd.lap_time
+        );
         assert!(fd.speeds.iter().all(|&v| v > 0.0), "14-DOF speeds positive");
 
         // the ride-height-coupled grip budget yields a different optimum than the
@@ -1991,9 +2093,15 @@ mod tests {
 
         let (result, tele) = opt.optimize_fourteen_dof_full(&tire, &susp, &aero, &gn);
 
-        assert!(result.lap_time.is_finite() && result.lap_time > 0.0, "opt lap finite");
+        assert!(
+            result.lap_time.is_finite() && result.lap_time > 0.0,
+            "opt lap finite"
+        );
         assert!(!tele.time.is_empty(), "telemetry produced");
-        assert!(tele.lap_time.is_finite() && tele.lap_time > 0.0, "telemetry lap finite");
+        assert!(
+            tele.lap_time.is_finite() && tele.lap_time > 0.0,
+            "telemetry lap finite"
+        );
 
         // the forward-simulated lap should track the optimized lap reasonably
         // (the controller is not a perfect tracker)

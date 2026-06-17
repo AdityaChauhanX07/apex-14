@@ -157,7 +157,11 @@ mod tests {
         // recompute the slip angles the model uses
         let alpha_front = delta - (0.0_f64 / vx).atan();
         let alpha_rear = -(0.0_f64 / vx).atan();
-        assert!(approx(alpha_front, 0.05, 1e-9), "alpha_front {}", alpha_front);
+        assert!(
+            approx(alpha_front, 0.05, 1e-9),
+            "alpha_front {}",
+            alpha_front
+        );
         assert!(approx(alpha_rear, 0.0, 1e-12), "alpha_rear {}", alpha_rear);
 
         // front tire loaded, rear near zero
@@ -259,12 +263,20 @@ mod tests {
         // static at rest: total = weight, no downforce
         let (ff0, fr0) = params.axle_loads(0.0, 0.0);
         let weight = params.mass * GRAVITY;
-        assert!(approx(ff0 + fr0, weight, 1e-6), "static total {}", ff0 + fr0);
+        assert!(
+            approx(ff0 + fr0, weight, 1e-6),
+            "static total {}",
+            ff0 + fr0
+        );
 
         // at speed with no accel: total = weight + downforce
         let (ff1, fr1) = params.axle_loads(50.0, 0.0);
         let expected = weight + params.downforce(50.0);
-        assert!(approx(ff1 + fr1, expected, 1e-6), "loaded total {}", ff1 + fr1);
+        assert!(
+            approx(ff1 + fr1, expected, 1e-6),
+            "loaded total {}",
+            ff1 + fr1
+        );
 
         // braking shifts load to the front
         let (ff_brake, fr_brake) = params.axle_loads(50.0, -10.0);

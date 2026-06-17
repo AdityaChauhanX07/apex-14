@@ -126,11 +126,8 @@ mod tests {
         let speed = [10.0, 20.0, 30.0, 40.0, 50.0];
         let path = temp_path("apex_test_columns.csv");
 
-        export_columns_csv(
-            &path,
-            &[("distance", &distance[..]), ("speed", &speed[..])],
-        )
-        .expect("export");
+        export_columns_csv(&path, &[("distance", &distance[..]), ("speed", &speed[..])])
+            .expect("export");
 
         let contents = std::fs::read_to_string(&path).expect("read");
         let lines: Vec<&str> = contents.lines().collect();

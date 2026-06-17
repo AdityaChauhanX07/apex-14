@@ -349,7 +349,12 @@ mod tests {
             lower_bounds: vec![f64::NEG_INFINITY; 2],
             upper_bounds: vec![f64::INFINITY; 2],
         };
-        let result = solve_gauss_newton(&problem, &Quadratic, &[0.0, 0.0], &GaussNewtonConfig::default());
+        let result = solve_gauss_newton(
+            &problem,
+            &Quadratic,
+            &[0.0, 0.0],
+            &GaussNewtonConfig::default(),
+        );
         assert!((result.x[0] - 3.0).abs() < 1e-2, "x0 {}", result.x[0]);
         assert!((result.x[1] - 5.0).abs() < 1e-2, "x1 {}", result.x[1]);
         assert!(result.converged);

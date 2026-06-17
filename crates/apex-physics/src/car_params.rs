@@ -170,12 +170,11 @@ impl CarParams {
         let (front_total, rear_total) = self.axle_loads(speed, longitudinal_accel);
 
         // Lateral load transfer per axle (positive a_y -> right wheels gain).
-        let dfz_front =
-            self.mass * lateral_accel * self.cog_height * roll_stiffness_front_fraction
-                / self.track_width_front;
-        let dfz_rear = self.mass * lateral_accel * self.cog_height
-            * (1.0 - roll_stiffness_front_fraction)
-            / self.track_width_rear;
+        let dfz_front = self.mass * lateral_accel * self.cog_height * roll_stiffness_front_fraction
+            / self.track_width_front;
+        let dfz_rear =
+            self.mass * lateral_accel * self.cog_height * (1.0 - roll_stiffness_front_fraction)
+                / self.track_width_rear;
 
         let fz_fl = (front_total / 2.0 - dfz_front).max(0.0);
         let fz_fr = (front_total / 2.0 + dfz_front).max(0.0);

@@ -163,7 +163,10 @@ pub fn solve_direct(
 
         if config.print_interval > 0 && iter % config.print_interval == 0 {
             let obj: f64 = x[dt_off..].iter().sum();
-            println!("direct {:4} | obj {:.6} | eq_viol {:.3e}", iter, obj, eq_viol);
+            println!(
+                "direct {:4} | obj {:.6} | eq_viol {:.3e}",
+                iter, obj, eq_viol
+            );
         }
 
         if eq_viol < config.constraint_tol {
@@ -316,7 +319,10 @@ fn grip_limited_speed(x: &mut [f64], c: &SweepCtx, n: usize, closed: bool) {
             let vk = v[k];
             let f_grip = car.max_grip_force(vk);
             let f_lat = car.mass * vk * vk * x[c.cv_off + k].abs();
-            let f_lon = (f_grip * f_grip - f_lat * f_lat).max(0.0).sqrt().min(car.max_drive_force);
+            let f_lon = (f_grip * f_grip - f_lat * f_lat)
+                .max(0.0)
+                .sqrt()
+                .min(car.max_drive_force);
             let a = (f_lon - car.drag_force(vk) - roll) / car.mass;
             let ds = x[c.s_off + k + 1] - x[c.s_off + k];
             let vn = (vk * vk + 2.0 * a * ds).max(v_min * v_min).sqrt();
@@ -340,7 +346,10 @@ fn grip_limited_speed(x: &mut [f64], c: &SweepCtx, n: usize, closed: bool) {
             let vk1 = v[k + 1];
             let f_grip = car.max_grip_force(vk1);
             let f_lat = car.mass * vk1 * vk1 * x[c.cv_off + k + 1].abs();
-            let f_lon = (f_grip * f_grip - f_lat * f_lat).max(0.0).sqrt().min(car.max_brake_force);
+            let f_lon = (f_grip * f_grip - f_lat * f_lat)
+                .max(0.0)
+                .sqrt()
+                .min(car.max_brake_force);
             let a = (f_lon + car.drag_force(vk1) + roll) / car.mass;
             let ds = x[c.s_off + k + 1] - x[c.s_off + k];
             let vp = (vk1 * vk1 + 2.0 * a * ds).max(v_min * v_min).sqrt();
@@ -364,7 +373,12 @@ fn grip_limited_speed(x: &mut [f64], c: &SweepCtx, n: usize, closed: bool) {
 fn correct_interval(x: &mut [f64], k: usize, target: usize, c: &SweepCtx) {
     let off = [c.s_off, c.n_off, c.v_off, c.a_off];
 
-    let state_k = [x[c.s_off + k], x[c.n_off + k], x[c.v_off + k], x[c.a_off + k]];
+    let state_k = [
+        x[c.s_off + k],
+        x[c.n_off + k],
+        x[c.v_off + k],
+        x[c.a_off + k],
+    ];
     let state_k1 = [
         x[c.s_off + k + 1],
         x[c.n_off + k + 1],
@@ -437,7 +451,11 @@ mod tests {
         let opt = CollocationOptimizer::new(config(30), &track, &car);
         let result = opt.optimize_direct(&DirectSolverConfig::default());
         assert!(result.converged, "should converge on circle");
-        assert!(result.eq_violation < 1e-3, "eq_viol {}", result.eq_violation);
+        assert!(
+            result.eq_violation < 1e-3,
+            "eq_viol {}",
+            result.eq_violation
+        );
     }
 
     #[test]

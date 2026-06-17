@@ -75,7 +75,8 @@ impl<'a> FourteenDofModel<'a> {
     /// Aerodynamic forces for the current state (ride heights from suspension).
     pub fn aero_forces(&self, state: &[f64; 24]) -> crate::aero::AeroForces {
         let (front_rh, rear_rh) = self.ride_heights(state);
-        self.aero.compute(state[6].max(1.0), front_rh, rear_rh, state[4])
+        self.aero
+            .compute(state[6].max(1.0), front_rh, rear_rh, state[4])
     }
 
     /// Front/rear ride heights `(front, rear)` (m) implied by `state`.
@@ -334,11 +335,30 @@ impl OdeSystem<24, 3> for FourteenDofModel<'_> {
         let dpsi = omega_z;
 
         [
-            dx, dy, dz, dphi, dtheta, dpsi, // 0..6
-            dvx, dvy, dvz, domega_x, domega_y, domega_z, // 6..12
-            domega_w[0], domega_w[1], domega_w[2], domega_w[3], // 12..16
-            dz_s[0], dz_s[1], dz_s[2], dz_s[3], // 16..20 (suspension travel rates)
-            ddz_s[0], ddz_s[1], ddz_s[2], ddz_s[3], // 20..24
+            dx,
+            dy,
+            dz,
+            dphi,
+            dtheta,
+            dpsi, // 0..6
+            dvx,
+            dvy,
+            dvz,
+            domega_x,
+            domega_y,
+            domega_z, // 6..12
+            domega_w[0],
+            domega_w[1],
+            domega_w[2],
+            domega_w[3], // 12..16
+            dz_s[0],
+            dz_s[1],
+            dz_s[2],
+            dz_s[3], // 16..20 (suspension travel rates)
+            ddz_s[0],
+            ddz_s[1],
+            ddz_s[2],
+            ddz_s[3], // 20..24
         ]
     }
 }
@@ -419,8 +439,17 @@ mod tests {
             st = rk4_step(&model, &st, &control, 0.0, 0.0002);
             max_pitch_rate = max_pitch_rate.max(st[10].abs());
         }
-        assert!(max_pitch_rate > 1e-3, "pitch rate should become nonzero: {}", max_pitch_rate);
-        assert!((st[4] - s[4]).abs() > 1e-4, "pitch angle should change: {} -> {}", s[4], st[4]);
+        assert!(
+            max_pitch_rate > 1e-3,
+            "pitch rate should become nonzero: {}",
+            max_pitch_rate
+        );
+        assert!(
+            (st[4] - s[4]).abs() > 1e-4,
+            "pitch angle should change: {} -> {}",
+            s[4],
+            st[4]
+        );
         for v in st.iter() {
             assert!(v.is_finite(), "state went non-finite");
         }
@@ -445,7 +474,12 @@ mod tests {
                 assert!(v.is_finite(), "non-finite during cornering");
             }
         }
-        assert!((st[3] - s[3]).abs() > 1e-4, "roll angle should change: {} -> {}", s[3], st[3]);
+        assert!(
+            (st[3] - s[3]).abs() > 1e-4,
+            "roll angle should change: {} -> {}",
+            s[3],
+            st[3]
+        );
     }
 
     #[test]
@@ -505,8 +539,8 @@ mod tests {
         let d = model.derivatives(&s, &[0.0, 0.0, 0.0], 0.0);
 
         // dvx ≈ -(drag + rolling)/m on a straight, like the simpler models
-        let expected = -(rg.params.drag_force(50.0) + rg.params.rolling_resistance_force())
-            / rg.params.mass;
+        let expected =
+            -(rg.params.drag_force(50.0) + rg.params.rolling_resistance_force()) / rg.params.mass;
         // aero drag here uses the model's (slightly reduced) downforce-coupled Cd,
         // but on a straight the drag is the dominant term and should be close.
         assert!(

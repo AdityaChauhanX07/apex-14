@@ -101,8 +101,7 @@ impl Mat3 {
     /// Returns the determinant of the matrix.
     pub fn determinant(self) -> f64 {
         let m = &self.data;
-        m[0] * (m[4] * m[8] - m[5] * m[7])
-            - m[1] * (m[3] * m[8] - m[5] * m[6])
+        m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
             + m[2] * (m[3] * m[7] - m[4] * m[6])
     }
 
@@ -132,9 +131,15 @@ impl Mat3 {
 
         Some(Mat3 {
             data: [
-                c00 * inv_det, c10 * inv_det, c20 * inv_det, //
-                c01 * inv_det, c11 * inv_det, c21 * inv_det, //
-                c02 * inv_det, c12 * inv_det, c22 * inv_det, //
+                c00 * inv_det,
+                c10 * inv_det,
+                c20 * inv_det, //
+                c01 * inv_det,
+                c11 * inv_det,
+                c21 * inv_det, //
+                c02 * inv_det,
+                c12 * inv_det,
+                c22 * inv_det, //
             ],
         })
     }
@@ -149,7 +154,11 @@ impl Mul<Vec3> for Mat3 {
     type Output = Vec3;
 
     fn mul(self, rhs: Vec3) -> Vec3 {
-        Vec3::new(self.row(0).dot(rhs), self.row(1).dot(rhs), self.row(2).dot(rhs))
+        Vec3::new(
+            self.row(0).dot(rhs),
+            self.row(1).dot(rhs),
+            self.row(2).dot(rhs),
+        )
     }
 }
 

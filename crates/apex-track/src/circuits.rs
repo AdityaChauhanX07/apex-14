@@ -171,32 +171,32 @@ fn scale_to_length(mut pts: Vec<TrackPoint>, target: f64) -> Vec<TrackPoint> {
 fn silverstone_moves() -> Vec<Seg> {
     use Seg::*;
     vec![
-        Straight(300.0),     // 0  start/finish + National straight
-        Arc(200.0, -66.0),   // 1  Copse (fast right)
-        Straight(90.0),      // 2
-        Arc(150.0, 45.0),    // 3  Maggotts (left)
-        Arc(120.0, -55.0),   // 4  Becketts (right)
-        Arc(110.0, 50.0),    // 5  Becketts (left)
-        Arc(130.0, -40.0),   // 6  Chapel (right)
-        Straight(770.0),     // 7  Hangar Straight  (closure knob A)
-        Arc(80.0, -120.0),   // 8  Stowe (heavy braking right)
-        Straight(110.0),     // 9
-        Arc(70.0, -70.0),    // 10 Vale (right)
-        Arc(90.0, 45.0),     // 11 Club (left)
-        Straight(120.0),     // 12
-        Arc(180.0, -60.0),   // 13 Abbey (fast right)
-        Straight(60.0),      // 14
-        Arc(150.0, 35.0),    // 15 Farm (left)
-        Straight(120.0),     // 16
-        Arc(40.0, -130.0),   // 17 Village (sharp right hairpin)
-        Arc(45.0, 135.0),    // 18 The Loop (tight left)
-        Straight(60.0),      // 19
-        Arc(90.0, -55.0),    // 20 Aintree (right)
-        Straight(560.0),     // 21 Wellington Straight (closure knob B)
-        Arc(75.0, 95.0),     // 22 Brooklands (left)
-        Arc(50.0, -139.0),   // 23 Luffield (slow right)
-        Arc(160.0, -30.0),   // 24 Woodcote (right kink)
-        Straight(80.0),      // 25 onto pit straight
+        Straight(300.0),   // 0  start/finish + National straight
+        Arc(200.0, -66.0), // 1  Copse (fast right)
+        Straight(90.0),    // 2
+        Arc(150.0, 45.0),  // 3  Maggotts (left)
+        Arc(120.0, -55.0), // 4  Becketts (right)
+        Arc(110.0, 50.0),  // 5  Becketts (left)
+        Arc(130.0, -40.0), // 6  Chapel (right)
+        Straight(770.0),   // 7  Hangar Straight  (closure knob A)
+        Arc(80.0, -120.0), // 8  Stowe (heavy braking right)
+        Straight(110.0),   // 9
+        Arc(70.0, -70.0),  // 10 Vale (right)
+        Arc(90.0, 45.0),   // 11 Club (left)
+        Straight(120.0),   // 12
+        Arc(180.0, -60.0), // 13 Abbey (fast right)
+        Straight(60.0),    // 14
+        Arc(150.0, 35.0),  // 15 Farm (left)
+        Straight(120.0),   // 16
+        Arc(40.0, -130.0), // 17 Village (sharp right hairpin)
+        Arc(45.0, 135.0),  // 18 The Loop (tight left)
+        Straight(60.0),    // 19
+        Arc(90.0, -55.0),  // 20 Aintree (right)
+        Straight(560.0),   // 21 Wellington Straight (closure knob B)
+        Arc(75.0, 95.0),   // 22 Brooklands (left)
+        Arc(50.0, -139.0), // 23 Luffield (slow right)
+        Arc(160.0, -30.0), // 24 Woodcote (right kink)
+        Straight(80.0),    // 25 onto pit straight
     ]
 }
 
@@ -218,24 +218,24 @@ pub fn silverstone_circuit() -> (Vec<TrackPoint>, bool) {
 fn monza_moves() -> Vec<Seg> {
     use Seg::*;
     vec![
-        Straight(1100.0),    // 0  Rettifilo (main straight)   (closure knob A)
-        Arc(70.0, -70.0),    // 1  Variante del Rettifilo (right)
-        Arc(70.0, 70.0),     // 2  and left — first chicane
-        Arc(260.0, -70.0),   // 3  Curva Grande (long right)
-        Straight(300.0),     // 4
-        Arc(70.0, 65.0),     // 5  Variante della Roggia (left)
-        Arc(70.0, -65.0),    // 6  and right — second chicane
-        Straight(260.0),     // 7
-        Arc(150.0, -90.0),   // 8  Lesmo 1 (right)
-        Straight(120.0),     // 9
-        Arc(140.0, -95.0),   // 10 Lesmo 2 (right)
-        Straight(900.0),     // 11 back straight (closure knob B)
-        Arc(90.0, 55.0),     // 12 Ascari (left)
-        Arc(80.0, -75.0),    // 13 Ascari (right)
-        Arc(100.0, 95.0),    // 14 Ascari (left)
-        Straight(620.0),     // 15 straight to Parabolica
-        Arc(170.0, -180.0),  // 16 Parabolica (long right onto main straight)
-        Straight(120.0),     // 17
+        Straight(1100.0),   // 0  Rettifilo (main straight)   (closure knob A)
+        Arc(70.0, -70.0),   // 1  Variante del Rettifilo (right)
+        Arc(70.0, 70.0),    // 2  and left — first chicane
+        Arc(260.0, -70.0),  // 3  Curva Grande (long right)
+        Straight(300.0),    // 4
+        Arc(70.0, 65.0),    // 5  Variante della Roggia (left)
+        Arc(70.0, -65.0),   // 6  and right — second chicane
+        Straight(260.0),    // 7
+        Arc(150.0, -90.0),  // 8  Lesmo 1 (right)
+        Straight(120.0),    // 9
+        Arc(140.0, -95.0),  // 10 Lesmo 2 (right)
+        Straight(900.0),    // 11 back straight (closure knob B)
+        Arc(90.0, 55.0),    // 12 Ascari (left)
+        Arc(80.0, -75.0),   // 13 Ascari (right)
+        Arc(100.0, 95.0),   // 14 Ascari (left)
+        Straight(620.0),    // 15 straight to Parabolica
+        Arc(170.0, -180.0), // 16 Parabolica (long right onto main straight)
+        Straight(120.0),    // 17
     ]
 }
 

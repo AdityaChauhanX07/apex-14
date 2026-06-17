@@ -107,10 +107,19 @@ fn print_forward_sim(tele: &DetailedTelemetry) {
         "  Phase B (full 14-DOF forward sim): {:.3}s lap",
         tele.lap_time
     );
-    println!("    Top speed:         {:.1} km/h", max_abs(&tele.speed) * 3.6);
+    println!(
+        "    Top speed:         {:.1} km/h",
+        max_abs(&tele.speed) * 3.6
+    );
     println!("    Max lateral g:     {:.2}", max_abs(&tele.lateral_g));
-    println!("    Max roll:          {:.3} deg", max_abs(&tele.roll).to_degrees());
-    println!("    Max pitch:         {:.3} deg", max_abs(&tele.pitch).to_degrees());
+    println!(
+        "    Max roll:          {:.3} deg",
+        max_abs(&tele.roll).to_degrees()
+    );
+    println!(
+        "    Max pitch:         {:.3} deg",
+        max_abs(&tele.pitch).to_degrees()
+    );
     println!("    Max suspension:    {:.1} mm", max_susp_mm);
     println!(
         "    Ride height range: {:.1} - {:.1} mm",
@@ -120,10 +129,7 @@ fn print_forward_sim(tele: &DetailedTelemetry) {
 }
 
 /// Export the detailed 14-DOF forward-simulation telemetry as columnar CSV.
-fn export_detailed(
-    tele: &DetailedTelemetry,
-    path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn export_detailed(tele: &DetailedTelemetry, path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let roll_deg: Vec<f64> = tele.roll.iter().map(|r| r.to_degrees()).collect();
     let pitch_deg: Vec<f64> = tele.pitch.iter().map(|p| p.to_degrees()).collect();
     let speed_kph: Vec<f64> = tele.speed.iter().map(|v| v * 3.6).collect();

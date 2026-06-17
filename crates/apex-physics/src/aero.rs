@@ -44,8 +44,8 @@ impl AeroModel {
             cd_base: 0.9,
             frontal_area: 1.5,
             air_density: 1.225,
-            cl_front_base: 1.575, // 45% of total C_l = 3.5
-            cl_rear_base: 1.925,  // 55% of total C_l = 3.5
+            cl_front_base: 1.575,      // 45% of total C_l = 3.5
+            cl_rear_base: 1.925,       // 55% of total C_l = 3.5
             design_ride_height: 0.030, // 30mm
             stall_ride_height: 0.010,  // 10mm — floor stalls below this
             high_ride_height: 0.060,   // 60mm — ground effect fading
@@ -79,7 +79,7 @@ impl AeroModel {
         if h < h_stall {
             // Below stall: downforce collapses. Use smooth ramp from 0 to stall value.
             let t = h / h_stall; // 0 to 1
-            // Smooth ramp: t² gives a gentle onset
+                                 // Smooth ramp: t² gives a gentle onset
             return 0.3 * t * t; // peaks at 0.3 at the stall height
         }
 
@@ -87,7 +87,7 @@ impl AeroModel {
             // Between stall and design: ground effect increasing
             // Interpolate from 0.3 (at stall) to 1.0 (at design)
             let t = (h - h_stall) / (h_design - h_stall); // 0 to 1
-            // Smooth interpolation using cubic Hermite
+                                                          // Smooth interpolation using cubic Hermite
             let smooth_t = t * t * (3.0 - 2.0 * t);
             return 0.3 + 0.7 * smooth_t;
         }
@@ -176,7 +176,10 @@ mod tests {
         assert!(approx(a.ride_height_factor(0.0), 0.0, 1e-9), "ground");
         assert!(approx(a.ride_height_factor(0.010), 0.3, 1e-9), "stall");
         assert!(approx(a.ride_height_factor(0.060), 0.5, 1e-9), "high");
-        assert!(approx(a.ride_height_factor(0.100), 0.5, 1e-9), "above high (capped)");
+        assert!(
+            approx(a.ride_height_factor(0.100), 0.5, 1e-9),
+            "above high (capped)"
+        );
     }
 
     #[test]
@@ -187,7 +190,13 @@ mod tests {
         let mut h = 1e-3;
         while h <= 0.030 + 1e-12 {
             let f = a.ride_height_factor(h);
-            assert!(f >= prev - 1e-9, "not monotonic at h={}: {} < {}", h, f, prev);
+            assert!(
+                f >= prev - 1e-9,
+                "not monotonic at h={}: {} < {}",
+                h,
+                f,
+                prev
+            );
             prev = f;
             h += 1e-3;
         }
@@ -213,9 +222,21 @@ mod tests {
         let f = a.compute(100.0, 0.030, 0.030, 0.0);
         let q = 0.5 * 1.225 * 10000.0;
         let area = 1.5;
-        assert!(approx(f.downforce_front, q * area * 1.575, 1e-6), "front {}", f.downforce_front);
-        assert!(approx(f.downforce_rear, q * area * 1.925, 1e-6), "rear {}", f.downforce_rear);
-        assert!(approx(f.downforce_total, q * area * 3.5, 1e-6), "total {}", f.downforce_total);
+        assert!(
+            approx(f.downforce_front, q * area * 1.575, 1e-6),
+            "front {}",
+            f.downforce_front
+        );
+        assert!(
+            approx(f.downforce_rear, q * area * 1.925, 1e-6),
+            "rear {}",
+            f.downforce_rear
+        );
+        assert!(
+            approx(f.downforce_total, q * area * 3.5, 1e-6),
+            "total {}",
+            f.downforce_total
+        );
     }
 
     #[test]
@@ -225,9 +246,19 @@ mod tests {
         let raised_rear = a.compute(100.0, 0.030, 0.050, 0.0);
 
         // front unchanged, rear reduced, total reduced
-        assert!(approx(raised_rear.downforce_front, design.downforce_front, 1e-9));
-        assert!(raised_rear.downforce_rear < design.downforce_rear, "rear reduced");
-        assert!(raised_rear.downforce_total < design.downforce_total, "total reduced");
+        assert!(approx(
+            raised_rear.downforce_front,
+            design.downforce_front,
+            1e-9
+        ));
+        assert!(
+            raised_rear.downforce_rear < design.downforce_rear,
+            "rear reduced"
+        );
+        assert!(
+            raised_rear.downforce_total < design.downforce_total,
+            "total reduced"
+        );
     }
 
     #[test]
@@ -244,7 +275,10 @@ mod tests {
             design.downforce_front
         );
         // rear unaffected
-        assert!(approx(stalled.downforce_rear, design.downforce_rear, 1e-9), "rear unaffected");
+        assert!(
+            approx(stalled.downforce_rear, design.downforce_rear, 1e-9),
+            "rear unaffected"
+        );
     }
 
     #[test]
@@ -253,9 +287,17 @@ mod tests {
         let flat = a.compute(100.0, 0.030, 0.030, 0.0);
         let pitched = a.compute(100.0, 0.030, 0.030, 0.1);
         let q = 0.5 * 1.225 * 10000.0;
-        assert!(approx(flat.drag, q * 1.5 * 0.9, 1e-6), "flat drag {}", flat.drag);
+        assert!(
+            approx(flat.drag, q * 1.5 * 0.9, 1e-6),
+            "flat drag {}",
+            flat.drag
+        );
         // 0.5 * 0.1 = 5% more drag
-        assert!(approx(pitched.drag / flat.drag, 1.05, 1e-9), "ratio {}", pitched.drag / flat.drag);
+        assert!(
+            approx(pitched.drag / flat.drag, 1.05, 1e-9),
+            "ratio {}",
+            pitched.drag / flat.drag
+        );
     }
 
     #[test]

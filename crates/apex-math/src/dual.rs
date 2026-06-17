@@ -393,7 +393,11 @@ mod tests {
         // d/dx sin(x) = cos(x); at x = π/4
         let x = Dual::variable(PI / 4.0);
         let r = x.sin();
-        assert!(approx_eq_dual(r, Dual::new((PI / 4.0).sin(), (PI / 4.0).cos()), TOL));
+        assert!(approx_eq_dual(
+            r,
+            Dual::new((PI / 4.0).sin(), (PI / 4.0).cos()),
+            TOL
+        ));
     }
 
     #[test]
@@ -414,7 +418,11 @@ mod tests {
         let x = Dual::variable(PI / 6.0);
         let r = x.tan();
         let expected_dual = 1.0 / (PI / 6.0).cos().powi(2);
-        assert!(approx_eq_dual(r, Dual::new((PI / 6.0).tan(), expected_dual), TOL));
+        assert!(approx_eq_dual(
+            r,
+            Dual::new((PI / 6.0).tan(), expected_dual),
+            TOL
+        ));
     }
 
     #[test]
@@ -457,7 +465,11 @@ mod tests {
         let r = x.powf(2.5);
         let expected_real = 4.0_f64.powf(2.5);
         let expected_dual = 2.5 * 4.0_f64.powf(1.5);
-        assert!(approx_eq_dual(r, Dual::new(expected_real, expected_dual), 1e-10));
+        assert!(approx_eq_dual(
+            r,
+            Dual::new(expected_real, expected_dual),
+            1e-10
+        ));
     }
 
     #[test]
@@ -522,7 +534,11 @@ mod tests {
         let r = x.powi(2).sin();
         let expected_real = (1.3_f64 * 1.3).sin();
         let expected_dual = 2.0 * 1.3 * (1.3_f64 * 1.3).cos();
-        assert!(approx_eq_dual(r, Dual::new(expected_real, expected_dual), TOL));
+        assert!(approx_eq_dual(
+            r,
+            Dual::new(expected_real, expected_dual),
+            TOL
+        ));
 
         // same composition via x*x instead of powi
         let r2 = (x * x).sin();
@@ -538,6 +554,10 @@ mod tests {
         let r = (2.0 * x + 1.0) / x.sqrt();
         let expected_real = 9.0 / 2.0; // (8+1)/2
         let expected_dual = 0.4375;
-        assert!(approx_eq_dual(r, Dual::new(expected_real, expected_dual), 1e-10));
+        assert!(approx_eq_dual(
+            r,
+            Dual::new(expected_real, expected_dual),
+            1e-10
+        ));
     }
 }

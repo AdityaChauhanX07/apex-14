@@ -101,12 +101,16 @@ pub struct AntiRollBar {
 impl AntiRollBar {
     /// F1-representative front anti-roll bar.
     pub fn f1_front() -> Self {
-        AntiRollBar { stiffness: 50_000.0 }
+        AntiRollBar {
+            stiffness: 50_000.0,
+        }
     }
 
     /// F1-representative rear anti-roll bar.
     pub fn f1_rear() -> Self {
-        AntiRollBar { stiffness: 30_000.0 }
+        AntiRollBar {
+            stiffness: 30_000.0,
+        }
     }
 
     /// Compute the ARB force on the left wheel.
@@ -166,7 +170,8 @@ impl SuspensionSystem {
     /// including spring, damper, and anti-roll bar contributions.
     pub fn forces(&self, z: &[f64; 4], dz: &[f64; 4]) -> [f64; 4] {
         let f_fl = self.front_left.total_force(z[0], dz[0]) + self.arb_front.force_left(z[0], z[1]);
-        let f_fr = self.front_right.total_force(z[1], dz[1]) + self.arb_front.force_right(z[0], z[1]);
+        let f_fr =
+            self.front_right.total_force(z[1], dz[1]) + self.arb_front.force_right(z[0], z[1]);
         let f_rl = self.rear_left.total_force(z[2], dz[2]) + self.arb_rear.force_left(z[2], z[3]);
         let f_rr = self.rear_right.total_force(z[3], dz[3]) + self.arb_rear.force_right(z[2], z[3]);
         [f_fl, f_fr, f_rl, f_rr]
@@ -193,7 +198,8 @@ impl SuspensionSystem {
             let target = loads[i];
             let mut zi = target / params[i].spring_rate; // initial guess from linear spring
             for _ in 0..20 {
-                let f = params[i].spring_rate * zi + params[i].spring_rate_progressive * zi * zi.abs();
+                let f =
+                    params[i].spring_rate * zi + params[i].spring_rate_progressive * zi * zi.abs();
                 let df = params[i].spring_rate + params[i].spring_rate_progressive * 2.0 * zi.abs();
                 if df.abs() < 1e-20 {
                     break;
@@ -224,7 +230,11 @@ mod tests {
         assert!(s.spring_force(-0.01) > 0.0);
 
         // exact value at 10mm compression: -(200000*0.01 + 500000*0.01*0.01) = -2050
-        assert!(approx(s.spring_force(0.01), -2050.0, 1e-9), "{}", s.spring_force(0.01));
+        assert!(
+            approx(s.spring_force(0.01), -2050.0, 1e-9),
+            "{}",
+            s.spring_force(0.01)
+        );
     }
 
     #[test]
@@ -241,9 +251,17 @@ mod tests {
         let s = SuspensionParams::f1_front();
         assert_eq!(s.damper_force(0.0), 0.0);
         // compression
-        assert!(approx(s.damper_force(0.1), -800.0, 1e-9), "{}", s.damper_force(0.1));
+        assert!(
+            approx(s.damper_force(0.1), -800.0, 1e-9),
+            "{}",
+            s.damper_force(0.1)
+        );
         // extension
-        assert!(approx(s.damper_force(-0.1), 2500.0, 1e-9), "{}", s.damper_force(-0.1));
+        assert!(
+            approx(s.damper_force(-0.1), 2500.0, 1e-9),
+            "{}",
+            s.damper_force(-0.1)
+        );
         // rebound stronger than bump at the same speed
         assert!(s.damper_force(-0.1).abs() > s.damper_force(0.1).abs());
     }
@@ -320,7 +338,11 @@ mod tests {
 
         // actual ride height = design height - compression
         let ride_height = sys.front_left.static_ride_height - z[0];
-        assert!(ride_height > 0.0, "ride height {} should be positive", ride_height);
+        assert!(
+            ride_height > 0.0,
+            "ride height {} should be positive",
+            ride_height
+        );
         assert!(
             (0.020..=0.030).contains(&ride_height),
             "ride height {} out of expected 20-30mm range",

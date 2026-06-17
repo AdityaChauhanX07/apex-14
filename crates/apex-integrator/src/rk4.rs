@@ -257,11 +257,20 @@ mod tests {
         let system = GenericExpDecay { k: 1.0 };
         let initial = [Dual::variable(1.0)];
         let control = [Dual::constant(0.0)];
-        let result = rk4_integrate_generic(&system, &initial, &control, Dual::constant(0.001), 1000);
+        let result =
+            rk4_integrate_generic(&system, &initial, &control, Dual::constant(0.001), 1000);
 
         let expected = (-1.0_f64).exp();
-        assert!((result[0].real - expected).abs() < 1e-6, "value {}", result[0].real);
-        assert!((result[0].dual - expected).abs() < 1e-6, "dx/dx0 {}", result[0].dual);
+        assert!(
+            (result[0].real - expected).abs() < 1e-6,
+            "value {}",
+            result[0].real
+        );
+        assert!(
+            (result[0].dual - expected).abs() < 1e-6,
+            "dx/dx0 {}",
+            result[0].dual
+        );
     }
 
     #[test]
@@ -270,10 +279,19 @@ mod tests {
         let system = DecayWithDualK;
         let initial = [Dual::constant(1.0)];
         let control = [Dual::variable(1.0)]; // differentiate w.r.t. k
-        let result = rk4_integrate_generic(&system, &initial, &control, Dual::constant(0.001), 1000);
+        let result =
+            rk4_integrate_generic(&system, &initial, &control, Dual::constant(0.001), 1000);
 
         let expected = -(-1.0_f64).exp(); // ≈ -0.3679
-        assert!((result[0].real - (-1.0_f64).exp()).abs() < 1e-6, "value {}", result[0].real);
-        assert!((result[0].dual - expected).abs() < 1e-6, "dx/dk {}", result[0].dual);
+        assert!(
+            (result[0].real - (-1.0_f64).exp()).abs() < 1e-6,
+            "value {}",
+            result[0].real
+        );
+        assert!(
+            (result[0].dual - expected).abs() < 1e-6,
+            "dx/dk {}",
+            result[0].dual
+        );
     }
 }

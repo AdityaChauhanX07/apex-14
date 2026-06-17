@@ -120,7 +120,7 @@ fn simulate_fourteen_dof(
         *w = wheel_omega;
     }
     state[16..20].copy_from_slice(&z_eq); // suspension at static equilibrium
-    // suspension velocities (20..24) and all remaining rates already 0.
+                                          // suspension velocities (20..24) and all remaining rates already 0.
 
     // --- adaptive integrator configuration ---
     let config = AdaptiveConfig {
@@ -162,12 +162,15 @@ fn simulate_fourteen_dof(
         let (wl, wr) = track.width_at(s);
         let half_width = 0.5 * (wl + wr);
         let off_track = n_offset.abs() > half_width;
-        let (k_lat, k_head, speed_scale) =
-            if off_track { (1.0, 3.0, 0.5) } else { (0.5, 2.0, 1.0) };
+        let (k_lat, k_head, speed_scale) = if off_track {
+            (1.0, 3.0, 0.5)
+        } else {
+            (0.5, 2.0, 1.0)
+        };
 
         // steering: curvature feedforward minus centerline/heading feedback
-        let delta = (kappa * params.wheelbase - k_lat * n_offset - k_head * heading_error)
-            .clamp(-0.5, 0.5);
+        let delta =
+            (kappa * params.wheelbase - k_lat * n_offset - k_head * heading_error).clamp(-0.5, 0.5);
 
         // throttle / brake from the QSS target speed
         let target = target_speed_at(&qss, s, total_length) * speed_scale;
@@ -266,7 +269,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Max lateral g: {:.2}", fwd.max_lateral_g);
     println!("  Max roll: {:.3} deg", fwd.max_roll_deg);
     println!("  Max pitch: {:.3} deg", fwd.max_pitch_deg);
-    println!("  Max suspension compression: {:.1} mm", fwd.max_suspension_mm);
+    println!(
+        "  Max suspension compression: {:.1} mm",
+        fwd.max_suspension_mm
+    );
     println!("  Distance traveled: {:.1} m", fwd.distance_traveled);
     println!("  Integration steps: {} (accepted)", fwd.n_steps);
     println!();
@@ -287,7 +293,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circle_stats = summarize(&circle_result);
     println!("Circle results:");
     print_results(&circle_stats);
-    export_qss_csv(Path::new("qss_circle_telemetry.csv"), &circle, &circle_result)?;
+    export_qss_csv(
+        Path::new("qss_circle_telemetry.csv"),
+        &circle,
+        &circle_result,
+    )?;
     println!("Telemetry exported to qss_circle_telemetry.csv");
     render_track_svg(
         Path::new("qss_circle_track.svg"),

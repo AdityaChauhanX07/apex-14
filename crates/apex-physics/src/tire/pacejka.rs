@@ -177,12 +177,7 @@ impl PacejkaTire {
 
     /// Generic combined forces using the friction circle method.
     /// Returns (fx, fy) as a tuple of generic Float values.
-    pub fn combined_forces_generic<T: Float>(
-        &self,
-        slip_angle: T,
-        slip_ratio: T,
-        fz: T,
-    ) -> (T, T) {
+    pub fn combined_forces_generic<T: Float>(&self, slip_angle: T, slip_ratio: T, fz: T) -> (T, T) {
         if fz.real_value() <= 0.0 {
             return (T::zero(), T::zero());
         }
@@ -438,7 +433,11 @@ mod tests {
         let result = tire.lateral_force_generic(alpha, fz);
 
         // dFy/dFz: more load -> more force, but below mu due to load sensitivity
-        assert!(result.dual > 0.0, "dFy/dFz {} should be positive", result.dual);
+        assert!(
+            result.dual > 0.0,
+            "dFy/dFz {} should be positive",
+            result.dual
+        );
         assert!(
             result.dual < tire.lateral.mu,
             "dFy/dFz {} should be below mu {}",
@@ -467,7 +466,11 @@ mod tests {
             Dual::constant(0.05),
             Dual::constant(fz),
         );
-        assert!(fy.dual.is_finite() && fy.dual != 0.0, "combined dFy/dalpha {}", fy.dual);
+        assert!(
+            fy.dual.is_finite() && fy.dual != 0.0,
+            "combined dFy/dalpha {}",
+            fy.dual
+        );
 
         // pure lateral derivative at the same operating point
         let pure = tire.lateral_force_generic(Dual::variable(0.1), Dual::constant(fz));

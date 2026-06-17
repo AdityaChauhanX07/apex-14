@@ -51,9 +51,14 @@ fn cornering_speed(params: &CarParams, kappa: f64) -> f64 {
 fn forward_speed(params: &CarParams, v: f64, kappa: f64, ds: f64) -> f64 {
     let fg = params.max_grip_force(v);
     let fl = params.mass * v * v * kappa;
-    let f_lon_max = if fl >= fg { 0.0 } else { (fg * fg - fl * fl).sqrt() };
-    let f_accel =
-        f_lon_max.min(params.max_drive_force) - params.drag_force(v) - params.rolling_resistance_force();
+    let f_lon_max = if fl >= fg {
+        0.0
+    } else {
+        (fg * fg - fl * fl).sqrt()
+    };
+    let f_accel = f_lon_max.min(params.max_drive_force)
+        - params.drag_force(v)
+        - params.rolling_resistance_force();
     let a = f_accel / params.mass;
     let v_next_sq = v * v + 2.0 * a * ds;
     v_next_sq.max(V_FLOOR * V_FLOOR).sqrt()
@@ -65,7 +70,11 @@ fn forward_speed(params: &CarParams, v: f64, kappa: f64, ds: f64) -> f64 {
 fn backward_speed(params: &CarParams, v: f64, kappa: f64, ds: f64) -> f64 {
     let fg = params.max_grip_force(v);
     let fl = params.mass * v * v * kappa;
-    let f_lon_max = if fl >= fg { 0.0 } else { (fg * fg - fl * fl).sqrt() };
+    let f_lon_max = if fl >= fg {
+        0.0
+    } else {
+        (fg * fg - fl * fl).sqrt()
+    };
     let a_decel = (f_lon_max.min(params.max_brake_force)
         + params.drag_force(v)
         + params.rolling_resistance_force())
@@ -85,7 +94,11 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
     let total_length = track.total_length;
 
     let s: Vec<f64> = track.segments.iter().map(|seg| seg.s).collect();
-    let kappa: Vec<f64> = track.segments.iter().map(|seg| seg.curvature.abs()).collect();
+    let kappa: Vec<f64> = track
+        .segments
+        .iter()
+        .map(|seg| seg.curvature.abs())
+        .collect();
 
     // Distance from segment `i` to its successor (wrapping for closed tracks).
     let ds_next = |i: usize| -> f64 {
@@ -123,7 +136,11 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
         if closed {
             for i in (0..n).rev() {
                 let p = if i == 0 { n - 1 } else { i - 1 };
-                let ds = if i == 0 { total_length - s[n - 1] } else { s[i] - s[i - 1] };
+                let ds = if i == 0 {
+                    total_length - s[n - 1]
+                } else {
+                    s[i] - s[i - 1]
+                };
                 let cand = backward_speed(params, speeds[i], kappa[i], ds);
                 if cand < speeds[p] {
                     speeds[p] = cand;
@@ -189,7 +206,10 @@ fn tire_available_grip(
 ) -> f64 {
     let loads = params.corner_loads(speed, longitudinal_accel, lateral_accel, rsf);
     let mu_blend = 0.5 * (tire.lateral.mu + tire.longitudinal.mu);
-    loads.iter().map(|&fz| tire.effective_mu(mu_blend, fz) * fz).sum()
+    loads
+        .iter()
+        .map(|&fz| tire.effective_mu(mu_blend, fz) * fz)
+        .sum()
 }
 
 /// Cornering-limited speed using the tire grip budget, found by bisection.
@@ -273,7 +293,11 @@ pub fn qss_lap_sim_tire(
     let rsf = roll_stiffness_front_fraction;
 
     let s: Vec<f64> = track.segments.iter().map(|seg| seg.s).collect();
-    let kappa: Vec<f64> = track.segments.iter().map(|seg| seg.curvature.abs()).collect();
+    let kappa: Vec<f64> = track
+        .segments
+        .iter()
+        .map(|seg| seg.curvature.abs())
+        .collect();
 
     let ds_next = |i: usize| -> f64 {
         if i + 1 < n {
@@ -311,7 +335,11 @@ pub fn qss_lap_sim_tire(
         if closed {
             for i in (0..n).rev() {
                 let p = if i == 0 { n - 1 } else { i - 1 };
-                let ds = if i == 0 { total_length - s[n - 1] } else { s[i] - s[i - 1] };
+                let ds = if i == 0 {
+                    total_length - s[n - 1]
+                } else {
+                    s[i] - s[i - 1]
+                };
                 let cand = backward_speed_tire(params, tire, speeds[i], kappa[i], ds, rsf);
                 if cand < speeds[p] {
                     speeds[p] = cand;
@@ -386,7 +414,12 @@ mod tests {
         let mean: f64 = result.speeds.iter().sum::<f64>() / result.speeds.len() as f64;
 
         // within 5% variation around the lap
-        assert!((max - min) / mean < 0.05, "variation: min {} max {}", min, max);
+        assert!(
+            (max - min) / mean < 0.05,
+            "variation: min {} max {}",
+            min,
+            max
+        );
 
         // matches the cornering-limit formula for κ = 1/R
         let v_corner = cornering_speed(&params, 1.0 / radius);
@@ -452,7 +485,12 @@ mod tests {
         let v_term = terminal_velocity(&params);
         let last = *result.speeds.last().unwrap();
         assert!(last < v_term, "final {} exceeded terminal {}", last, v_term);
-        assert!(last > 0.85 * v_term, "final {} not near terminal {}", last, v_term);
+        assert!(
+            last > 0.85 * v_term,
+            "final {} not near terminal {}",
+            last,
+            v_term
+        );
 
         // monotonically non-decreasing
         for i in 0..result.speeds.len() - 1 {
@@ -545,8 +583,18 @@ mod tests {
         let tire_mean: f64 = tire_q.speeds.iter().sum::<f64>() / tire_q.speeds.len() as f64;
 
         // load sensitivity reduces effective grip, so tire-aware is a bit slower
-        assert!(tire_mean < grip_mean, "tire {} should be < grip {}", tire_mean, grip_mean);
-        assert!(tire_mean > 0.80 * grip_mean, "tire {} unreasonably low vs {}", tire_mean, grip_mean);
+        assert!(
+            tire_mean < grip_mean,
+            "tire {} should be < grip {}",
+            tire_mean,
+            grip_mean
+        );
+        assert!(
+            tire_mean > 0.80 * grip_mean,
+            "tire {} unreasonably low vs {}",
+            tire_mean,
+            grip_mean
+        );
     }
 
     #[test]
@@ -560,17 +608,30 @@ mod tests {
         let tire_q = qss_lap_sim_tire(&track, &params, &tire, RSF);
 
         // slower lap, all speeds valid
-        assert!(tire_q.lap_time > grip.lap_time, "tire lap {} should exceed grip {}", tire_q.lap_time, grip.lap_time);
+        assert!(
+            tire_q.lap_time > grip.lap_time,
+            "tire lap {} should exceed grip {}",
+            tire_q.lap_time,
+            grip.lap_time
+        );
         for &v in &tire_q.speeds {
             assert!(v > 0.0 && v < V_CAP, "speed {} out of range", v);
         }
         // corner (min) speed lower, straight (max) speed similar
         let grip_min = grip.speeds.iter().cloned().fold(f64::MAX, f64::min);
         let tire_min = tire_q.speeds.iter().cloned().fold(f64::MAX, f64::min);
-        assert!(tire_min < grip_min, "tire corner {} should be < grip corner {}", tire_min, grip_min);
+        assert!(
+            tire_min < grip_min,
+            "tire corner {} should be < grip corner {}",
+            tire_min,
+            grip_min
+        );
         let grip_max = grip.speeds.iter().cloned().fold(f64::MIN, f64::max);
         let tire_max = tire_q.speeds.iter().cloned().fold(f64::MIN, f64::max);
-        assert!((tire_max - grip_max).abs() / grip_max < 0.05, "straight speeds should be similar");
+        assert!(
+            (tire_max - grip_max).abs() / grip_max < 0.05,
+            "straight speeds should be similar"
+        );
     }
 
     #[test]
@@ -580,7 +641,12 @@ mod tests {
         let kappa = 1.0 / 100.0;
         let grip_v = cornering_speed(&params, kappa);
         let tire_v = cornering_speed_tire(&params, &tire, kappa, RSF);
-        assert!(tire_v < grip_v, "tire {} should be < grip {}", tire_v, grip_v);
+        assert!(
+            tire_v < grip_v,
+            "tire {} should be < grip {}",
+            tire_v,
+            grip_v
+        );
         let reduction = (grip_v - tire_v) / grip_v;
         assert!(
             (0.05..=0.20).contains(&reduction),

@@ -113,10 +113,26 @@ mod tests {
         let control = [15000.0, 0.0];
         let final_state = rk4_integrate(&model, &initial, &control, 0.001, 5000);
 
-        assert!(final_state[2] > 50.0, "speed only reached {}", final_state[2]);
-        assert!(final_state[0] > 100.0, "distance only reached {}", final_state[0]);
-        assert!(approx(final_state[1], 0.0, 1e-9), "n drifted to {}", final_state[1]);
-        assert!(approx(final_state[3], 0.0, 1e-9), "alpha drifted to {}", final_state[3]);
+        assert!(
+            final_state[2] > 50.0,
+            "speed only reached {}",
+            final_state[2]
+        );
+        assert!(
+            final_state[0] > 100.0,
+            "distance only reached {}",
+            final_state[0]
+        );
+        assert!(
+            approx(final_state[1], 0.0, 1e-9),
+            "n drifted to {}",
+            final_state[1]
+        );
+        assert!(
+            approx(final_state[3], 0.0, 1e-9),
+            "alpha drifted to {}",
+            final_state[3]
+        );
     }
 
     #[test]

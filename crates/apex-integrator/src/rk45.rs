@@ -225,7 +225,10 @@ pub fn rk45_integrate<const N: usize, const M: usize>(
 ) -> (f64, [f64; N], usize, usize) {
     let mut t = t_start;
     let mut state = *initial_state;
-    let mut dt = config.dt_max.min((t_end - t_start) / 10.0).max(config.dt_min);
+    let mut dt = config
+        .dt_max
+        .min((t_end - t_start) / 10.0)
+        .max(config.dt_min);
 
     let mut accepted_steps = 0;
     let mut rejected_steps = 0;
@@ -315,7 +318,11 @@ mod tests {
             "took {} accepted steps, expected far fewer",
             accepted
         );
-        assert!(rejected <= 2, "smooth problem should rarely reject: {}", rejected);
+        assert!(
+            rejected <= 2,
+            "smooth problem should rarely reject: {}",
+            rejected
+        );
     }
 
     #[test]

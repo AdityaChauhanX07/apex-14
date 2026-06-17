@@ -12,8 +12,8 @@ pub mod tire;
 
 pub use aero::{AeroForces, AeroModel};
 pub use bicycle::BicycleModel;
-pub use fourteen_dof::FourteenDofModel;
 pub use car_params::CarParams;
+pub use fourteen_dof::FourteenDofModel;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
 pub use seven_dof::SevenDofModel;

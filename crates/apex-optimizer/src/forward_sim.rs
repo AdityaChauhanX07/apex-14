@@ -176,8 +176,7 @@ impl ForwardSimulator<'_> {
             .unwrap_or(30.0)
             .min(v_cap0)
             .max(5.0);
-        let model =
-            FourteenDofModel::new(params, self.tire, self.suspension, self.aero, v_start);
+        let model = FourteenDofModel::new(params, self.tire, self.suspension, self.aero, v_start);
 
         // --- initial 14-DOF state (24 elements) ---
         let (x0, y0) = self.track.position_at(0.0);
@@ -224,8 +223,7 @@ impl ForwardSimulator<'_> {
         // Seed the steering at the steady-state feedforward lock for the first
         // corner so the rate limiter does not have to ramp up from zero.
         let kappa0 = self.track.curvature_at(0.0);
-        let mut prev_delta =
-            kappa0 * params.wheelbase + 0.0012 * (v_start * v_start * kappa0);
+        let mut prev_delta = kappa0 * params.wheelbase + 0.0012 * (v_start * v_start * kappa0);
 
         let mut tele = DetailedTelemetry::with_capacity(1024);
 
@@ -266,8 +264,11 @@ impl ForwardSimulator<'_> {
             let (wl, wr) = self.track.width_at(s);
             let half_width = 0.5 * (wl + wr);
             let off_track = n_offset.abs() > half_width;
-            let (k_lat0, k_head0, speed_scale) =
-                if off_track { (0.30, 1.1, 0.85) } else { (0.15, 0.8, 1.0) };
+            let (k_lat0, k_head0, speed_scale) = if off_track {
+                (0.30, 1.1, 0.85)
+            } else {
+                (0.15, 0.8, 1.0)
+            };
             // Speed-schedule the steering feedback: high gains are needed for
             // low-speed tight corners but cause a growing weave on high-speed
             // straights, so scale them down as speed rises.
@@ -288,14 +289,13 @@ impl ForwardSimulator<'_> {
             let yaw_rate_error = state[11] - vx * kappa_eff;
             let k_yaw = 0.12 * sf;
 
-            let delta_target = (ff - k_lat * n_offset - k_head * heading_error
-                - k_yaw * yaw_rate_error)
-                .clamp(-0.5, 0.5);
+            let delta_target =
+                (ff - k_lat * n_offset - k_head * heading_error - k_yaw * yaw_rate_error)
+                    .clamp(-0.5, 0.5);
             // Rate-limit the steering so turn-in cannot snap the car into oversteer.
             let max_rate = 3.0; // rad/s
-            let delta = (delta_target - prev_delta)
-                .clamp(-max_rate * dt, max_rate * dt)
-                + prev_delta;
+            let delta =
+                (delta_target - prev_delta).clamp(-max_rate * dt, max_rate * dt) + prev_delta;
             prev_delta = delta;
 
             // Speed target with look-ahead braking: the achievable speed now is
@@ -411,8 +411,7 @@ mod tests {
         let stations: Vec<f64> = (0..n)
             .map(|k| track.total_length * (k as f64) / ((n - 1) as f64))
             .collect();
-        let curvature_cmds: Vec<f64> =
-            stations.iter().map(|&s| track.curvature_at(s)).collect();
+        let curvature_cmds: Vec<f64> = stations.iter().map(|&s| track.curvature_at(s)).collect();
         let dt: Vec<f64> = (0..n - 1)
             .map(|k| (stations[k + 1] - stations[k]) / speed)
             .collect();
@@ -478,7 +477,11 @@ mod tests {
 
         // Steady cornering on a circle: roll is small and bounded (a few degrees,
         // not literally zero — the suspension does roll under lateral load).
-        let max_roll = tele.roll.iter().cloned().fold(0.0_f64, |m, r| m.max(r.abs()));
+        let max_roll = tele
+            .roll
+            .iter()
+            .cloned()
+            .fold(0.0_f64, |m, r| m.max(r.abs()));
         assert!(
             max_roll < 0.06,
             "roll {} rad ({} deg) too large for a gentle circle",

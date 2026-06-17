@@ -68,12 +68,7 @@ impl PacejkaTire {
     /// This is a simplification of the full MF 5.2 combined slip equations, but it
     /// correctly captures the key behavior: using grip in one direction reduces
     /// available grip in the other.
-    pub fn combined_forces(
-        &self,
-        slip_angle: f64,
-        slip_ratio: f64,
-        fz: f64,
-    ) -> CombinedSlipResult {
+    pub fn combined_forces(&self, slip_angle: f64, slip_ratio: f64, fz: f64) -> CombinedSlipResult {
         if fz <= 0.0 {
             return CombinedSlipResult {
                 fy: 0.0,
@@ -94,7 +89,11 @@ impl PacejkaTire {
         let f_max = mu_avg * fz;
 
         let f_resultant = (fx_pure * fx_pure + fy_pure * fy_pure).sqrt();
-        let grip_utilization = if f_max > 0.0 { f_resultant / f_max } else { 0.0 };
+        let grip_utilization = if f_max > 0.0 {
+            f_resultant / f_max
+        } else {
+            0.0
+        };
 
         if f_resultant <= f_max || f_resultant < 1e-6 {
             // Within the friction circle — use pure forces unmodified
@@ -229,8 +228,18 @@ mod tests {
         // averaged-μ friction circle (which uses the mean of lateral and
         // longitudinal μ) can clip a pure-axis force by a fraction of a
         // percent, so allow a small tolerance and require fy <= pure.
-        assert!(approx(r.fy, pure, 0.02 * pure.abs()), "fy {} vs pure {}", r.fy, pure);
-        assert!(r.fy.abs() <= pure.abs() + 1e-9, "fy {} should not exceed pure {}", r.fy, pure);
+        assert!(
+            approx(r.fy, pure, 0.02 * pure.abs()),
+            "fy {} vs pure {}",
+            r.fy,
+            pure
+        );
+        assert!(
+            r.fy.abs() <= pure.abs() + 1e-9,
+            "fy {} should not exceed pure {}",
+            r.fy,
+            pure
+        );
         // diagnostic always reports the true pure value
         assert!(approx(r.fy_pure, pure, 1e-12));
     }
@@ -258,9 +267,23 @@ mod tests {
         let pure_fx = tire.longitudinal_force(0.1, fz);
 
         // combining costs grip in both directions
-        assert!(r.fy.abs() < pure_fy.abs(), "fy {} vs pure {}", r.fy, pure_fy);
-        assert!(r.fx.abs() < pure_fx.abs(), "fx {} vs pure {}", r.fx, pure_fx);
-        assert!(r.grip_utilization > 1.0, "should exceed circle: {}", r.grip_utilization);
+        assert!(
+            r.fy.abs() < pure_fy.abs(),
+            "fy {} vs pure {}",
+            r.fy,
+            pure_fy
+        );
+        assert!(
+            r.fx.abs() < pure_fx.abs(),
+            "fx {} vs pure {}",
+            r.fx,
+            pure_fx
+        );
+        assert!(
+            r.grip_utilization > 1.0,
+            "should exceed circle: {}",
+            r.grip_utilization
+        );
     }
 
     #[test]
@@ -276,7 +299,12 @@ mod tests {
 
         let resultant = (r.fx * r.fx + r.fy * r.fy).sqrt();
         // scaled back onto (or within) the friction circle
-        assert!(resultant <= f_max + 1e-6, "resultant {} vs f_max {}", resultant, f_max);
+        assert!(
+            resultant <= f_max + 1e-6,
+            "resultant {} vs f_max {}",
+            resultant,
+            f_max
+        );
         // at the limit
         assert!(
             approx(resultant, f_max, 1.0),
@@ -296,7 +324,12 @@ mod tests {
 
         let pure_fy = tire.lateral_force(0.08, fz);
         // braking trades lateral grip for deceleration
-        assert!(r.fy.abs() < pure_fy.abs(), "fy {} vs pure {}", r.fy, pure_fy);
+        assert!(
+            r.fy.abs() < pure_fy.abs(),
+            "fy {} vs pure {}",
+            r.fy,
+            pure_fy
+        );
         // braking produces a negative longitudinal force
         assert!(r.fx < 0.0, "fx {} should be braking (negative)", r.fx);
     }
@@ -354,7 +387,8 @@ mod tests {
         let tire = PacejkaTire::f1_default();
         let fz = 4000.0;
         let f_max = 0.5
-            * (tire.effective_mu(tire.lateral.mu, fz) + tire.effective_mu(tire.longitudinal.mu, fz))
+            * (tire.effective_mu(tire.lateral.mu, fz)
+                + tire.effective_mu(tire.longitudinal.mu, fz))
             * fz;
 
         // well within the circle: smooth ≈ hard within 5%
@@ -372,9 +406,23 @@ mod tests {
         let hi_hard = tire.combined_forces(0.4, 0.4, fz);
         let r_smooth = (hi_smooth.fx * hi_smooth.fx + hi_smooth.fy * hi_smooth.fy).sqrt();
         let r_hard = (hi_hard.fx * hi_hard.fx + hi_hard.fy * hi_hard.fy).sqrt();
-        assert!((r_hard - f_max).abs() < 1.0, "hard resultant {} vs f_max {}", r_hard, f_max);
-        assert!(r_smooth <= f_max + 1.0, "smooth resultant {} exceeds f_max {}", r_smooth, f_max);
-        assert!(r_smooth > 0.6 * f_max, "smooth resultant {} too low", r_smooth);
+        assert!(
+            (r_hard - f_max).abs() < 1.0,
+            "hard resultant {} vs f_max {}",
+            r_hard,
+            f_max
+        );
+        assert!(
+            r_smooth <= f_max + 1.0,
+            "smooth resultant {} exceeds f_max {}",
+            r_smooth,
+            f_max
+        );
+        assert!(
+            r_smooth > 0.6 * f_max,
+            "smooth resultant {} too low",
+            r_smooth
+        );
     }
 
     #[test]

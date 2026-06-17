@@ -395,10 +395,19 @@ mod tests {
             lower_bounds: lb,
             upper_bounds: ub,
         };
-        let result = solve_nlp(&problem, &EqConstrained, &[0.0, 0.0], &SolverConfig::default());
+        let result = solve_nlp(
+            &problem,
+            &EqConstrained,
+            &[0.0, 0.0],
+            &SolverConfig::default(),
+        );
         assert!((result.x[0] - 0.5).abs() < 1e-2, "x0 {}", result.x[0]);
         assert!((result.x[1] - 0.5).abs() < 1e-2, "x1 {}", result.x[1]);
-        assert!((result.objective - 0.5).abs() < 1e-2, "obj {}", result.objective);
+        assert!(
+            (result.objective - 0.5).abs() < 1e-2,
+            "obj {}",
+            result.objective
+        );
         assert!(result.converged);
     }
 
@@ -412,7 +421,12 @@ mod tests {
             lower_bounds: lb,
             upper_bounds: ub,
         };
-        let result = solve_nlp(&problem, &IneqConstrained, &[0.0, 0.0], &SolverConfig::default());
+        let result = solve_nlp(
+            &problem,
+            &IneqConstrained,
+            &[0.0, 0.0],
+            &SolverConfig::default(),
+        );
         assert!((result.x[0] - 1.0).abs() < 1e-2, "x0 {}", result.x[0]);
         assert!((result.x[1] - 1.0).abs() < 1e-2, "x1 {}", result.x[1]);
         assert!(result.converged);
