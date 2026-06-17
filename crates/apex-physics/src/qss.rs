@@ -8,6 +8,7 @@
 use apex_track::Track;
 
 use crate::car_params::{CarParams, GRAVITY};
+use crate::tire::PacejkaTire;
 
 /// Speed cap used where the track is effectively straight or downforce alone
 /// supplies unlimited cornering grip (720 km/h).
@@ -140,6 +141,194 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
     }
 
     // Step 4: lap time and accelerations.
+    let intervals = if closed { n } else { n - 1 };
+    let mut lap_time = 0.0;
+    for i in 0..intervals {
+        let j = if i + 1 < n { i + 1 } else { 0 };
+        let ds = ds_next(i);
+        let v_avg = 0.5 * (speeds[i] + speeds[j]);
+        if v_avg > 0.0 {
+            lap_time += ds / v_avg;
+        }
+    }
+
+    let lateral_gs: Vec<f64> = (0..n)
+        .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
+        .collect();
+
+    let mut longitudinal_gs = vec![0.0; n];
+    for i in 0..n.saturating_sub(1) {
+        let ds = s[i + 1] - s[i];
+        if ds > 0.0 {
+            longitudinal_gs[i] =
+                (speeds[i + 1] * speeds[i + 1] - speeds[i] * speeds[i]) / (2.0 * ds) / GRAVITY;
+        }
+    }
+
+    QssResult {
+        speeds,
+        lap_time,
+        distances: s,
+        lateral_gs,
+        longitudinal_gs,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tire-aware QSS: Pacejka load-sensitive grip instead of the grip circle.
+// ---------------------------------------------------------------------------
+
+/// Total load-sensitive grip from the four tires: `Σ μ_eff(F_z_i)·F_z_i`.
+fn tire_available_grip(
+    params: &CarParams,
+    tire: &PacejkaTire,
+    speed: f64,
+    longitudinal_accel: f64,
+    lateral_accel: f64,
+    rsf: f64,
+) -> f64 {
+    let loads = params.corner_loads(speed, longitudinal_accel, lateral_accel, rsf);
+    let mu_blend = 0.5 * (tire.lateral.mu + tire.longitudinal.mu);
+    loads.iter().map(|&fz| tire.effective_mu(mu_blend, fz) * fz).sum()
+}
+
+/// Cornering-limited speed using the tire grip budget, found by bisection.
+fn cornering_speed_tire(params: &CarParams, tire: &PacejkaTire, kappa: f64, rsf: f64) -> f64 {
+    if kappa < 1e-9 {
+        return V_CAP;
+    }
+    let mut lo = 0.5;
+    let mut hi = V_CAP;
+    for _ in 0..20 {
+        let mid = 0.5 * (lo + hi);
+        let lateral_accel = mid * mid * kappa;
+        let lat_required = params.mass * lateral_accel;
+        let available = tire_available_grip(params, tire, mid, 0.0, lateral_accel, rsf);
+        if lat_required <= available {
+            lo = mid; // feasible — can go faster
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Maximum speed one step ahead, with longitudinal grip from the tire budget.
+fn forward_speed_tire(
+    params: &CarParams,
+    tire: &PacejkaTire,
+    v: f64,
+    kappa: f64,
+    ds: f64,
+    rsf: f64,
+) -> f64 {
+    let lateral_accel = v * v * kappa;
+    let available = tire_available_grip(params, tire, v, 0.0, lateral_accel, rsf);
+    let f_lat = params.mass * lateral_accel;
+    let f_lon_max = (available * available - f_lat * f_lat).max(0.0).sqrt();
+    let f_accel = f_lon_max.min(params.max_drive_force)
+        - params.drag_force(v)
+        - params.rolling_resistance_force();
+    let a = f_accel / params.mass;
+    let v_next_sq = v * v + 2.0 * a * ds;
+    v_next_sq.max(V_FLOOR * V_FLOOR).sqrt()
+}
+
+/// Maximum speed one step behind that can still brake to `v`, tire-limited.
+fn backward_speed_tire(
+    params: &CarParams,
+    tire: &PacejkaTire,
+    v: f64,
+    kappa: f64,
+    ds: f64,
+    rsf: f64,
+) -> f64 {
+    let lateral_accel = v * v * kappa;
+    let available = tire_available_grip(params, tire, v, 0.0, lateral_accel, rsf);
+    let f_lat = params.mass * lateral_accel;
+    let f_lon_max = (available * available - f_lat * f_lat).max(0.0).sqrt();
+    let a_decel = (f_lon_max.min(params.max_brake_force)
+        + params.drag_force(v)
+        + params.rolling_resistance_force())
+        / params.mass;
+    let v_prev_sq = v * v + 2.0 * a_decel * ds;
+    v_prev_sq.max(V_FLOOR * V_FLOOR).sqrt()
+}
+
+/// Run a QSS lap simulation using the Pacejka tire model with load-sensitive grip.
+///
+/// This replaces the simple μ·(mg + downforce) grip circle with the actual
+/// four-corner load distribution and load-sensitive friction coefficients.
+/// The resulting speed profile is conservative (slower) compared to the
+/// grip-circle version, but it's a much better warm start for the 7-DOF optimizer.
+pub fn qss_lap_sim_tire(
+    track: &Track,
+    params: &CarParams,
+    tire: &PacejkaTire,
+    roll_stiffness_front_fraction: f64,
+) -> QssResult {
+    let n = track.segments.len();
+    let closed = track.is_closed;
+    let total_length = track.total_length;
+    let rsf = roll_stiffness_front_fraction;
+
+    let s: Vec<f64> = track.segments.iter().map(|seg| seg.s).collect();
+    let kappa: Vec<f64> = track.segments.iter().map(|seg| seg.curvature.abs()).collect();
+
+    let ds_next = |i: usize| -> f64 {
+        if i + 1 < n {
+            s[i + 1] - s[i]
+        } else {
+            total_length - s[n - 1]
+        }
+    };
+
+    // Step 1: tire-limited cornering speed.
+    let mut speeds: Vec<f64> = (0..n)
+        .map(|i| cornering_speed_tire(params, tire, kappa[i], rsf))
+        .collect();
+
+    if !closed {
+        speeds[0] = speeds[0].min(V_FLOOR);
+    }
+
+    // Step 2: forward (acceleration) pass.
+    let fwd_passes = if closed { 2 } else { 1 };
+    for _ in 0..fwd_passes {
+        let steps = if closed { n } else { n - 1 };
+        for i in 0..steps {
+            let j = if i + 1 < n { i + 1 } else { 0 };
+            let cand = forward_speed_tire(params, tire, speeds[i], kappa[i], ds_next(i), rsf);
+            if cand < speeds[j] {
+                speeds[j] = cand;
+            }
+        }
+    }
+
+    // Step 3: backward (braking) pass.
+    let bwd_passes = if closed { 2 } else { 1 };
+    for _ in 0..bwd_passes {
+        if closed {
+            for i in (0..n).rev() {
+                let p = if i == 0 { n - 1 } else { i - 1 };
+                let ds = if i == 0 { total_length - s[n - 1] } else { s[i] - s[i - 1] };
+                let cand = backward_speed_tire(params, tire, speeds[i], kappa[i], ds, rsf);
+                if cand < speeds[p] {
+                    speeds[p] = cand;
+                }
+            }
+        } else {
+            for i in (1..n).rev() {
+                let ds = s[i] - s[i - 1];
+                let cand = backward_speed_tire(params, tire, speeds[i], kappa[i], ds, rsf);
+                if cand < speeds[i - 1] {
+                    speeds[i - 1] = cand;
+                }
+            }
+        }
+    }
+
+    // Step 4: lap time and accelerations (unchanged).
     let intervals = if closed { n } else { n - 1 };
     let mut lap_time = 0.0;
     for i in 0..intervals {
@@ -333,6 +522,70 @@ mod tests {
             "Monza lap {} should be faster than Silverstone {}",
             monza_lap,
             silverstone_lap
+        );
+    }
+
+    // --- tire-aware QSS tests ---
+
+    use crate::tire::PacejkaTire;
+
+    const RSF: f64 = 0.55;
+
+    #[test]
+    fn tire_qss_circle_slightly_slower() {
+        let params = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let (points, closed) = circle_track(100.0, 12.0, 200);
+        let track = build_track("circle", &points, closed);
+
+        let grip = qss_lap_sim(&track, &params);
+        let tire_q = qss_lap_sim_tire(&track, &params, &tire, RSF);
+
+        let grip_mean: f64 = grip.speeds.iter().sum::<f64>() / grip.speeds.len() as f64;
+        let tire_mean: f64 = tire_q.speeds.iter().sum::<f64>() / tire_q.speeds.len() as f64;
+
+        // load sensitivity reduces effective grip, so tire-aware is a bit slower
+        assert!(tire_mean < grip_mean, "tire {} should be < grip {}", tire_mean, grip_mean);
+        assert!(tire_mean > 0.80 * grip_mean, "tire {} unreasonably low vs {}", tire_mean, grip_mean);
+    }
+
+    #[test]
+    fn tire_qss_oval_more_conservative() {
+        let params = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let (points, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &points, closed);
+
+        let grip = qss_lap_sim(&track, &params);
+        let tire_q = qss_lap_sim_tire(&track, &params, &tire, RSF);
+
+        // slower lap, all speeds valid
+        assert!(tire_q.lap_time > grip.lap_time, "tire lap {} should exceed grip {}", tire_q.lap_time, grip.lap_time);
+        for &v in &tire_q.speeds {
+            assert!(v > 0.0 && v < V_CAP, "speed {} out of range", v);
+        }
+        // corner (min) speed lower, straight (max) speed similar
+        let grip_min = grip.speeds.iter().cloned().fold(f64::MAX, f64::min);
+        let tire_min = tire_q.speeds.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(tire_min < grip_min, "tire corner {} should be < grip corner {}", tire_min, grip_min);
+        let grip_max = grip.speeds.iter().cloned().fold(f64::MIN, f64::max);
+        let tire_max = tire_q.speeds.iter().cloned().fold(f64::MIN, f64::max);
+        assert!((tire_max - grip_max).abs() / grip_max < 0.05, "straight speeds should be similar");
+    }
+
+    #[test]
+    fn tire_cornering_speed_lower_at_r100() {
+        let params = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let kappa = 1.0 / 100.0;
+        let grip_v = cornering_speed(&params, kappa);
+        let tire_v = cornering_speed_tire(&params, &tire, kappa, RSF);
+        assert!(tire_v < grip_v, "tire {} should be < grip {}", tire_v, grip_v);
+        let reduction = (grip_v - tire_v) / grip_v;
+        assert!(
+            (0.05..=0.20).contains(&reduction),
+            "reduction {} should be 5-20%",
+            reduction
         );
     }
 }

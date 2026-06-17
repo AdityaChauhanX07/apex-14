@@ -9,7 +9,7 @@ use apex_optimizer::{
     CollocationConfig, CollocationOptimizer, DirectSolverConfig, GaussNewtonConfig,
     OptimizationResult, SolverConfig,
 };
-use apex_physics::{qss_lap_sim, CarParams, PacejkaTire};
+use apex_physics::{qss_lap_sim, qss_lap_sim_tire, CarParams, PacejkaTire};
 use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
@@ -141,24 +141,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // 7-DOF tire model on the oval: Pacejka combined-slip forces with
-    // four-corner load-sensitive grip. Load sensitivity reduces total grip, so
-    // the lap is expected to be slower than the simple grip-circle model.
+    // four-corner load-sensitive grip, warm-started from the tire-aware QSS so
+    // the seed speed profile is feasible for the tire model.
     let tire = PacejkaTire::f1_default();
+    let grip_qss = qss_lap_sim(&oval_track, &car).lap_time;
+    let tire_qss = qss_lap_sim_tire(&oval_track, &car, &tire, 0.55).lap_time;
     let sd_optimizer = CollocationOptimizer::new(oval_collocation, &oval_track, &car);
     let sd_solver = GaussNewtonConfig {
         max_iterations: 30,
         ..gn_solver.clone()
     };
     let sd = sd_optimizer.optimize_seven_dof(&tire, &sd_solver);
-    println!("Oval with 7-DOF tire model:");
+    println!("Oval with 7-DOF tire model (tire-aware QSS warm start):");
+    println!(
+        "  QSS warm starts: grip-circle {:.3}s -> tire-aware {:.3}s (load sensitivity {:+.1}%)",
+        grip_qss,
+        tire_qss,
+        100.0 * (tire_qss - grip_qss) / grip_qss
+    );
     println!(
         "  7-DOF tire model: {:.3}s | eq_viol {:.2e} | converged: {}",
         sd.lap_time, sd.eq_violation, sd.converged
-    );
-    println!(
-        "  (grip-circle GN: {:.3}s — load sensitivity shifts the lap by {:+.1}%)",
-        oval.gn.lap_time,
-        100.0 * (sd.lap_time - oval.gn.lap_time) / oval.gn.lap_time
     );
     println!();
 

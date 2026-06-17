@@ -10,6 +10,6 @@ pub mod tire;
 pub use bicycle::BicycleModel;
 pub use car_params::CarParams;
 pub use point_mass::PointMassModel;
-pub use qss::{qss_lap_sim, QssResult};
+pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
 pub use seven_dof::SevenDofModel;
 pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};

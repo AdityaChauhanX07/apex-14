@@ -10,7 +10,7 @@
 
 use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
 use apex_physics::car_params::GRAVITY;
-use apex_physics::{qss_lap_sim, smooth_min, CarParams, PacejkaTire};
+use apex_physics::{qss_lap_sim, qss_lap_sim_tire, smooth_min, CarParams, PacejkaTire};
 use apex_track::Track;
 
 /// Front roll-stiffness fraction used for four-corner load transfer in the
@@ -142,32 +142,22 @@ impl<'a> CollocationOptimizer<'a> {
         3 * self.config.n_nodes
     }
 
-    /// Create an initial guess from the QSS solution. This warm start is
-    /// essential for convergence.
-    fn initial_guess(&self) -> Vec<f64> {
+    /// Evenly spaced arc-length stations over `[0, total_length]`.
+    fn node_stations(&self) -> Vec<f64> {
         let n = self.config.n_nodes;
         let length = self.track.total_length;
-        let qss = qss_lap_sim(self.track, self.car);
+        (0..n).map(|k| length * (k as f64) / ((n - 1) as f64)).collect()
+    }
 
-        // s: evenly spaced over [0, length]
-        let s: Vec<f64> = (0..n)
-            .map(|k| length * (k as f64) / ((n - 1) as f64))
-            .collect();
-
-        // v: interpolated from the QSS speed profile (floored at v_min)
-        let v: Vec<f64> = s
-            .iter()
-            .map(|&sk| interp(&qss.distances, &qss.speeds, sk).max(self.config.v_min))
-            .collect();
-
-        // n, alpha: centerline, aligned
+    /// Assemble a full decision vector from arc-length stations and a speed
+    /// profile: centerline (`n = 0`), aligned (`alpha = 0`), track-following
+    /// curvature command, and consistent `dt` / `f_drive`.
+    fn guess_from_speeds(&self, s: Vec<f64>, v: Vec<f64>) -> Vec<f64> {
+        let n = self.config.n_nodes;
         let nn = vec![0.0; n];
         let alpha = vec![0.0; n];
-
-        // curvature_cmd: track curvature (so the path follows the track)
         let curvature_cmd: Vec<f64> = s.iter().map(|&sk| self.track.curvature_at(sk)).collect();
 
-        // dt: ds / v_avg over each interval, clamped
         let dt: Vec<f64> = (0..n - 1)
             .map(|k| {
                 let ds = s[k + 1] - s[k];
@@ -176,7 +166,6 @@ impl<'a> CollocationOptimizer<'a> {
             })
             .collect();
 
-        // f_drive: maintain speed plus accelerate per the QSS speed change
         let drag_roll = self.car.rolling_resistance_force();
         let f_drive: Vec<f64> = (0..n)
             .map(|k| {
@@ -198,6 +187,31 @@ impl<'a> CollocationOptimizer<'a> {
             curvature_cmd,
             dt,
         })
+    }
+
+    /// Create an initial guess from the grip-circle QSS solution. This warm
+    /// start is essential for convergence.
+    fn initial_guess(&self) -> Vec<f64> {
+        let qss = qss_lap_sim(self.track, self.car);
+        let s = self.node_stations();
+        let v: Vec<f64> = s
+            .iter()
+            .map(|&sk| interp(&qss.distances, &qss.speeds, sk).max(self.config.v_min))
+            .collect();
+        self.guess_from_speeds(s, v)
+    }
+
+    /// Create an initial guess from the tire-aware (load-sensitive) QSS solution.
+    /// Its conservative speed profile is feasible for the 7-DOF tire model, so it
+    /// is a much better warm start than the grip-circle guess.
+    fn initial_guess_seven_dof(&self, tire: &PacejkaTire) -> Vec<f64> {
+        let qss = qss_lap_sim_tire(self.track, self.car, tire, ROLL_STIFFNESS_FRONT);
+        let s = self.node_stations();
+        let v: Vec<f64> = s
+            .iter()
+            .map(|&sk| interp(&qss.distances, &qss.speeds, sk).max(self.config.v_min))
+            .collect();
+        self.guess_from_speeds(s, v)
     }
 
     /// Unpack the decision variable vector into individual arrays.
@@ -322,7 +336,7 @@ impl<'a> CollocationOptimizer<'a> {
         tire: &PacejkaTire,
         solver_config: &crate::gauss_newton::GaussNewtonConfig,
     ) -> OptimizationResult {
-        let x0 = self.initial_guess();
+        let x0 = self.initial_guess_seven_dof(tire);
         let problem = self.build_nlp_problem();
         let evaluator = SevenDofEvaluator {
             optimizer: self,
@@ -1589,5 +1603,37 @@ mod tests {
             pm.lap_time
         );
         assert!(sd.lap_time.is_finite() && pm.lap_time.is_finite());
+    }
+
+    #[test]
+    fn tire_warm_start_reduces_grip_violation() {
+        let (track, car, config) = circle(30);
+        let tire = apex_physics::PacejkaTire::f1_default();
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let evaluator = SevenDofEvaluator {
+            optimizer: &opt,
+            tire: &tire,
+        };
+
+        let g_grip = opt.initial_guess();
+        let g_tire = opt.initial_guess_seven_dof(&tire);
+
+        let ineq_grip = evaluator.inequality_constraints(&g_grip);
+        let ineq_tire = evaluator.inequality_constraints(&g_tire);
+
+        // the grip constraint is every third inequality (index 3k+2)
+        let n = opt.config.n_nodes;
+        let max_grip_viol = |c: &[f64]| {
+            (0..n).map(|k| c[3 * k + 2].max(0.0)).fold(0.0_f64, f64::max)
+        };
+
+        let grip_circle = max_grip_viol(&ineq_grip);
+        let tire_aware = max_grip_viol(&ineq_tire);
+        assert!(
+            tire_aware <= grip_circle,
+            "tire-aware warm start grip violation {} should not exceed grip-circle {}",
+            tire_aware,
+            grip_circle
+        );
     }
 }
