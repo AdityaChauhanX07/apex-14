@@ -6,10 +6,12 @@
 use std::path::Path;
 
 use apex_optimizer::{
-    CollocationConfig, CollocationOptimizer, DirectSolverConfig, GaussNewtonConfig,
-    OptimizationResult, SolverConfig,
+    CollocationConfig, CollocationOptimizer, DetailedTelemetry, DirectSolverConfig,
+    GaussNewtonConfig, OptimizationResult, SolverConfig,
 };
-use apex_physics::{qss_lap_sim, qss_lap_sim_tire, CarParams, PacejkaTire};
+use apex_physics::{
+    qss_lap_sim, qss_lap_sim_tire, AeroModel, CarParams, PacejkaTire, SuspensionSystem,
+};
 use apex_telemetry::{export_columns_csv, render_track_svg};
 use apex_track::Track;
 
@@ -73,6 +75,81 @@ fn run_track(
         gn,
         direct,
     })
+}
+
+/// Print a summary of the 14-DOF forward simulation.
+fn print_forward_sim(tele: &DetailedTelemetry) {
+    let max_abs = |xs: &[f64]| xs.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    let max_susp_mm = [
+        &tele.suspension_fl,
+        &tele.suspension_fr,
+        &tele.suspension_rl,
+        &tele.suspension_rr,
+    ]
+    .iter()
+    .map(|c| max_abs(c))
+    .fold(0.0_f64, f64::max)
+        * 1000.0;
+    let rh_min = tele
+        .ride_height_front
+        .iter()
+        .chain(&tele.ride_height_rear)
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let rh_max = tele
+        .ride_height_front
+        .iter()
+        .chain(&tele.ride_height_rear)
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    println!(
+        "  Phase B (full 14-DOF forward sim): {:.3}s lap",
+        tele.lap_time
+    );
+    println!("    Top speed:         {:.1} km/h", max_abs(&tele.speed) * 3.6);
+    println!("    Max lateral g:     {:.2}", max_abs(&tele.lateral_g));
+    println!("    Max roll:          {:.3} deg", max_abs(&tele.roll).to_degrees());
+    println!("    Max pitch:         {:.3} deg", max_abs(&tele.pitch).to_degrees());
+    println!("    Max suspension:    {:.1} mm", max_susp_mm);
+    println!(
+        "    Ride height range: {:.1} - {:.1} mm",
+        rh_min * 1000.0,
+        rh_max * 1000.0
+    );
+}
+
+/// Export the detailed 14-DOF forward-simulation telemetry as columnar CSV.
+fn export_detailed(
+    tele: &DetailedTelemetry,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let roll_deg: Vec<f64> = tele.roll.iter().map(|r| r.to_degrees()).collect();
+    let pitch_deg: Vec<f64> = tele.pitch.iter().map(|p| p.to_degrees()).collect();
+    let speed_kph: Vec<f64> = tele.speed.iter().map(|v| v * 3.6).collect();
+    export_columns_csv(
+        Path::new(path),
+        &[
+            ("t", &tele.time),
+            ("s", &tele.s),
+            ("speed_kph", &speed_kph),
+            ("lateral_offset", &tele.lateral_offset),
+            ("roll_deg", &roll_deg),
+            ("pitch_deg", &pitch_deg),
+            ("susp_fl", &tele.suspension_fl),
+            ("susp_fr", &tele.suspension_fr),
+            ("susp_rl", &tele.suspension_rl),
+            ("susp_rr", &tele.suspension_rr),
+            ("fz_fl", &tele.fz_fl),
+            ("fz_fr", &tele.fz_fr),
+            ("fz_rl", &tele.fz_rl),
+            ("fz_rr", &tele.fz_rr),
+            ("lateral_g", &tele.lateral_g),
+            ("longitudinal_g", &tele.longitudinal_g),
+            ("ride_height_front", &tele.ride_height_front),
+            ("ride_height_rear", &tele.ride_height_rear),
+        ],
+    )
 }
 
 /// Export the optimized racing line as columnar CSV.
@@ -163,6 +240,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  7-DOF tire model: {:.3}s | eq_viol {:.2e} | converged: {}",
         sd.lap_time, sd.eq_violation, sd.converged
     );
+    println!();
+
+    // --- 14-DOF two-phase pipeline ---
+    // Phase A optimizes the racing line with the ride-height-coupled 14-DOF grip
+    // budget; Phase B forward-simulates the full 14-DOF model along that line.
+    let suspension = SuspensionSystem::f1_default();
+    let aero = AeroModel::f1_default();
+    let fd_solver = GaussNewtonConfig {
+        max_iterations: 30,
+        ..gn_solver.clone()
+    };
+
+    // Phase A on the oval (the requested optimize_fourteen_dof run).
+    let fd_oval_cfg = CollocationConfig {
+        n_nodes: 50,
+        closed: true,
+        ..CollocationConfig::default()
+    };
+    let fd_oval = CollocationOptimizer::new(fd_oval_cfg, &oval_track, &car);
+    let fd_oval_opt = fd_oval.optimize_fourteen_dof(&tire, &suspension, &aero, &fd_solver);
+    println!("Oval with 14-DOF force model (Phase A, reduced optimization):");
+    println!(
+        "  14-DOF grip budget: {:.3}s | eq_viol {:.2e} | converged: {}",
+        fd_oval_opt.lap_time, fd_oval_opt.eq_violation, fd_oval_opt.converged
+    );
+    println!();
+
+    // Phase A + B on a tight circle. The simple path-tracking controller is
+    // robust on constant-curvature cornering at moderate speed, so the forward
+    // sim returns clean suspension / roll / ride-height telemetry. (High-speed
+    // straights and straight-to-corner transitions, as on the oval, would need an
+    // MPC-class controller to forward-track stably.)
+    let (fd_circle_pts, fd_circle_closed) = apex_track::circle_track(30.0, 8.0, 200);
+    let fd_circle_track = apex_track::build_track("Circle-30", &fd_circle_pts, fd_circle_closed);
+    let fd_circle_cfg = CollocationConfig {
+        n_nodes: 30,
+        closed: true,
+        ..CollocationConfig::default()
+    };
+    let fd_circle = CollocationOptimizer::new(fd_circle_cfg, &fd_circle_track, &car);
+    let (fd_opt, fd_tele) =
+        fd_circle.optimize_fourteen_dof_full(&tire, &suspension, &aero, &fd_solver);
+
+    println!("Tight circle (R=30m) with 14-DOF two-phase pipeline:");
+    println!(
+        "  Phase A (reduced 14-DOF opt): {:.3}s | eq_viol {:.2e} | converged: {}",
+        fd_opt.lap_time, fd_opt.eq_violation, fd_opt.converged
+    );
+    print_forward_sim(&fd_tele);
+    export_detailed(&fd_tele, "opt_circle_14dof_telemetry.csv")?;
+    println!("  Detailed telemetry exported to opt_circle_14dof_telemetry.csv");
     println!();
 
     // --- Circle track ---

@@ -14,3 +14,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Internal planning docs
+APEX-14_PROJECT_PLAN.md

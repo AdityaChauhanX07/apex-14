@@ -77,6 +77,35 @@ impl<'a> FourteenDofModel<'a> {
         let (front_rh, rear_rh) = self.ride_heights(state);
         self.aero.compute(state[6].max(1.0), front_rh, rear_rh, state[4])
     }
+
+    /// Front/rear ride heights `(front, rear)` (m) implied by `state`.
+    pub fn ride_heights_of(&self, state: &[f64; 24]) -> (f64, f64) {
+        self.ride_heights(state)
+    }
+
+    /// Per-corner tire vertical loads `[fl, fr, rl, rr]` (N) for `state`,
+    /// from the tire radial stiffness acting about the static trim. This is the
+    /// same load the dynamics use internally, exposed for telemetry.
+    pub fn tire_loads(&self, state: &[f64; 24]) -> [f64; 4] {
+        let p = self.params;
+        let h = p.cog_height;
+        let lf = p.cog_to_front;
+        let lr = p.cog_to_rear;
+        let twf = p.track_width_front;
+        let twr = p.track_width_rear;
+        let k_tire = p.tire_radial_stiffness;
+        let z_chassis = state[2];
+        let phi = state[3];
+        let theta = state[4];
+        let z_s = [state[16], state[17], state[18], state[19]];
+        let x_off = [lf, lf, -lr, -lr];
+        let y_off = [twf / 2.0, -twf / 2.0, twr / 2.0, -twr / 2.0];
+        std::array::from_fn(|i| {
+            let d_chassis = (z_chassis - h) - x_off[i] * theta + y_off[i] * phi;
+            let comp_change = -((z_s[i] - self.z_s_eq[i]) + d_chassis);
+            (self.f_z_eq[i] + k_tire * comp_change).max(0.0)
+        })
+    }
 }
 
 /// Solve the symmetric static trim (front/rear suspension travel) at `speed`:

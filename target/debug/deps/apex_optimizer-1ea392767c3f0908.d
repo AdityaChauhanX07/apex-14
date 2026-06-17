@@ -1,10 +1,11 @@
-F:\PROJECTS\apex-14\target\debug\deps\apex_optimizer-1ea392767c3f0908.d: crates\apex-optimizer\src\lib.rs crates\apex-optimizer\src\collocation.rs crates\apex-optimizer\src\direct_solver.rs crates\apex-optimizer\src\gauss_newton.rs crates\apex-optimizer\src\nlp.rs crates\apex-optimizer\src\solver.rs Cargo.toml
+F:\PROJECTS\apex-14\target\debug\deps\apex_optimizer-1ea392767c3f0908.d: crates\apex-optimizer\src\lib.rs crates\apex-optimizer\src\collocation.rs crates\apex-optimizer\src\direct_solver.rs crates\apex-optimizer\src\forward_sim.rs crates\apex-optimizer\src\gauss_newton.rs crates\apex-optimizer\src\nlp.rs crates\apex-optimizer\src\solver.rs Cargo.toml
 
-F:\PROJECTS\apex-14\target\debug\deps\libapex_optimizer-1ea392767c3f0908.rmeta: crates\apex-optimizer\src\lib.rs crates\apex-optimizer\src\collocation.rs crates\apex-optimizer\src\direct_solver.rs crates\apex-optimizer\src\gauss_newton.rs crates\apex-optimizer\src\nlp.rs crates\apex-optimizer\src\solver.rs Cargo.toml
+F:\PROJECTS\apex-14\target\debug\deps\libapex_optimizer-1ea392767c3f0908.rmeta: crates\apex-optimizer\src\lib.rs crates\apex-optimizer\src\collocation.rs crates\apex-optimizer\src\direct_solver.rs crates\apex-optimizer\src\forward_sim.rs crates\apex-optimizer\src\gauss_newton.rs crates\apex-optimizer\src\nlp.rs crates\apex-optimizer\src\solver.rs Cargo.toml
 
 crates\apex-optimizer\src\lib.rs:
 crates\apex-optimizer\src\collocation.rs:
 crates\apex-optimizer\src\direct_solver.rs:
+crates\apex-optimizer\src\forward_sim.rs:
 crates\apex-optimizer\src\gauss_newton.rs:
 crates\apex-optimizer\src\nlp.rs:
 crates\apex-optimizer\src\solver.rs:

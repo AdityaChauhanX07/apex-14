@@ -10,7 +10,9 @@
 
 use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
 use apex_physics::car_params::GRAVITY;
-use apex_physics::{qss_lap_sim, qss_lap_sim_tire, smooth_min, CarParams, PacejkaTire};
+use apex_physics::{
+    qss_lap_sim, qss_lap_sim_tire, smooth_min, AeroModel, CarParams, PacejkaTire, SuspensionSystem,
+};
 use apex_track::Track;
 
 /// Front roll-stiffness fraction used for four-corner load transfer in the
@@ -344,6 +346,63 @@ impl<'a> CollocationOptimizer<'a> {
         };
         let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, solver_config);
         self.extract_result_gn(&result)
+    }
+
+    /// Optimize using the full 14-DOF force model for grip limits.
+    ///
+    /// The optimizer works in the curvilinear 4-state formulation (s, n, v, alpha)
+    /// but computes force limits using:
+    /// - Four-corner vertical loads with lateral AND longitudinal weight transfer
+    /// - Pacejka combined-slip tire forces with load sensitivity
+    /// - Ride-height-sensitive aerodynamic downforce
+    /// - Suspension static equilibrium to estimate ride heights from load distribution
+    ///
+    /// The dynamics defects reuse the autodiffed 7-DOF curvilinear equations (the
+    /// longitudinal balance is unchanged by ride-height effects), while the grip
+    /// inequality at each node uses the 14-DOF budget, so the binding cornering
+    /// limit reflects the ride-height-coupled downforce. After optimization, the
+    /// result can be forward-simulated with the full 14-DOF model.
+    pub fn optimize_fourteen_dof(
+        &self,
+        tire: &PacejkaTire,
+        suspension: &SuspensionSystem,
+        aero: &AeroModel,
+        solver_config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> OptimizationResult {
+        let x0 = self.initial_guess_seven_dof(tire);
+        let problem = self.build_nlp_problem();
+        let evaluator = FourteenDofEvaluator {
+            optimizer: self,
+            tire,
+            suspension,
+            aero,
+        };
+        let result =
+            crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, solver_config);
+        self.extract_result_gn(&result)
+    }
+
+    /// Full 14-DOF optimization pipeline:
+    /// 1. Optimize racing line with 14-DOF force model (reduced collocation)
+    /// 2. Forward-simulate full 14-DOF model along optimized trajectory
+    /// 3. Return both the optimization result and the detailed telemetry
+    pub fn optimize_fourteen_dof_full(
+        &self,
+        tire: &PacejkaTire,
+        suspension: &SuspensionSystem,
+        aero: &AeroModel,
+        solver_config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> (OptimizationResult, crate::forward_sim::DetailedTelemetry) {
+        let opt = self.optimize_fourteen_dof(tire, suspension, aero, solver_config);
+        let simulator = crate::forward_sim::ForwardSimulator {
+            params: self.car,
+            tire,
+            suspension,
+            aero,
+            track: self.track,
+        };
+        let telemetry = simulator.simulate(&opt);
+        (opt, telemetry)
     }
 
     /// Run optimization using the sequential defect-correction (direct) solver.
@@ -1248,6 +1307,203 @@ fn seven_dof_defect_with_dual(
     std::array::from_fn(|j| state_k1[j] - state_k[j] - half * (f_k[j] + f_k1[j]))
 }
 
+// ---------------------------------------------------------------------------
+// 14-DOF force model (two-phase method, Phase A)
+//
+// Reuses the curvilinear 4-state collocation and the autodiffed 7-DOF dynamics
+// for the trajectory defects (the longitudinal balance is unaffected by ride
+// height), but replaces the cornering grip *budget* with one that couples
+// ride-height-sensitive aero to the suspension load distribution: the four
+// corner loads compress the suspension, the resulting ride height sets the
+// downforce, and that downforce feeds back into the available tire grip.
+// ---------------------------------------------------------------------------
+
+/// Total available grip force (N) from the full 14-DOF quasi-static force model.
+///
+/// Steps: four-corner loads → suspension static equilibrium → ride heights →
+/// ride-height-sensitive aero → aero-adjusted corner loads → load-sensitive
+/// effective grip summed over the four corners.
+///
+/// The front roll-stiffness fraction is the module-wide [`ROLL_STIFFNESS_FRONT`]
+/// used throughout the 7-DOF formulation (kept off the signature so the function
+/// stays within the clippy argument-count limit without a suppression).
+pub fn fourteen_dof_grip_budget(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    suspension: &SuspensionSystem,
+    aero: &AeroModel,
+    speed: f64,
+    lateral_accel: f64,
+    longitudinal_accel: f64,
+) -> f64 {
+    // (a) four-corner vertical loads (already include the simple speed² downforce)
+    let mut loads = car.corner_loads(
+        speed,
+        longitudinal_accel,
+        lateral_accel,
+        ROLL_STIFFNESS_FRONT,
+    );
+
+    // (b) suspension compression that supports those loads
+    let z_eq = suspension.static_equilibrium(&loads);
+
+    // (c) ride heights implied by the suspension compression
+    let front_rh = aero.design_ride_height - 0.5 * (z_eq[0] + z_eq[1]);
+    let rear_rh = aero.design_ride_height - 0.5 * (z_eq[2] + z_eq[3]);
+
+    // (d) ride-height-sensitive aero (quasi-static → zero pitch)
+    let aero_f = aero.compute(speed, front_rh, rear_rh, 0.0);
+
+    // (e) swap the simple speed² downforce already baked into `loads` for the
+    //     ride-height-sensitive downforce (so it is not double counted)
+    let simple_df = car.downforce(speed);
+    let simple_front = 0.5 * simple_df * car.aero_balance_front;
+    let simple_rear = 0.5 * simple_df * (1.0 - car.aero_balance_front);
+    loads[0] += 0.5 * aero_f.downforce_front - simple_front;
+    loads[1] += 0.5 * aero_f.downforce_front - simple_front;
+    loads[2] += 0.5 * aero_f.downforce_rear - simple_rear;
+    loads[3] += 0.5 * aero_f.downforce_rear - simple_rear;
+
+    // (f,g) load-sensitive effective grip summed over the corners
+    let base_mu = 0.5 * (tire.lateral.mu + tire.longitudinal.mu);
+    loads
+        .iter()
+        .map(|&fz| {
+            let fz = fz.max(0.0);
+            tire.effective_mu(base_mu, fz) * fz
+        })
+        .sum()
+}
+
+/// 14-DOF grip inequality at one node: `requested / available − 1 ≤ 0`.
+fn fourteen_dof_grip_constraint(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    suspension: &SuspensionSystem,
+    aero: &AeroModel,
+    v: f64,
+    f_drive: f64,
+    curv: f64,
+) -> f64 {
+    let m = car.mass;
+    let lateral_accel = v * v * curv;
+    let ax = f_drive / m;
+    let available =
+        fourteen_dof_grip_budget(car, tire, suspension, aero, v, lateral_accel, ax).max(1.0);
+    let f_lat = m * v * v * curv;
+    let req = (f_drive * f_drive + f_lat * f_lat).sqrt();
+    req / available - 1.0
+}
+
+/// Collocation evaluator using the 14-DOF ride-height-coupled force model for
+/// the grip budget. The trajectory defects, objective, and equality Jacobian are
+/// the autodiffed 7-DOF ones; only the grip inequality (and its Jacobian) use the
+/// 14-DOF budget, computed by finite differences over its three local variables.
+struct FourteenDofEvaluator<'a, 'b> {
+    optimizer: &'a CollocationOptimizer<'b>,
+    tire: &'a PacejkaTire,
+    suspension: &'a SuspensionSystem,
+    aero: &'a AeroModel,
+}
+
+impl NlpEvaluator for FourteenDofEvaluator<'_, '_> {
+    fn objective(&self, x: &[f64]) -> f64 {
+        SevenDofEvaluator {
+            optimizer: self.optimizer,
+            tire: self.tire,
+        }
+        .objective(x)
+    }
+
+    fn objective_gradient(&self, x: &[f64]) -> Vec<f64> {
+        SevenDofEvaluator {
+            optimizer: self.optimizer,
+            tire: self.tire,
+        }
+        .objective_gradient(x)
+    }
+
+    fn equality_constraints(&self, x: &[f64]) -> Vec<f64> {
+        SevenDofEvaluator {
+            optimizer: self.optimizer,
+            tire: self.tire,
+        }
+        .equality_constraints(x)
+    }
+
+    fn equality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        SevenDofEvaluator {
+            optimizer: self.optimizer,
+            tire: self.tire,
+        }
+        .equality_jacobian(x)
+    }
+
+    fn inequality_constraints(&self, x: &[f64]) -> Vec<f64> {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let vars = opt.unpack(x);
+        let mut c = Vec::with_capacity(opt.n_ineq_constraints());
+
+        for k in 0..n {
+            let (wl, wr) = opt.track.width_at(vars.s[k]);
+            c.push(vars.n[k] - wl);
+            c.push(-wr - vars.n[k]);
+            c.push(fourteen_dof_grip_constraint(
+                opt.car,
+                self.tire,
+                self.suspension,
+                self.aero,
+                vars.v[k],
+                vars.f_drive[k],
+                vars.curvature_cmd[k],
+            ));
+        }
+
+        c
+    }
+
+    fn inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {
+        let opt = self.optimizer;
+        let n = opt.config.n_nodes;
+        let mut builder = CsrBuilder::new(opt.n_ineq_constraints(), x.len());
+        let vars = opt.unpack(x);
+
+        let grip = |v: f64, fd: f64, cv: f64| {
+            fourteen_dof_grip_constraint(opt.car, self.tire, self.suspension, self.aero, v, fd, cv)
+        };
+
+        for k in 0..n {
+            let row = 3 * k;
+            builder.add(row, n + k, 1.0);
+            builder.add(row + 1, n + k, -1.0);
+
+            // Grip depends only on (v_k, f_drive_k, curv_k) — central FD over each.
+            let v = vars.v[k];
+            let fd = vars.f_drive[k];
+            let cv = vars.curvature_cmd[k];
+            let rel = 1e-6;
+            let hv = (v.abs() * rel).max(1e-6);
+            let hf = (fd.abs() * rel).max(1e-3);
+            let hc = (cv.abs() * rel).max(1e-7);
+            let dv = (grip(v + hv, fd, cv) - grip(v - hv, fd, cv)) / (2.0 * hv);
+            let dfd = (grip(v, fd + hf, cv) - grip(v, fd - hf, cv)) / (2.0 * hf);
+            let dcv = (grip(v, fd, cv + hc) - grip(v, fd, cv - hc)) / (2.0 * hc);
+            if dv.abs() > 1e-15 {
+                builder.add(row + 2, 2 * n + k, dv);
+            }
+            if dfd.abs() > 1e-15 {
+                builder.add(row + 2, 4 * n + k, dfd);
+            }
+            if dcv.abs() > 1e-15 {
+                builder.add(row + 2, 5 * n + k, dcv);
+            }
+        }
+
+        builder.build()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1634,6 +1890,118 @@ mod tests {
             "tire-aware warm start grip violation {} should not exceed grip-circle {}",
             tire_aware,
             grip_circle
+        );
+    }
+
+    // --- 14-DOF force-model tests ---
+
+    #[test]
+    fn fourteen_dof_grip_budget_behaves() {
+        let car = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        let speed = 40.0;
+
+        let g0 = fourteen_dof_grip_budget(&car, &tire, &susp, &aero, speed, 0.0, 0.0);
+        let seven = available_grip_generic::<f64>(&car, &tire, speed, 0.0, 0.0);
+
+        // positive and finite
+        assert!(g0.is_finite() && g0 > 0.0, "budget {} must be positive finite", g0);
+
+        // comparable to the 7-DOF value: ride-height aero shifts the downforce
+        // (the equilibrium ride height sits below design, trimming downforce a
+        // little) but does not change the budget wildly
+        assert!(
+            g0 > 0.5 * seven && g0 < 1.2 * seven,
+            "14-DOF budget {} should be in band of 7-DOF {}",
+            g0,
+            seven
+        );
+
+        // high lateral acceleration transfers load; load sensitivity then cuts
+        // the total available grip
+        let g_corner = fourteen_dof_grip_budget(&car, &tire, &susp, &aero, speed, 25.0, 0.0);
+        assert!(
+            g_corner < g0,
+            "cornering grip {} should be below straight-line {}",
+            g_corner,
+            g0
+        );
+        assert!(g_corner.is_finite() && g_corner > 0.0);
+    }
+
+    #[test]
+    fn optimize_fourteen_dof_circle() {
+        let (track, car, config) = circle(30);
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let pm = opt.optimize_gn(&gn);
+        let sd = opt.optimize_seven_dof(&tire, &gn);
+        let fd = opt.optimize_fourteen_dof(&tire, &susp, &aero, &gn);
+
+        assert!(fd.lap_time.is_finite() && fd.lap_time > 0.0, "14-DOF lap {} finite", fd.lap_time);
+        assert!(fd.speeds.iter().all(|&v| v > 0.0), "14-DOF speeds positive");
+
+        // the ride-height-coupled grip budget yields a different optimum than the
+        // simple grip circle and the 7-DOF model
+        assert!(
+            (fd.lap_time - pm.lap_time).abs() / pm.lap_time > 1e-3,
+            "14-DOF lap {} should differ from point-mass {}",
+            fd.lap_time,
+            pm.lap_time
+        );
+        assert!(
+            (fd.lap_time - sd.lap_time).abs() / sd.lap_time > 1e-4,
+            "14-DOF lap {} should differ from 7-DOF {}",
+            fd.lap_time,
+            sd.lap_time
+        );
+    }
+
+    #[test]
+    fn fourteen_dof_full_pipeline() {
+        // A small-radius circle keeps the grip-limited speed (and thus the
+        // lateral g) modest, so the forward-sim controller can track it.
+        let (pts, closed) = circle_track(30.0, 8.0, 200);
+        let track = build_track("small_circle", &pts, closed);
+        let car = CarParams::default();
+        let config = CollocationConfig {
+            n_nodes: 20,
+            closed: true,
+            ..CollocationConfig::default()
+        };
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 30,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let (result, tele) = opt.optimize_fourteen_dof_full(&tire, &susp, &aero, &gn);
+
+        assert!(result.lap_time.is_finite() && result.lap_time > 0.0, "opt lap finite");
+        assert!(!tele.time.is_empty(), "telemetry produced");
+        assert!(tele.lap_time.is_finite() && tele.lap_time > 0.0, "telemetry lap finite");
+
+        // the forward-simulated lap should track the optimized lap reasonably
+        // (the controller is not a perfect tracker)
+        assert!(
+            (tele.lap_time - result.lap_time).abs() / result.lap_time < 0.20,
+            "forward-sim lap {} should be within 20% of optimized {}",
+            tele.lap_time,
+            result.lap_time
         );
     }
 }
