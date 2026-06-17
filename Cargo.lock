@@ -165,6 +165,8 @@ dependencies = [
 name = "simulate"
 version = "0.1.0"
 dependencies = [
+ "apex-integrator",
+ "apex-math",
  "apex-physics",
  "apex-telemetry",
  "apex-track",
