@@ -120,6 +120,12 @@ cargo clippy -- -D warnings         # lint check
 cargo bench                         # performance benchmarks
 ```
 
+After cloning, enable the pre-commit hook to auto-format before each commit:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## References
 
 - H. B. Pacejka, *Tire and Vehicle Dynamics*, 3rd ed., Butterworth-Heinemann, 2012

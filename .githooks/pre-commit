@@ -1,0 +1,19 @@
+#!/bin/sh
+# Apex-14 pre-commit hook: auto-format all Rust code before committing.
+# This prevents CI format check failures.
+
+# Run cargo fmt
+cargo fmt --all 2>/dev/null
+
+# Stage any formatting changes
+git diff --name-only --diff-filter=M | grep '\.rs$' | xargs -r git add
+
+# Verify formatting is clean (fail the commit if fmt somehow can't fix it)
+cargo fmt --all -- --check 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Error: cargo fmt --check failed even after auto-formatting."
+    echo "Please check your Rust toolchain."
+    exit 1
+fi
+
+exit 0

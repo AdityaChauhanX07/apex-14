@@ -1,0 +1,5 @@
+# Shell scripts and git hooks must keep LF line endings so they run on
+# Unix/macOS/CI. Without this, core.autocrlf=true would check them out with
+# CRLF and `#!/bin/sh` would fail with a "bad interpreter" error.
+*.sh text eol=lf
+.githooks/** text eol=lf
