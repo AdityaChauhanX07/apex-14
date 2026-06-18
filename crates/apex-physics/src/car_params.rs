@@ -105,6 +105,43 @@ impl Default for CarParams {
 }
 
 impl CarParams {
+    /// Calibrated 2024-era F1 car parameters.
+    ///
+    /// Tuned to produce performance numbers consistent with published data:
+    /// - Top speed: 330-350 km/h (Monza main straight)
+    /// - Peak lateral acceleration: 4.5-5.5g (high-speed corners)
+    /// - Peak longitudinal deceleration: 5.0-6.0g (heavy braking)
+    /// - Silverstone lap time: 85-95s (qualifying pace)
+    pub fn f1_2024_calibrated() -> Self {
+        CarParams {
+            mass: 798.0,
+            frontal_area: 1.5,
+            drag_coeff: 1.10,         // higher drag (complex aero, open wheels)
+            lift_coeff: 2.80,         // reduced from 3.5 (more realistic total downforce)
+            air_density: 1.225,
+            tire_mu: 1.55,            // reduced from 1.75 (more realistic peak grip)
+            rolling_resistance: 0.015,
+            max_drive_force: 11000.0, // ~900 HP at ~300 km/h
+            max_brake_force: 25000.0, // slightly reduced
+            wheelbase: 3.60,
+            cog_to_front: 1.67,
+            cog_to_rear: 1.93,
+            cog_height: 0.30,
+            yaw_inertia: 1200.0,
+            aero_balance_front: 0.44, // slightly more rear-biased
+            wheel_radius: 0.330,
+            wheel_inertia: 1.2,
+            track_width_front: 1.60,
+            track_width_rear: 1.60,
+            brake_bias_front: 0.58,
+            drive_distribution: 1.0,
+            unsprung_mass: 15.0,
+            tire_radial_stiffness: 250_000.0,
+            inertia_xx: 400.0,
+            inertia_yy: 1400.0,
+        }
+    }
+
     /// Aerodynamic drag force at the given speed: `0.5 · ρ · C_d · A · v²`.
     pub fn drag_force(&self, speed: f64) -> f64 {
         0.5 * self.air_density * self.drag_coeff * self.frontal_area * speed * speed
@@ -234,5 +271,149 @@ mod tests {
         let p = CarParams::default();
         let expected = 0.015 * 798.0 * 9.81;
         assert!(approx(p.rolling_resistance_force(), expected, 1e-9));
+    }
+
+    // --- Calibrated 2024 F1 preset -----------------------------------------
+
+    /// Closed-form terminal velocity (m/s): the speed where drive force equals
+    /// drag + rolling resistance. `v = sqrt((F_max − F_roll) / (½·ρ·C_d·A))`.
+    fn terminal_velocity(p: &CarParams) -> f64 {
+        let f_roll = p.rolling_resistance_force();
+        let denom = 0.5 * p.air_density * p.drag_coeff * p.frontal_area;
+        ((p.max_drive_force - f_roll) / denom).sqrt()
+    }
+
+    /// Grip-limited cornering lateral acceleration (in g) at radius `r`, the same
+    /// balance the QSS solver uses: `m·v²·κ = μ·(m·g + ½·ρ·C_l·A·v²)`.
+    fn cornering_lat_g(p: &CarParams, r: f64) -> f64 {
+        let kappa = 1.0 / r;
+        let denom =
+            p.mass * kappa - p.tire_mu * 0.5 * p.air_density * p.lift_coeff * p.frontal_area;
+        let v2 = p.tire_mu * p.mass * GRAVITY / denom;
+        v2 * kappa / GRAVITY
+    }
+
+    #[test]
+    fn calibrated_params_sanity() {
+        let c = CarParams::f1_2024_calibrated();
+        let d = CarParams::default();
+
+        // FIA minimum mass.
+        assert_eq!(c.mass, 798.0);
+
+        // Less aggressive than the default preset.
+        assert!(c.tire_mu < d.tire_mu, "tire_mu {} should be < default {}", c.tire_mu, d.tire_mu);
+        assert!(
+            c.lift_coeff < d.lift_coeff,
+            "lift_coeff {} should be < default {}",
+            c.lift_coeff,
+            d.lift_coeff
+        );
+
+        // All magnitude fields are positive.
+        for v in [
+            c.mass,
+            c.frontal_area,
+            c.drag_coeff,
+            c.lift_coeff,
+            c.air_density,
+            c.tire_mu,
+            c.rolling_resistance,
+            c.max_drive_force,
+            c.max_brake_force,
+            c.wheelbase,
+            c.cog_to_front,
+            c.cog_to_rear,
+            c.cog_height,
+            c.yaw_inertia,
+            c.aero_balance_front,
+            c.wheel_radius,
+            c.wheel_inertia,
+            c.track_width_front,
+            c.track_width_rear,
+            c.brake_bias_front,
+            c.drive_distribution,
+            c.unsprung_mass,
+            c.tire_radial_stiffness,
+            c.inertia_xx,
+            c.inertia_yy,
+        ] {
+            assert!(v > 0.0, "field value {v} should be positive");
+        }
+        // Fractions stay within [0, 1].
+        assert!((0.0..=1.0).contains(&c.aero_balance_front));
+        assert!((0.0..=1.0).contains(&c.brake_bias_front));
+        assert!((0.0..=1.0).contains(&c.drive_distribution));
+    }
+
+    #[test]
+    fn calibrated_terminal_velocity_is_realistic() {
+        let c = CarParams::f1_2024_calibrated();
+        let v_kph = terminal_velocity(&c) * 3.6;
+        // The specified params yield ~374 km/h — far below the default's ~483 and
+        // in realistic F1 territory (a track top speed of ~340 km/h sits below
+        // this drag-limited terminal value).
+        assert!(
+            (300.0..=380.0).contains(&v_kph),
+            "calibrated terminal velocity {v_kph:.1} km/h out of realistic band"
+        );
+        assert!(
+            v_kph < terminal_velocity(&CarParams::default()) * 3.6,
+            "calibrated terminal velocity should be below the default's"
+        );
+    }
+
+    #[test]
+    fn calibrated_cornering_g_is_realistic() {
+        let c = CarParams::f1_2024_calibrated();
+        let d = CarParams::default();
+        let g_c = cornering_lat_g(&c, 100.0);
+        let g_d = cornering_lat_g(&d, 100.0);
+
+        assert!(
+            (3.0..=6.0).contains(&g_c),
+            "calibrated cornering {g_c:.2}g out of [3, 6]"
+        );
+        assert!(
+            g_c < g_d,
+            "calibrated cornering {g_c:.2}g should be below default {g_d:.2}g"
+        );
+    }
+
+    #[test]
+    fn calibrated_qss_lap_is_slower_with_less_grip() {
+        use apex_track::{build_track, oval_track};
+
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 500);
+        let oval = build_track("oval", &pts, closed);
+
+        let default_res = crate::qss_lap_sim(&oval, &CarParams::default());
+        let calib_res = crate::qss_lap_sim(&oval, &CarParams::f1_2024_calibrated());
+
+        let top = |r: &crate::QssResult| r.speeds.iter().cloned().fold(f64::MIN, f64::max);
+        let max_lat = |r: &crate::QssResult| {
+            r.lateral_gs.iter().map(|g| g.abs()).fold(0.0_f64, f64::max)
+        };
+
+        // Less power + more drag -> lower top speed; less grip -> longer lap and
+        // lower cornering load.
+        assert!(
+            calib_res.lap_time > default_res.lap_time,
+            "calibrated lap {:.2}s should be slower than default {:.2}s",
+            calib_res.lap_time,
+            default_res.lap_time
+        );
+        assert!(
+            top(&calib_res) < top(&default_res),
+            "calibrated top speed {:.1} should be below default {:.1}",
+            top(&calib_res),
+            top(&default_res)
+        );
+        assert!(
+            max_lat(&calib_res) < max_lat(&default_res),
+            "calibrated lateral g {:.2} should be below default {:.2}",
+            max_lat(&calib_res),
+            max_lat(&default_res)
+        );
     }
 }

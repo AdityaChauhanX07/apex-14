@@ -109,8 +109,8 @@ fn fmt_cell(v: f64) -> String {
     }
 }
 
-fn print_table(track_len: f64, rows: &[Row]) {
-    println!("=== Apex-14 — Model Fidelity Comparison ===");
+fn print_table(title: &str, track_len: f64, rows: &[Row]) {
+    println!("=== {} ===", title);
     println!(
         "Track: Oval (500m straights, R=80m corners, {:.0}m total)",
         track_len
@@ -165,8 +165,81 @@ fn summarize_chassis(tele: &DetailedTelemetry) -> (f64, f64, f64) {
     (max_roll, max_pitch, max_susp_mm)
 }
 
+/// All model-fidelity results for one parameter set on the oval, plus the
+/// intermediate results needed for the key-observation deltas.
+struct OvalRun {
+    rows: Vec<Row>,
+    qss_grip: QssResult,
+    qss_tire: QssResult,
+    coll_pm: OptimizationResult,
+    coll_14dof: OptimizationResult,
+    oval_fwd: DetailedTelemetry,
+}
+
+/// Run every model fidelity on the oval for one car-parameter set.
+fn run_oval(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    suspension: &SuspensionSystem,
+    aero: &AeroModel,
+    oval: &Track,
+    coll_cfg: &CollocationConfig,
+    gn: &GaussNewtonConfig,
+) -> OvalRun {
+    // (b) QSS grip circle (point-mass baseline).
+    let qss_grip = qss_lap_sim(oval, car);
+    // (c) QSS tire-aware.
+    let qss_tire = qss_lap_sim_tire(oval, car, tire, ROLL_STIFFNESS_FRONT);
+
+    // (d) Collocation, point-mass.
+    let opt = CollocationOptimizer::new(coll_cfg.clone(), oval, car);
+    let coll_pm = opt.optimize_gn(gn);
+    // (e) Collocation, 7-DOF tire model.
+    let coll_7dof = opt.optimize_seven_dof(tire, gn);
+    // (f) Collocation, 14-DOF force model.
+    let coll_14dof = opt.optimize_fourteen_dof(tire, suspension, aero, gn);
+    // (g) 14-DOF forward simulation along the optimized oval line.
+    let (_oval_opt, oval_fwd) = opt.optimize_fourteen_dof_full(tire, suspension, aero, gn);
+
+    let rows = vec![
+        row_from_qss("QSS (grip circle)", &qss_grip),
+        row_from_qss("QSS (tire-aware)", &qss_tire),
+        row_from_opt("Collocation (point-mass)", &coll_pm, oval),
+        row_from_opt("Collocation (7-DOF tire)", &coll_7dof, oval),
+        row_from_opt("Collocation (14-DOF)", &coll_14dof, oval),
+        row_from_forward("14-DOF Forward Sim", &oval_fwd),
+    ];
+
+    OvalRun {
+        rows,
+        qss_grip,
+        qss_tire,
+        coll_pm,
+        coll_14dof,
+        oval_fwd,
+    }
+}
+
+/// Print the QSS / 14-DOF deltas that the model fidelities reveal for one run.
+fn print_key_observations(run: &OvalRun) {
+    let tire_vs_grip =
+        100.0 * (run.qss_tire.lap_time - run.qss_grip.lap_time) / run.qss_grip.lap_time;
+    let fd_vs_pm = 100.0 * (run.coll_14dof.lap_time - run.coll_pm.lap_time) / run.coll_pm.lap_time;
+    println!();
+    println!("Key Observations:");
+    println!(
+        "- QSS tire-aware is {:+.1}% vs grip circle (load sensitivity reduces total grip)",
+        tire_vs_grip
+    );
+    println!(
+        "- 14-DOF force model shows {:+.1}% vs point-mass (ride-height aero + suspension)",
+        fd_vs_pm
+    );
+}
+
 fn main() {
     let car = CarParams::default();
+    let calibrated = CarParams::f1_2024_calibrated();
     let tire = PacejkaTire::f1_default();
     let suspension = SuspensionSystem::f1_default();
     let aero = AeroModel::f1_default();
@@ -187,46 +260,37 @@ fn main() {
         ..CollocationConfig::default()
     };
 
-    // (b) QSS grip circle (point-mass baseline).
-    let qss_grip = qss_lap_sim(&oval, &car);
-    // (c) QSS tire-aware.
-    let qss_tire = qss_lap_sim_tire(&oval, &car, &tire, ROLL_STIFFNESS_FRONT);
-
-    // (d) Collocation, point-mass.
-    let opt = CollocationOptimizer::new(coll_cfg.clone(), &oval, &car);
-    let coll_pm = opt.optimize_gn(&gn);
-    // (e) Collocation, 7-DOF tire model.
-    let coll_7dof = opt.optimize_seven_dof(&tire, &gn);
-    // (f) Collocation, 14-DOF force model.
-    let coll_14dof = opt.optimize_fourteen_dof(&tire, &suspension, &aero, &gn);
-    // (g) 14-DOF forward simulation along the optimized oval line.
-    let (_oval_opt, oval_fwd) = opt.optimize_fourteen_dof_full(&tire, &suspension, &aero, &gn);
-
-    let rows = [
-        row_from_qss("QSS (grip circle)", &qss_grip),
-        row_from_qss("QSS (tire-aware)", &qss_tire),
-        row_from_opt("Collocation (point-mass)", &coll_pm, &oval),
-        row_from_opt("Collocation (7-DOF tire)", &coll_7dof, &oval),
-        row_from_opt("Collocation (14-DOF)", &coll_14dof, &oval),
-        row_from_forward("14-DOF Forward Sim", &oval_fwd),
-    ];
-
-    print_table(oval.total_length, &rows);
-
-    // Key observations.
-    let tire_vs_grip = 100.0 * (qss_tire.lap_time - qss_grip.lap_time) / qss_grip.lap_time;
-    let fd_vs_pm = 100.0 * (coll_14dof.lap_time - coll_pm.lap_time) / coll_pm.lap_time;
-
+    // Run the full comparison with the default (aggressive) params and again with
+    // the calibrated 2024 F1 params, side by side.
+    let default_run = run_oval(&car, &tire, &suspension, &aero, &oval, &coll_cfg, &gn);
+    print_table("Default Parameters (aggressive)", oval.total_length, &default_run.rows);
+    print_key_observations(&default_run);
     println!();
-    println!("Key Observations:");
-    println!(
-        "- QSS tire-aware is {:+.1}% vs grip circle (load sensitivity reduces total grip)",
-        tire_vs_grip
+
+    let calibrated_run = run_oval(&calibrated, &tire, &suspension, &aero, &oval, &coll_cfg, &gn);
+    print_table(
+        "Calibrated Parameters (F1 2024)",
+        oval.total_length,
+        &calibrated_run.rows,
     );
-    println!(
-        "- 14-DOF force model shows {:+.1}% vs point-mass (ride-height aero + suspension)",
-        fd_vs_pm
-    );
+    print_key_observations(&calibrated_run);
+
+    // Calibration effect on the grip-circle QSS baseline (the headline numbers).
+    let d = &default_run.qss_grip;
+    let c = &calibrated_run.qss_grip;
+    let top = |r: &QssResult| min_max(&r.speeds).0 * 3.6;
+    let lat = |r: &QssResult| r.lateral_gs.iter().map(|g| g.abs()).fold(0.0_f64, f64::max);
+    println!();
+    println!("Calibration effect (QSS grip-circle baseline, default -> calibrated):");
+    println!("- Lap time:  {:.2}s -> {:.2}s", d.lap_time, c.lap_time);
+    println!("- Top speed: {:.0} km/h -> {:.0} km/h", top(d), top(c));
+    println!("- Max lat g: {:.2}g -> {:.2}g", lat(d), lat(c));
+
+    // The remaining diagnostics (forward-sim tracking margin, chassis dynamics,
+    // mesh refinement) use the default params.
+    let coll_14dof = default_run.coll_14dof;
+    let oval_fwd = default_run.oval_fwd;
+    println!();
 
     // The oval forward sim diverges (the simple controller cannot track the
     // high-speed straight-to-corner transitions), so the controller-tracking
