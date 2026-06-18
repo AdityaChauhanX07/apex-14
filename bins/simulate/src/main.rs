@@ -391,7 +391,8 @@ fn simulate_fourteen_dof_lqr(
         // Run the PID at a fixed control rate, not the integrator's adaptive
         // dt: feeding a 1e-7 s step into the derivative term makes it explode.
         // Preview braking looks 2 s ahead and targets 80% of the QSS speed.
-        let target = target_speed_with_preview(&qss.speeds, &qss.distances, s, vx, params, 2.0, 0.80);
+        let target =
+            target_speed_with_preview(&qss.speeds, &qss.distances, s, vx, params, 2.0, 0.80);
         // Drive-torque ceiling handed to the controller. Two limits apply: the
         // engine's physical maximum (T = F_max·r), and a *traction* limit so a
         // rear-wheel-drive car doesn't spin its rears when the PID asks for full
@@ -406,8 +407,13 @@ fn simulate_fourteen_dof_lqr(
         let traction_torque = TRACTION_MARGIN * params.tire_mu * fz_rear * params.wheel_radius;
         let physical_torque = params.max_drive_force * params.wheel_radius;
         let max_drive_torque = physical_torque.min(traction_torque);
-        let (torque, brake) =
-            speed_ctrl.compute(target, vx, config.dt_max, max_drive_torque, params.max_brake_force);
+        let (torque, brake) = speed_ctrl.compute(
+            target,
+            vx,
+            config.dt_max,
+            max_drive_torque,
+            params.max_brake_force,
+        );
         let control = [delta, torque, brake];
 
         // --- adaptive step ---

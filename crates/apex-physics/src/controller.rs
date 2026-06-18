@@ -543,8 +543,7 @@ mod tests {
     #[test]
     fn speed_controller_accelerates() {
         let mut pid = SpeedController::f1_default();
-        let (torque, brake) =
-            pid.compute(100.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(100.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert!(torque > 0.0, "expected positive torque, got {torque}");
         // Drive torque must respect the physical maximum.
         assert!(torque <= MAX_DRIVE_TORQUE, "torque {torque} exceeds max");
@@ -555,8 +554,7 @@ mod tests {
     fn speed_controller_brakes() {
         let mut pid = SpeedController::f1_default();
         // 30 m/s above target — emergency braking, expect full brake.
-        let (torque, brake) =
-            pid.compute(50.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(50.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
         assert!(brake > 0.0, "expected positive brake, got {brake}");
         assert!(brake <= 1.0, "brake {brake} out of range");
@@ -567,8 +565,7 @@ mod tests {
         let mut pid = SpeedController::f1_default();
         // Just over the 5 m/s threshold: small overspeed still brakes at the
         // 30% floor rather than coasting.
-        let (torque, brake) =
-            pid.compute(74.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(74.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
         assert!(
             (brake - 0.3).abs() < 1e-9,
@@ -580,10 +577,12 @@ mod tests {
     fn speed_controller_light_braking() {
         let mut pid = SpeedController::f1_default();
         // 3 m/s above target: light braking, well under the emergency level.
-        let (torque, brake) =
-            pid.compute(77.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(77.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
-        assert!(brake > 0.0 && brake <= 0.5, "expected light brake, got {brake}");
+        assert!(
+            brake > 0.0 && brake <= 0.5,
+            "expected light brake, got {brake}"
+        );
     }
 
     #[test]
@@ -591,8 +590,7 @@ mod tests {
         let mut pid = SpeedController::f1_default();
         // Prime the derivative term with a steady-state step.
         let _ = pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
-        let (torque, brake) =
-            pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         // At target the command should be essentially nothing.
         assert!(torque < 1.0, "torque {torque} should be ~0");
         assert!(brake < 1e-3, "brake {brake} should be ~0");
@@ -604,8 +602,7 @@ mod tests {
         let _ = pid.compute(100.0, 50.0, 0.1, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         pid.reset();
         // After reset, a zero-error step yields zero integral/derivative action.
-        let (torque, brake) =
-            pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) = pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
         assert_eq!(brake, 0.0);
     }

@@ -599,7 +599,8 @@ impl NlpEvaluator for CollocationEvaluator<'_, '_> {
                     let control_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
 
                     let deriv_k = point_mass_derivatives(opt.car, &state_k, &control_k, kappa_k);
-                    let deriv_k1 = point_mass_derivatives(opt.car, &state_k1, &control_k1, kappa_k1);
+                    let deriv_k1 =
+                        point_mass_derivatives(opt.car, &state_k1, &control_k1, kappa_k1);
 
                     let half_dt = vars.dt[k] / 2.0;
                     std::array::from_fn(|j| {
@@ -797,22 +798,9 @@ impl CollocationEvaluator<'_, '_> {
                     // curvature by central differences (skipped where dκ/ds = 0).
                     let hs = |kk: f64, kk1: f64| {
                         hermite_simpson_defect(
-                            opt.car,
-                            node_k[0],
-                            node_k[1],
-                            node_k[2],
-                            node_k[3],
-                            node_k[4],
-                            node_k[5],
-                            node_k1[0],
-                            node_k1[1],
-                            node_k1[2],
-                            node_k1[3],
-                            node_k1[4],
-                            node_k1[5],
-                            vars.dt[k],
-                            kk,
-                            kk1,
+                            opt.car, node_k[0], node_k[1], node_k[2], node_k[3], node_k[4],
+                            node_k[5], node_k1[0], node_k1[1], node_k1[2], node_k1[3], node_k1[4],
+                            node_k1[5], vars.dt[k], kk, kk1,
                         )
                     };
                     let e = 1e-6;
@@ -1210,9 +1198,7 @@ fn hermite_simpson_defect_generic<T: Float>(
 
     // (g) Simpson's-rule defect
     let sixth = dt / 6.0;
-    std::array::from_fn(|j| {
-        state_k1[j] - state_k[j] - sixth * (f_k[j] + f_mid[j] * 4.0 + f_k1[j])
-    })
+    std::array::from_fn(|j| state_k1[j] - state_k[j] - sixth * (f_k[j] + f_mid[j] * 4.0 + f_k1[j]))
 }
 
 /// Compute a Jacobian numerically using central finite differences.
@@ -2542,7 +2528,8 @@ mod tests {
         let ctrl = [f_hold, kappa];
 
         let hs = hermite_simpson_defect(
-            &car, s_k, 0.0, v, 0.0, f_hold, kappa, s_k1, 0.0, v, 0.0, f_hold, kappa, dt, kappa, kappa,
+            &car, s_k, 0.0, v, 0.0, f_hold, kappa, s_k1, 0.0, v, 0.0, f_hold, kappa, dt, kappa,
+            kappa,
         );
         let trap = trapezoidal_defect(&car, &state_k, &ctrl, &state_k1, &ctrl, dt, kappa, kappa);
 
@@ -2570,8 +2557,8 @@ mod tests {
         assert!(state1[2] > 58.0 && state1[2] < 72.0, "v1 = {}", state1[2]);
 
         let hs = hermite_simpson_defect(
-            &car, state0[0], 0.0, v0, 0.0, f_drive, 0.0, state1[0], state1[1], state1[2], state1[3],
-            f_drive, 0.0, dt, kappa, kappa,
+            &car, state0[0], 0.0, v0, 0.0, f_drive, 0.0, state1[0], state1[1], state1[2],
+            state1[3], f_drive, 0.0, dt, kappa, kappa,
         );
         let trap = trapezoidal_defect(&car, &state0, &ctrl, &state1, &ctrl, dt, kappa, kappa);
 
@@ -2805,7 +2792,10 @@ mod tests {
         )
         .optimize_gn(&gn);
 
-        assert!(tr.lap_time.is_finite() && tr.lap_time > 0.0, "trap lap valid");
+        assert!(
+            tr.lap_time.is_finite() && tr.lap_time > 0.0,
+            "trap lap valid"
+        );
         assert!(hs.lap_time.is_finite() && hs.lap_time > 0.0, "HS lap valid");
         // Both valid and close on the easy circle (different schemes, near-equal
         // optima).
@@ -2817,4 +2807,3 @@ mod tests {
         );
     }
 }
-

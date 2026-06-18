@@ -116,10 +116,10 @@ impl CarParams {
         CarParams {
             mass: 798.0,
             frontal_area: 1.5,
-            drag_coeff: 1.10,         // higher drag (complex aero, open wheels)
-            lift_coeff: 2.80,         // reduced from 3.5 (more realistic total downforce)
+            drag_coeff: 1.10, // higher drag (complex aero, open wheels)
+            lift_coeff: 2.80, // reduced from 3.5 (more realistic total downforce)
             air_density: 1.225,
-            tire_mu: 1.55,            // reduced from 1.75 (more realistic peak grip)
+            tire_mu: 1.55, // reduced from 1.75 (more realistic peak grip)
             rolling_resistance: 0.015,
             max_drive_force: 11000.0, // ~900 HP at ~300 km/h
             max_brake_force: 25000.0, // slightly reduced
@@ -302,7 +302,12 @@ mod tests {
         assert_eq!(c.mass, 798.0);
 
         // Less aggressive than the default preset.
-        assert!(c.tire_mu < d.tire_mu, "tire_mu {} should be < default {}", c.tire_mu, d.tire_mu);
+        assert!(
+            c.tire_mu < d.tire_mu,
+            "tire_mu {} should be < default {}",
+            c.tire_mu,
+            d.tire_mu
+        );
         assert!(
             c.lift_coeff < d.lift_coeff,
             "lift_coeff {} should be < default {}",
@@ -391,9 +396,8 @@ mod tests {
         let calib_res = crate::qss_lap_sim(&oval, &CarParams::f1_2024_calibrated());
 
         let top = |r: &crate::QssResult| r.speeds.iter().cloned().fold(f64::MIN, f64::max);
-        let max_lat = |r: &crate::QssResult| {
-            r.lateral_gs.iter().map(|g| g.abs()).fold(0.0_f64, f64::max)
-        };
+        let max_lat =
+            |r: &crate::QssResult| r.lateral_gs.iter().map(|g| g.abs()).fold(0.0_f64, f64::max);
 
         // Less power + more drag -> lower top speed; less grip -> longer lap and
         // lower cornering load.

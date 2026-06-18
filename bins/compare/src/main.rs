@@ -263,11 +263,23 @@ fn main() {
     // Run the full comparison with the default (aggressive) params and again with
     // the calibrated 2024 F1 params, side by side.
     let default_run = run_oval(&car, &tire, &suspension, &aero, &oval, &coll_cfg, &gn);
-    print_table("Default Parameters (aggressive)", oval.total_length, &default_run.rows);
+    print_table(
+        "Default Parameters (aggressive)",
+        oval.total_length,
+        &default_run.rows,
+    );
     print_key_observations(&default_run);
     println!();
 
-    let calibrated_run = run_oval(&calibrated, &tire, &suspension, &aero, &oval, &coll_cfg, &gn);
+    let calibrated_run = run_oval(
+        &calibrated,
+        &tire,
+        &suspension,
+        &aero,
+        &oval,
+        &coll_cfg,
+        &gn,
+    );
     print_table(
         "Calibrated Parameters (F1 2024)",
         oval.total_length,
