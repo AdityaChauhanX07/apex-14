@@ -153,8 +153,7 @@ impl TireThermalState {
             * (self.surface_temp - params.ambient_temp);
 
         // Surface-to-carcass heat transfer
-        let q_coupling =
-            params.surface_carcass_coupling * (self.surface_temp - self.carcass_temp);
+        let q_coupling = params.surface_carcass_coupling * (self.surface_temp - self.carcass_temp);
 
         // Carcass cooling (radiation + conduction to wheel/hub)
         let q_carcass_cool = params.carcass_cooling * (self.carcass_temp - params.ambient_temp);
@@ -375,8 +374,16 @@ mod tests {
         let (s0, c0) = (s.surface_temp, s.carcass_temp);
         run_thermal(&mut s, &p, 500.0, 0.5, 50.0, 30.0);
 
-        assert!(s.surface_temp < s0, "surface should cool: {s0} -> {}", s.surface_temp);
-        assert!(s.carcass_temp < c0, "carcass should cool: {c0} -> {}", s.carcass_temp);
+        assert!(
+            s.surface_temp < s0,
+            "surface should cool: {s0} -> {}",
+            s.surface_temp
+        );
+        assert!(
+            s.carcass_temp < c0,
+            "carcass should cool: {c0} -> {}",
+            s.carcass_temp
+        );
         let surface_drop = s0 - s.surface_temp;
         let carcass_drop = c0 - s.carcass_temp;
         assert!(
@@ -430,7 +437,10 @@ mod tests {
         let after_stint = s.wear;
 
         assert!(after_one_lap > 0.0, "no wear after a lap");
-        assert!(after_one_lap < 0.1, "single lap should not wear the tire much");
+        assert!(
+            after_one_lap < 0.1,
+            "single lap should not wear the tire much"
+        );
         assert!(
             after_stint > after_one_lap,
             "wear should grow over a stint: {after_one_lap} -> {after_stint}"
@@ -544,7 +554,9 @@ mod tests {
         let mut set = TireSetThermal::new(TireThermalParams::f1_soft());
 
         let g = set.grip_multipliers();
-        assert!(approx(g[0], g[1], 1e-12) && approx(g[1], g[2], 1e-12) && approx(g[2], g[3], 1e-12));
+        assert!(
+            approx(g[0], g[1], 1e-12) && approx(g[1], g[2], 1e-12) && approx(g[2], g[3], 1e-12)
+        );
         for gi in g {
             assert!(gi < 1.0, "cold tire grip {gi} should be below 1.0");
         }

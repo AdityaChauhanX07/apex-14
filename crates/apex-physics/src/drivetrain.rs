@@ -224,7 +224,8 @@ impl Powertrain {
     /// Get the top speed of the car in the highest gear (m/s).
     pub fn top_speed(&self, wheel_radius: f64) -> f64 {
         let top_gear = self.gearbox.num_gears() - 1;
-        self.gearbox.gear_max_speed(&self.engine, top_gear, wheel_radius)
+        self.gearbox
+            .gear_max_speed(&self.engine, top_gear, wheel_radius)
     }
 }
 
@@ -293,7 +294,10 @@ mod tests {
             max_seen = max_seen.max(e.power(sweep, 1.0));
             sweep += 100.0;
         }
-        assert!(approx(peak_power, max_seen, 1e-6), "peak {peak_power} vs swept {max_seen}");
+        assert!(
+            approx(peak_power, max_seen, 1e-6),
+            "peak {peak_power} vs swept {max_seen}"
+        );
 
         // 600-800 kW for the F1 preset.
         assert!(
@@ -366,7 +370,11 @@ mod tests {
         let g = Gearbox::f1_2024();
         // Walking pace: ~1.4 m/s -> wheel_omega ~4.2 rad/s at r=0.33.
         let wheel_omega = 1.4 / 0.330;
-        assert_eq!(g.optimal_gear(&e, wheel_omega), 0, "low speed should pick first gear");
+        assert_eq!(
+            g.optimal_gear(&e, wheel_omega),
+            0,
+            "low speed should pick first gear"
+        );
     }
 
     #[test]
@@ -416,7 +424,10 @@ mod tests {
         let v = p.top_speed(0.330);
 
         let expected = 15000.0 * std::f64::consts::PI / 30.0 / (0.82 * 6.70) * 0.330;
-        assert!(approx(v, expected, 1e-6), "top speed {v} vs expected {expected}");
+        assert!(
+            approx(v, expected, 1e-6),
+            "top speed {v} vs expected {expected}"
+        );
         assert!(
             (85.0..=100.0).contains(&v),
             "top speed {v} m/s ({:.0} km/h) out of expected band",

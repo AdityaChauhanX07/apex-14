@@ -2918,7 +2918,10 @@ mod tests {
         assert!(!config.optimize_brake_bias, "default should be off");
         let opt = CollocationOptimizer::new(config, &track, &car);
         let result = opt.optimize_gn(&gn_cfg());
-        assert!(result.brake_bias.is_none(), "brake_bias should be None when off");
+        assert!(
+            result.brake_bias.is_none(),
+            "brake_bias should be None when off"
+        );
     }
 
     #[test]
@@ -2952,7 +2955,10 @@ mod tests {
             .expect("brake_bias should be Some");
         assert_eq!(bias.len(), 30, "one bias per node");
         for &b in bias {
-            assert!((0.50..=0.80).contains(&b), "brake bias {b} out of [0.50, 0.80]");
+            assert!(
+                (0.50..=0.80).contains(&b),
+                "brake bias {b} out of [0.50, 0.80]"
+            );
         }
 
         // Brake bias doesn't couple to the point-mass dynamics, so the lap time
