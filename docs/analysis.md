@@ -13,17 +13,17 @@ that a 1000 m-straight / R = 100 m oval would give.
 
 The six configurations:
 
-1. **QSS (grip circle)** — quasi-steady-state forward/backward pass with a simple
+1. **QSS (grip circle)** - quasi-steady-state forward/backward pass with a simple
    friction-circle grip limit (point-mass physics).
-2. **QSS (tire-aware)** — same QSS pass, but the grip limit comes from four-corner,
+2. **QSS (tire-aware)** - same QSS pass, but the grip limit comes from four-corner,
    load-sensitive Pacejka forces.
-3. **Collocation (point-mass)** — trapezoidal direct collocation, Gauss-Newton
+3. **Collocation (point-mass)** - trapezoidal direct collocation, Gauss-Newton
    solver, N = 50, grip-circle dynamics.
-4. **Collocation (7-DOF tire)** — collocation with the Pacejka combined-slip,
+4. **Collocation (7-DOF tire)** - collocation with the Pacejka combined-slip,
    load-sensitive grip budget.
-5. **Collocation (14-DOF)** — collocation with the ride-height-coupled 14-DOF grip
+5. **Collocation (14-DOF)** - collocation with the ride-height-coupled 14-DOF grip
    budget (suspension compression → ride height → downforce → grip).
-6. **14-DOF Forward Sim** — replay the optimized line through the full 14-DOF
+6. **14-DOF Forward Sim** - replay the optimized line through the full 14-DOF
    dynamics with the simple path-tracking controller.
 
 ## Results
@@ -69,7 +69,7 @@ The collocation optimizer and the QSS pass land within a few hundredths of a sec
 of each other on this track (point-mass: 20.615 s optimized vs 20.675 s QSS; 7-DOF:
 21.544 s vs 21.594 s). On an oval this is expected: the racing line is essentially
 the centerline (the corners are constant-radius and symmetric), so the optimizer's
-main lever — using the track width via a non-zero lateral offset `n` — buys almost
+main lever - using the track width via a non-zero lateral offset `n` - buys almost
 nothing. The optimizer's small edge (~0.3 %) comes from smoothing the
 accelerate/brake transitions rather than from a different line. On a circuit with
 asymmetric corners the optimization gap would be larger.
@@ -88,14 +88,14 @@ dominated by.
 
 ### Forward Simulation vs Optimization
 
-The optimized lap time is the *theoretical* limit — the speed profile that exactly
+The optimized lap time is the *theoretical* limit - the speed profile that exactly
 saturates the grip budget. The forward simulation asks a different question: what can
 a controller actually drive? On a stable constant-curvature circle the forward sim
 laps **+19.7 % slower** than the optimized line, because the simple controller holds
 a deliberate margin below the grip limit (≈1.8 g vs the ≈2.2 g optimum) to stay
 stable. On the oval the gap is effectively infinite: the controller diverges at the
 straight-to-corner transitions. This gap is a property of the *controller*, not the
-vehicle model — an LQR or MPC tracker that plans braking and uses the full grip
+vehicle model - an LQR or MPC tracker that plans braking and uses the full grip
 envelope would shrink it substantially.
 
 ### Chassis Attitude
@@ -109,9 +109,9 @@ Max susp:   32.8 mm
 ```
 
 The pitch (0.36°) and suspension travel (33 mm) are squarely in the normal F1 range
-(< 0.5° pitch, 20–35 mm travel). The roll (2.6°) is slightly above the 1–2° typical
+(< 0.5° pitch, 20-35 mm travel). The roll (2.6°) is slightly above the 1-2° typical
 of a fast corner, which is consistent with this being a tight, low-speed R = 30 m
-circle pulling sustained ~1.8 g on relatively soft springs — a more aggressive roll
+circle pulling sustained ~1.8 g on relatively soft springs - a more aggressive roll
 case than a high-speed sweeper where downforce dominates the load.
 
 ## Computational Cost
@@ -122,7 +122,7 @@ From the criterion benchmark suite (`cargo bench`, release):
 |----------------------------------------|----------|-----------------------------------------|
 | RK4 step (2-DOF point mass)            | ~25 ns   | zero-allocation fixed-size arrays       |
 | Pacejka lateral force (f64)            | ~21 ns   |                                         |
-| Pacejka lateral force (`Dual`)         | ~38 ns   | ~1.9× f64 — under the 2.5× target       |
+| Pacejka lateral force (`Dual`)         | ~38 ns   | ~1.9× f64 - under the 2.5× target       |
 | 14-DOF derivatives                     | ~67 ns   | most expensive per-step computation     |
 | Equality Jacobian, N = 50 (auto-diff)  | ~32 µs   | **~52× faster** than finite differences |
 | Equality Jacobian, N = 50 (numerical)  | ~1.68 ms |                                         |
@@ -152,7 +152,7 @@ Being honest about what does not work well:
 - **The aero parameters produce unrealistically high speeds and g-forces.** Top
   speeds near 390 km/h and ~4 g of lateral load on an R = 80 m corner are well
   above real F1 figures. This comes from the default C_l = 3.5 over a 1.5 m² frontal
-  area with no speed-dependent drag-limited top-speed cap — it is a tuning choice for
+  area with no speed-dependent drag-limited top-speed cap - it is a tuning choice for
   exercising the models, not a defect in the dynamics. The *relative* comparisons
   between fidelities remain valid; the absolute numbers should not be read as
   predictions of real lap times.

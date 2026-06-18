@@ -1,4 +1,4 @@
-# Equations of Motion — Derivations
+# Equations of Motion - Derivations
 
 This document records the mathematical models implemented in Apex-14. It is a reference appendix,
 not a tutorial: each section states the model, the assumptions, and the derivation of the governing
@@ -105,7 +105,7 @@ F_grip(v) = μ·(m·g + ½·ρ·Cl·A·v²)
 ```
 
 This is why a downforce car can corner far faster at high speed than a static friction estimate
-predicts: the normal load — and therefore the friction limit — scales with dynamic pressure.
+predicts: the normal load - and therefore the friction limit - scales with dynamic pressure.
 
 ---
 
@@ -124,7 +124,7 @@ tire force by the global heading `ψ` at each step. Only the final position upda
 
 ### 2.2 Slip Angle Computation
 
-A tire generates lateral force in response to its slip angle — the angle between the direction the
+A tire generates lateral force in response to its slip angle - the angle between the direction the
 wheel points and the direction the contact patch actually travels. For each axle the hub velocity in
 the body frame combines the chassis translation with the yaw-rate contribution `ω × r`:
 
@@ -245,7 +245,7 @@ total roll stiffness):
 
 with the four loads `Fz = static ± aero ± ΔFz`, each clamped at 0 (a wheel can lift). The roll-stiffness
 split is the primary handling-balance lever: a stiffer front anti-roll bar moves more lateral transfer
-to the front axle, which — because of load sensitivity (Section 4.2) — costs the front more grip and
+to the front axle, which - because of load sensitivity (Section 4.2) - costs the front more grip and
 pushes the balance toward understeer. The reverse biases toward oversteer. Total grip always falls
 under load transfer, so the split sets *where* grip is lost, not whether.
 
@@ -264,15 +264,15 @@ F = D·sin(C·arctan(B·x − E·(B·x − arctan(B·x))))
 
 Coefficient roles:
 
-- `B` — stiffness factor: sets the initial slope at the origin (`dF/dx|₀ = B·C·D`, the cornering or
+- `B` - stiffness factor: sets the initial slope at the origin (`dF/dx|₀ = B·C·D`, the cornering or
   longitudinal stiffness).
-- `C` — shape factor: controls how far the curve bends over and where it asymptotes.
-- `D` — peak factor: the maximum force, `D = μ·Fz`.
-- `E` — curvature factor: shapes the region near the peak, tuning where and how sharply the force
+- `C` - shape factor: controls how far the curve bends over and where it asymptotes.
+- `D` - peak factor: the maximum force, `D = μ·Fz`.
+- `E` - curvature factor: shapes the region near the peak, tuning where and how sharply the force
   rolls off after the maximum.
 
 The `sin(arctan(...))` structure produces the characteristic shape: a near-linear rise, a smooth
-peak, and a gentle decline at large slip. This decline — force *dropping* past the peak — is why a
+peak, and a gentle decline at large slip. This decline - force *dropping* past the peak - is why a
 locked or spinning tire produces less force than one at optimal slip.
 
 ### 4.2 Load Sensitivity
@@ -301,8 +301,8 @@ scale = F_max / sqrt(Fx0² + Fy0²)        (applied only when the resultant exce
 Fx = Fx0·scale,   Fy = Fy0·scale
 ```
 
-This captures the essential coupling — using grip for braking leaves less for cornering, and vice
-versa (the basis of trail braking) — while remaining cheap to evaluate and differentiate.
+This captures the essential coupling - using grip for braking leaves less for cornering, and vice
+versa (the basis of trail braking) - while remaining cheap to evaluate and differentiate.
 
 ---
 
@@ -318,7 +318,7 @@ f(a + b·ε) = f(a) + f'(a)·b·ε + ½·f''(a)·(b·ε)² + ...
            = f(a) + b·f'(a)·ε              (all higher terms vanish since ε² = 0)
 ```
 
-So evaluating `f` on `a + 1·ε` returns `f(a)` in the real part and `f'(a)` in the dual part exactly —
+So evaluating `f` on `a + 1·ε` returns `f(a)` in the real part and `f'(a)` in the dual part exactly -
 no truncation, no step-size choice. Arithmetic operators propagate the chain rule automatically:
 multiplication gives `(a + bε)(c + dε) = ac + (ad + bc)ε` (the product rule), division gives the
 quotient rule, and elementary functions are defined by `g(a + bε) = g(a) + b·g'(a)·ε`. Composing these
@@ -332,7 +332,7 @@ over a `Float` trait that abstracts `+ − × ÷`, `sin`, `cos`, `sqrt`, `atan`,
 the dual-number type `Dual` implement `Float`. Calling the generic dynamics with `f64` arguments
 computes forces; calling the identical code with `Dual` arguments computes forces *and* their exact
 partial derivatives. This guarantees the derivative code can never drift out of sync with the value
-code — there is only one implementation — and it eliminates the truncation error and step-size tuning
+code - there is only one implementation - and it eliminates the truncation error and step-size tuning
 of finite differences.
 
 ---
@@ -368,7 +368,7 @@ x_{k+1} − x_k − (dt_k/2)·(f_k + f_{k+1}) = 0
 
 where `f_k = f(x_k, u_k)`. Trapezoidal collocation is second-order accurate, implicit (better
 stability than explicit forward Euler for the stiff slip dynamics), and produces a defect that depends
-only on the two endpoint nodes — keeping the constraint Jacobian sparse. A defect vector of zero means
+only on the two endpoint nodes - keeping the constraint Jacobian sparse. A defect vector of zero means
 the discrete trajectory is dynamically consistent.
 
 ### 6.3 Banded Jacobian Structure
@@ -379,7 +379,7 @@ equality-constraint Jacobian is therefore banded: each block row touches at most
 
 This structure is what makes exact auto-diff cheap. A dense finite-difference Jacobian would require
 `2·n_vars` constraint evaluations (perturbing every variable). Exploiting the band, each interval is
-differentiated with 13 dual-number evaluations — one per local variable — independent of the total
+differentiated with 13 dual-number evaluations - one per local variable - independent of the total
 problem size. The result is an exact, sparse Jacobian assembled directly into CSR form, which gave a
 roughly 25× speedup of the optimizer over the finite-difference implementation while removing its
 truncation error.

@@ -1,4 +1,4 @@
-# Direct Collocation — Formulation and Implementation
+# Direct Collocation - Formulation and Implementation
 
 This document records the trajectory-optimization method implemented in Apex-14. It is a reference
 appendix: it states the optimal control problem, its transcription to a finite nonlinear program
@@ -33,7 +33,7 @@ sampling it at `N` nodes along the track:
 
 - Discretize the track into `N` nodes at arc lengths `s_0 … s_{N-1}`.
 - The state and control *values at each node* become the decision variables.
-- The continuous dynamics `ẋ = f` become algebraic equality constraints — the **defects** — one per
+- The continuous dynamics `ẋ = f` become algebraic equality constraints - the **defects** - one per
   state per interval, enforcing that consecutive nodes are consistent with `f`.
 - The continuous inequality constraints (boundaries, grip) are enforced pointwise at each node.
 
@@ -88,7 +88,7 @@ Why trapezoidal rather than Euler or Hermite-Simpson:
 
 Because defect `d_k` depends only on nodes `k` and `k+1`, the constraint Jacobian is extremely
 sparse. Each scalar defect row touches at most **13** variables: the 6 quantities at node `k`
-(`s, n, v, α, F_drive, κ_cmd`), the same 6 at node `k+1`, and the single `dt_k` — `6 + 6 + 1 = 13`.
+(`s, n, v, α, F_drive, κ_cmd`), the same 6 at node `k+1`, and the single `dt_k` - `6 + 6 + 1 = 13`.
 
 Concretely, at `N = 100` for a closed lap:
 
@@ -116,11 +116,11 @@ the `Float` trait). To fill the Jacobian for interval `k`:
 3. Read each defect's derivative from the `.dual` field of the result.
 4. Repeat for each of the 13 variables, writing the non-zeros into the banded CSR matrix.
 
-This is **exact** to machine precision — no truncation error and no step-size tuning, unlike finite
+This is **exact** to machine precision - no truncation error and no step-size tuning, unlike finite
 differences. It also exploits the sparsity directly: 13 evaluations per interval, versus `2·(7N−1)`
 full-defect evaluations for a dense central-difference Jacobian. The benchmark suite measures the
-auto-diff equality Jacobian at N = 50 at ~32 µs versus ~1.7 ms for the numerical one — roughly **52×
-faster** — while also being more accurate.
+auto-diff equality Jacobian at N = 50 at ~32 µs versus ~1.7 ms for the numerical one - roughly **52×
+faster** - while also being more accurate.
 
 ---
 
@@ -159,8 +159,8 @@ A single fine-mesh solve is both expensive and fragile. Mesh refinement
 
 The coarse solve is fast and captures the qualitative shape of the trajectory; the fine solve then
 only has to add resolution rather than discover the solution from scratch. This improves both speed
-and robustness. (Note: absolute defect violations are not comparable across mesh sizes — a finer mesh
-has more, finer defects — so convergence is judged per-level against the level's tolerance.)
+and robustness. (Note: absolute defect violations are not comparable across mesh sizes - a finer mesh
+has more, finer defects - so convergence is judged per-level against the level's tolerance.)
 
 ---
 
@@ -170,7 +170,7 @@ Three solvers are implemented, each a different trade-off for the same NLP:
 
 - **Augmented Lagrangian** (`solver::solve_nlp`). General-purpose: it folds the constraints into the
   objective with penalty terms and Lagrange-multiplier updates, solved by projected gradient descent.
-  Robust and broadly applicable, but converges slowly on stiff equality constraints — the penalty
+  Robust and broadly applicable, but converges slowly on stiff equality constraints - the penalty
   must grow large before the defects are tightly satisfied.
 - **Gauss-Newton with CG** (`gauss_newton::solve_gauss_newton`). Linearizes the constraints and takes
   a damped least-squares step, solving the normal equations with conjugate gradient on the sparse
@@ -181,6 +181,6 @@ Three solvers are implemented, each a different trade-off for the same NLP:
   Best on smooth tracks where local corrections propagate cleanly.
 
 On easy geometries (the circle) all three agree and converge tightly; on tracks with sharp curvature
-transitions (the oval's straight-to-corner steps) none fully drives every defect to machine zero —
+transitions (the oval's straight-to-corner steps) none fully drives every defect to machine zero -
 they reach a sensible, near-feasible trajectory rather than a tight optimum. This honest limitation is
 recorded in `docs/analysis.md`.

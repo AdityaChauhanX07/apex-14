@@ -56,14 +56,14 @@ Per-point widths override the uniform default:
 
 ## Sample files
 
-- `test_circle.json` — 36 points around a 50 m-radius circle (10° spacing), width 10 m.
-- `oval_simple.json` — an oval with 500 m straights and 80 m-radius corners, width 12 m.
+- `test_circle.json` - 36 points around a 50 m-radius circle (10° spacing), width 10 m.
+- `oval_simple.json` - an oval with 500 m straights and 80 m-radius corners, width 12 m.
 
 ## Importing Real Track Data
 
 Apex-14 can import tracks from the
 [TUMFTM Racetrack Database](https://github.com/TUMFTM/racetrack-database)
-(LGPL-3.0 licensed). Those CSV files are **not** redistributed here — clone the
+(LGPL-3.0 licensed). Those CSV files are **not** redistributed here - clone the
 upstream repository and import them at run time.
 
 ### Quick start
