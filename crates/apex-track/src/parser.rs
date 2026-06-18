@@ -110,7 +110,10 @@ pub fn load_tumftm_csv(
 /// same parser handles both headered and headerless files. The `w_tr_right_m`
 /// and `w_tr_left_m` columns are track half-widths and map directly to a
 /// [`TrackPoint`]'s `width_right` / `width_left`.
-pub fn parse_tumftm_csv(csv_content: &str, name: &str) -> Result<Track, Box<dyn std::error::Error>> {
+pub fn parse_tumftm_csv(
+    csv_content: &str,
+    name: &str,
+) -> Result<Track, Box<dyn std::error::Error>> {
     let mut points = Vec::new();
 
     for line in csv_content.lines() {
