@@ -11,6 +11,7 @@ pub mod fourteen_dof;
 pub mod point_mass;
 pub mod qss;
 pub mod seven_dof;
+pub mod strategy;
 pub mod suspension;
 pub mod tire;
 
@@ -27,5 +28,8 @@ pub use fourteen_dof::FourteenDofModel;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
 pub use seven_dof::SevenDofModel;
+pub use strategy::{
+    FuelModel, RaceStrategy, Stint, StrategyEvaluator, StrategyResult, TireCompound, UndercutResult,
+};
 pub use suspension::{AntiRollBar, SuspensionParams, SuspensionSystem};
 pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
