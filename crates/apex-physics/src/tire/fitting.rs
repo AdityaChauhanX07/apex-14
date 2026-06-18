@@ -657,7 +657,9 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         // Too few columns.
         assert!(parse_tire_test_csv("1.0,0.0,4.0\n", "bad").is_err());
         // No data rows at all.
-        assert!(parse_tire_test_csv("slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n\n", "empty").is_err());
+        assert!(
+            parse_tire_test_csv("slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n\n", "empty").is_err()
+        );
     }
 
     #[test]
@@ -667,14 +669,26 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         let data = synth_lateral(b, c, mu, e, &[4000.0]);
         let report = TireFitter::new(&data).fit_lateral();
 
-        assert!(rel_close(report.coeffs.b, b, 0.10), "B = {}", report.coeffs.b);
-        assert!(rel_close(report.coeffs.c, c, 0.10), "C = {}", report.coeffs.c);
+        assert!(
+            rel_close(report.coeffs.b, b, 0.10),
+            "B = {}",
+            report.coeffs.b
+        );
+        assert!(
+            rel_close(report.coeffs.c, c, 0.10),
+            "C = {}",
+            report.coeffs.c
+        );
         assert!(
             rel_close(report.coeffs.mu, mu, 0.10),
             "mu = {}",
             report.coeffs.mu
         );
-        assert!(rel_close(report.coeffs.e, e, 0.10), "E = {}", report.coeffs.e);
+        assert!(
+            rel_close(report.coeffs.e, e, 0.10),
+            "E = {}",
+            report.coeffs.e
+        );
 
         assert!(report.r_squared > 0.99, "R^2 = {}", report.r_squared);
         assert!(report.rmse < 50.0, "RMSE = {}", report.rmse);
@@ -686,14 +700,26 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         let data = synth_lateral(b, c, mu, e, &[3000.0, 4000.0, 5000.0]);
         let report = TireFitter::new(&data).fit_lateral();
 
-        assert!(rel_close(report.coeffs.b, b, 0.10), "B = {}", report.coeffs.b);
-        assert!(rel_close(report.coeffs.c, c, 0.10), "C = {}", report.coeffs.c);
+        assert!(
+            rel_close(report.coeffs.b, b, 0.10),
+            "B = {}",
+            report.coeffs.b
+        );
+        assert!(
+            rel_close(report.coeffs.c, c, 0.10),
+            "C = {}",
+            report.coeffs.c
+        );
         assert!(
             rel_close(report.coeffs.mu, mu, 0.10),
             "mu = {}",
             report.coeffs.mu
         );
-        assert!(rel_close(report.coeffs.e, e, 0.10), "E = {}", report.coeffs.e);
+        assert!(
+            rel_close(report.coeffs.e, e, 0.10),
+            "E = {}",
+            report.coeffs.e
+        );
         assert!(report.r_squared > 0.99, "R^2 = {}", report.r_squared);
     }
 
@@ -703,14 +729,26 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         let data = synth_longitudinal(b, c, mu, e, &[4000.0]);
         let report = TireFitter::new(&data).fit_longitudinal();
 
-        assert!(rel_close(report.coeffs.b, b, 0.10), "B = {}", report.coeffs.b);
-        assert!(rel_close(report.coeffs.c, c, 0.10), "C = {}", report.coeffs.c);
+        assert!(
+            rel_close(report.coeffs.b, b, 0.10),
+            "B = {}",
+            report.coeffs.b
+        );
+        assert!(
+            rel_close(report.coeffs.c, c, 0.10),
+            "C = {}",
+            report.coeffs.c
+        );
         assert!(
             rel_close(report.coeffs.mu, mu, 0.10),
             "mu = {}",
             report.coeffs.mu
         );
-        assert!(rel_close(report.coeffs.e, e, 0.10), "E = {}", report.coeffs.e);
+        assert!(
+            rel_close(report.coeffs.e, e, 0.10),
+            "E = {}",
+            report.coeffs.e
+        );
         assert!(report.r_squared > 0.99, "R^2 = {}", report.r_squared);
     }
 
@@ -724,14 +762,26 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         }
 
         let report = TireFitter::new(&data).fit_lateral();
-        assert!(rel_close(report.coeffs.b, b, 0.20), "B = {}", report.coeffs.b);
-        assert!(rel_close(report.coeffs.c, c, 0.20), "C = {}", report.coeffs.c);
+        assert!(
+            rel_close(report.coeffs.b, b, 0.20),
+            "B = {}",
+            report.coeffs.b
+        );
+        assert!(
+            rel_close(report.coeffs.c, c, 0.20),
+            "C = {}",
+            report.coeffs.c
+        );
         assert!(
             rel_close(report.coeffs.mu, mu, 0.20),
             "mu = {}",
             report.coeffs.mu
         );
-        assert!(rel_close(report.coeffs.e, e, 0.20), "E = {}", report.coeffs.e);
+        assert!(
+            rel_close(report.coeffs.e, e, 0.20),
+            "E = {}",
+            report.coeffs.e
+        );
         assert!(report.r_squared > 0.90, "R^2 = {}", report.r_squared);
     }
 
@@ -787,7 +837,11 @@ slip_angle_deg,slip_ratio,fz_kn,fy_n,fx_n
         let report = TireFitter::new(&data).fit_lateral();
 
         assert!(report.rmse < 50.0, "RMSE = {}", report.rmse);
-        assert!(report.peak_error < 100.0, "peak error = {}", report.peak_error);
+        assert!(
+            report.peak_error < 100.0,
+            "peak error = {}",
+            report.peak_error
+        );
         assert!(report.r_squared > 0.99, "R^2 = {}", report.r_squared);
         assert!(report.n_points > 0);
     }
