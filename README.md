@@ -1,129 +1,132 @@
 # Apex-14
 
-**A deterministic vehicle dynamics engine and minimum-time racing line optimizer, written from scratch in Rust.**
+Minimum-time lap simulation and racing line optimization for open-wheel race cars.
 
-## What This Does
+Apex-14 computes optimal racing lines and lap times using nonlinear vehicle dynamics models coupled with direct collocation trajectory optimization. It supports four levels of model fidelity and includes an interactive telemetry viewer.
 
-Apex-14 takes a racetrack definition and a mathematical model of an F1 car and computes the
-theoretical minimum lap time along with the exact racing line required to achieve it. It couples a
-multi-fidelity vehicle dynamics solver, ranging from a 2-DOF point mass up to a 14-DOF full
-chassis, with a direct collocation trajectory optimizer. Everything is built from first principles:
-no physics engine, no linear algebra crate, no off-the-shelf optimizer. The tire model, automatic
-differentiation, sparse matrices, ODE integrator, and nonlinear program solver are all implemented in
-this repository.
+## Quick Start
 
-## Technical Highlights
-
-- Pacejka Magic Formula tire model with combined slip (friction ellipse) and load sensitivity
-- 4th-order Runge-Kutta integrator with fixed-size arrays and zero-allocation inner loops
-- Dormand-Prince RK45 adaptive integrator with embedded error estimation and step-size control
-- Forward-mode automatic differentiation engine using dual numbers
-- Generic `Float` trait: the same physics code computes forces (`f64`) and exact Jacobians (`Dual`)
-- Direct collocation with trapezoidal defects for trajectory optimization
-- Gauss-Newton solver with a conjugate-gradient inner loop exploiting banded Jacobian sparsity
-- Compressed Sparse Row (CSR) matrix implementation for efficient Jacobian assembly
-- Quasi-steady-state (QSS) lap simulator used to warm-start the optimizer
-- Real circuit import from the TUMFTM racetrack database (25 Formula 1 and DTM circuits)
-
-## Vehicle Models
-
-The dynamics layer is intentionally multi-fidelity: the same track and tire code drives every model,
-so results can be validated at low fidelity before adding complexity.
-
-| Model        | DOF  | State Variables                                  | Key Features                                              |
-|--------------|------|--------------------------------------------------|----------------------------------------------------------|
-| Point Mass   | 2    | `[s, n, v, alpha]`                               | Curvilinear coordinates, grip-circle limit               |
-| Bicycle      | 3    | `[X, Y, psi, vx, vy, omega_z]`                  | Single-track, per-axle loads, understeer gradient        |
-| Four-Wheel   | 7    | chassis (6) + four wheel speeds                  | Per-corner load transfer, combined-slip tire forces      |
-| Full Chassis | 14   | chassis + suspension + ride-height states        | Chassis heave/pitch/roll, progressive suspension, asymmetric dampers, anti-roll bars, ride-height-sensitive aero |
-
-## Architecture
-
-The workspace is a directed acyclic graph of focused crates. `apex-math` sits at the root with no
-internal dependencies; everything else builds on it.
-
-```
-                 apex-math  (vectors, matrices, dual numbers, Float trait, CSR sparse)
-                /    |    \
-   apex-integrator  |   apex-track  (geometry, curvature, circuit generators)
-        |           |    /    |
-        |        apex-physics  (tire models, QSS, point-mass/bicycle/7-DOF)
-        |          /   |    \
-   apex-optimizer ---/    apex-telemetry  (CSV + SVG export)
-   (collocation NLP, Gauss-Newton, augmented Lagrangian)
-```
-
-- `apex-physics` depends on `apex-math`, `apex-integrator`, and `apex-track`.
-- `apex-telemetry` depends on `apex-math`, `apex-physics`, and `apex-track`.
-- `apex-optimizer` depends on `apex-math`, `apex-integrator`, `apex-physics`, and `apex-track`.
-
-## Sample Output
-
-Run `cargo run --release --bin simulate` to generate QSS lap times and SVG track visualizations for
-the oval, circle, Silverstone, and Monza circuits. Each track produces a CSV telemetry file and a
-speed-colored SVG of the racing line. It also runs a transient 14-DOF forward simulation around the
-oval, driving the full chassis model with a centerline-tracking controller and the adaptive RK45
-integrator.
-
-Run `cargo run --release --bin optimize` to run the collocation optimizer on the oval and circle
-tracks, comparing the augmented-Lagrangian and Gauss-Newton solvers side by side.
-
-Run `cargo run --release --bin compare` to see a side-by-side comparison of all model fidelities
-(QSS, collocation, 7-DOF, 14-DOF) on the same track.
-
-Representative results:
-
-- Silverstone QSS lap time of approximately 68 s on the default car parameters.
-- The 14-DOF forward simulation completes a full oval lap with peak chassis attitudes of about 1.5°
-  roll, 0.3° pitch, and 35 mm of suspension travel, transient behavior the steady-state models
-  cannot capture.
-- On the circle, the Gauss-Newton optimizer converges to an equality-constraint violation of
-  `2.6e-6` (a dynamically consistent trajectory).
-- Switching the collocation Jacobian from finite differences to forward-mode automatic
-  differentiation gave a roughly 25x speedup of the optimization binary (~31 s to ~1.3 s).
-
-## Build & Test
-
-```sh
-cargo fmt --check              # enforced consistent formatting
+```bash
 cargo build --release
-cargo test --workspace         # 232 tests, zero warnings
-cargo clippy -- -D warnings    # enforced zero-warning policy
-cargo bench                    # criterion benchmarks for all critical paths
+cargo run --release --bin simulate    # lap simulation with telemetry export
+cargo run --release --bin optimize    # trajectory optimization
+cargo run --release --bin compare     # model fidelity comparison
+cargo run --release --bin viewer      # interactive telemetry viewer
 ```
+
+## Features
+
+**Vehicle Dynamics** - Four model fidelities sharing a common tire and track interface:
+
+| Model | States | Use Case |
+|-------|--------|----------|
+| Point-mass | 4 | Fast lap estimation, optimizer prototyping |
+| Single-track | 6 | Slip angle analysis, understeer characterization |
+| Four-wheel | 10 | Combined-slip tire forces, per-corner load transfer |
+| Full chassis | 24 | Suspension dynamics, ride-height aerodynamics, transient response |
+
+**Trajectory Optimization** - Direct collocation minimizing lap time subject to vehicle dynamics, grip limits, and track boundaries. Trapezoidal and Hermite-Simpson transcriptions with automatic Jacobian computation via forward-mode dual-number differentiation.
+
+**Tire Model** - Pacejka Magic Formula with combined slip, load sensitivity, and smooth (C1) friction saturation for gradient-based optimization.
+
+**Track Import** - Native JSON format and TUMFTM racetrack database CSV import (25 real circuits including Silverstone, Monza, Spa, Barcelona).
+
+**Interactive Viewer** - Real-time track map with speed-colored racing line, synchronized telemetry plots (speed, lateral/longitudinal g, curvature), and bidirectional cursor tracking.
+
+**Calibrated Parameters** - Includes a 2024-era open-wheel preset calibrated against published performance data (320 km/h top speed, 2.5g cornering on medium-speed corners).
+
+## Usage
+
+### Lap Simulation
+
+```bash
+cargo run --release --bin simulate
+```
+
+Runs the quasi-steady-state lap simulator on oval, circle, Silverstone, and Monza circuits. Produces CSV telemetry and SVG track visualizations. Also runs a transient 14-DOF forward simulation with LQR steering and predictive speed control.
+
+### Trajectory Optimization
+
+```bash
+cargo run --release --bin optimize
+```
+
+Solves the minimum-time optimal control problem using direct collocation. Compares augmented Lagrangian, Gauss-Newton, and direct correction solvers.
+
+### Model Comparison
+
+```bash
+cargo run --release --bin compare
+```
+
+Runs all model fidelities on the same track with both default and calibrated car parameters. Outputs a comparison table showing the effect of tire model, load transfer, and ride-height aerodynamics on lap time.
+
+### Interactive Viewer
+
+```bash
+cargo run --release --bin viewer
+```
+
+Opens a desktop application with a track map and telemetry plots. Select circuits from the dropdown, toggle boundary and racing line overlays, zoom and pan the track view, and hover to see speed at any point synchronized across all telemetry channels.
+
+### Importing Real Tracks
+
+```bash
+# Clone the TUMFTM racetrack database (LGPL-3.0)
+git clone https://github.com/TUMFTM/racetrack-database.git
+
+# Load in code
+let track = apex_track::load_tumftm_csv(Path::new("racetrack-database/tracks/Silverstone.csv"), "Silverstone")?;
+```
+
+See `tracks/README.md` for the JSON track format and import details.
 
 ## Project Structure
 
 ```
 crates/
-  apex-math          Vectors, 3x3 matrices, dual numbers, the Float trait, and CSR sparse matrices.
-  apex-integrator    Fixed-step RK4 and adaptive Dormand-Prince RK45 ODE integrators, and the OdeSystem trait.
-  apex-track         Track geometry: arc length, heading, curvature, queries, and circuit generators.
-  apex-physics       Car parameters, Pacejka tire models, QSS lap simulator, suspension, ride-height aero, and the 2/3/7/14-DOF vehicle dynamics models.
-  apex-telemetry     CSV telemetry export and standalone SVG racing-line rendering.
-  apex-optimizer     NLP definition, collocation formulation, augmented-Lagrangian and Gauss-Newton solvers.
+  apex-math          Linear algebra, dual numbers, sparse matrices
+  apex-integrator    RK4 and adaptive RK45 ODE solvers
+  apex-track         Track geometry, circuit generators, file import
+  apex-physics       Tire models, vehicle dynamics (2/3/7/14-DOF), controllers
+  apex-telemetry     CSV and SVG export
+  apex-optimizer     Collocation NLP, solvers, mesh refinement
+  apex-viewer        Interactive egui-based telemetry viewer
 
 bins/
-  simulate           Runs the QSS lap simulator across several circuits, a 14-DOF forward simulation, and exports CSV + SVG.
-  optimize           Runs the collocation optimizer and compares solvers on the oval and circle.
-  compare            Runs all model fidelities on the same track and prints a comparison table.
-
-benches/             Criterion benchmarks for integrators, tire model, optimizer Jacobians, and suspension.
+  simulate           Lap simulation and telemetry export
+  optimize           Trajectory optimization
+  compare            Model fidelity comparison
+  viewer             Interactive viewer
 ```
 
-The workspace is approximately 14,500 lines of Rust across six library crates and three binaries.
+## Documentation
 
-## Mathematical References
+Mathematical derivations and validation data are in the `docs/` directory:
 
-- H. B. Pacejka, *Tire and Vehicle Dynamics*, 3rd ed. Butterworth-Heinemann, 2012.
-- W. F. Milliken and D. L. Milliken, *Race Car Vehicle Dynamics*. SAE International, 1995.
-- J. T. Betts, *Practical Methods for Optimal Control and Estimation Using Nonlinear Programming*,
-  2nd ed. SIAM, 2010.
-- J. Nocedal and S. J. Wright, *Numerical Optimization*, 2nd ed. Springer, 2006.
+- `docs/math/equations_of_motion.md` - Vehicle model derivations (point-mass through 14-DOF)
+- `docs/math/pacejka.md` - Tire model theory and implementation
+- `docs/math/collocation.md` - Optimal control transcription and solver architecture
+- `docs/analysis.md` - Model fidelity comparison with quantitative results
 
-## Roadmap
+## Build Requirements
 
-- SQP solver upgrade for robust convergence on complex circuits
-- Real-time interactive simulator with 3D visualization
-- Full-lap 14-DOF trajectory optimization
-- Real-time telemetry dashboard
+- Rust stable toolchain (edition 2021)
+- No external C/C++ dependencies
+
+```bash
+cargo test --workspace              # run all tests
+cargo clippy -- -D warnings         # lint check
+cargo bench                         # performance benchmarks
+```
+
+## References
+
+- H. B. Pacejka, *Tire and Vehicle Dynamics*, 3rd ed., Butterworth-Heinemann, 2012
+- W. F. Milliken and D. L. Milliken, *Race Car Vehicle Dynamics*, SAE International, 1995
+- J. T. Betts, *Practical Methods for Optimal Control and Estimation Using Nonlinear Programming*, 2nd ed., SIAM, 2010
+- J. Nocedal and S. J. Wright, *Numerical Optimization*, 2nd ed., Springer, 2006
+
+## License
+
+MIT
