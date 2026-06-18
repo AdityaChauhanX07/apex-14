@@ -58,3 +58,47 @@ Per-point widths override the uniform default:
 
 - `test_circle.json` — 36 points around a 50 m-radius circle (10° spacing), width 10 m.
 - `oval_simple.json` — an oval with 500 m straights and 80 m-radius corners, width 12 m.
+
+## Importing Real Track Data
+
+Apex-14 can import tracks from the
+[TUMFTM Racetrack Database](https://github.com/TUMFTM/racetrack-database)
+(LGPL-3.0 licensed). Those CSV files are **not** redistributed here — clone the
+upstream repository and import them at run time.
+
+### Quick start
+
+```bash
+# Clone the racetrack database
+git clone https://github.com/TUMFTM/racetrack-database.git /tmp/tracks
+
+# The tracks are in /tmp/tracks/tracks/*.csv
+# Apex-14 can load them directly with load_tumftm_csv()
+```
+
+```rust
+use std::path::Path;
+use apex_track::{load_tumftm_csv, export_track_json};
+
+// Import a TUMFTM CSV into the native Track type...
+let track = load_tumftm_csv(Path::new("/tmp/tracks/tracks/Silverstone.csv"), "Silverstone")?;
+
+// ...and optionally re-save it as Apex-14 JSON for offline reuse.
+std::fs::write("tracks/silverstone.json", export_track_json(&track)?)?;
+```
+
+`export_tumftm_csv` performs the reverse conversion (native `Track` →
+TUMFTM CSV string).
+
+### Supported formats
+
+- **TUMFTM CSV**: `x_m,y_m,w_tr_right_m,w_tr_left_m` (meters, closed circuit).
+  The header line is optional; closure is implicit (the last point is not
+  repeated). `w_tr_right_m` / `w_tr_left_m` are half-widths from the centerline.
+- **Apex-14 JSON**: native format with optional per-point widths (see above).
+
+### License note
+
+The TUMFTM data is LGPL-3.0. To respect that license, Apex-14 does not commit
+any TUMFTM-derived `.csv` or `.json` track files to this repository; import them
+locally from the upstream source instead.

@@ -88,6 +88,100 @@ pub fn export_track_json(track: &Track) -> Result<String, Box<dyn std::error::Er
     Ok(serde_json::to_string_pretty(&file)?)
 }
 
+/// Import a track from the TUMFTM racetrack database CSV format.
+///
+/// The TUMFTM format uses 4 columns: `x_m, y_m, w_tr_right_m, w_tr_left_m`.
+/// Coordinates are in meters (local Cartesian projection). Tracks are closed
+/// circuits — the closure is implicit, so the last point connects back to the
+/// first without being repeated.
+///
+/// Source: <https://github.com/TUMFTM/racetrack-database>
+pub fn load_tumftm_csv(
+    path: &std::path::Path,
+    name: &str,
+) -> Result<Track, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(path)?;
+    parse_tumftm_csv(&contents, name)
+}
+
+/// Parse a track from a TUMFTM-format CSV string.
+///
+/// A leading header line (`x_m,...`) and `#` comment lines are skipped, so the
+/// same parser handles both headered and headerless files. The `w_tr_right_m`
+/// and `w_tr_left_m` columns are track half-widths and map directly to a
+/// [`TrackPoint`]'s `width_right` / `width_left`.
+pub fn parse_tumftm_csv(csv_content: &str, name: &str) -> Result<Track, Box<dyn std::error::Error>> {
+    let mut points = Vec::new();
+
+    for line in csv_content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        // Skip header line if present, plus any comment lines.
+        if line.starts_with("x_m") || line.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 4 {
+            return Err(format!("Expected 4 columns, got {}: {}", parts.len(), line).into());
+        }
+
+        let x: f64 = parts[0]
+            .trim()
+            .parse()
+            .map_err(|e| format!("Failed to parse x: {} in line: {}", e, line))?;
+        let y: f64 = parts[1]
+            .trim()
+            .parse()
+            .map_err(|e| format!("Failed to parse y: {} in line: {}", e, line))?;
+        let w_right: f64 = parts[2]
+            .trim()
+            .parse()
+            .map_err(|e| format!("Failed to parse w_right: {} in line: {}", e, line))?;
+        let w_left: f64 = parts[3]
+            .trim()
+            .parse()
+            .map_err(|e| format!("Failed to parse w_left: {} in line: {}", e, line))?;
+
+        points.push(TrackPoint {
+            x,
+            y,
+            width_left: w_left,
+            width_right: w_right,
+        });
+    }
+
+    if points.len() < 3 {
+        return Err(format!(
+            "Track '{}' has only {} points, need at least 3",
+            name,
+            points.len()
+        )
+        .into());
+    }
+
+    // TUMFTM tracks are always closed circuits.
+    Ok(build_track(name, &points, true))
+}
+
+/// Convert a [`Track`] to a TUMFTM-format CSV string (for export/compatibility).
+///
+/// Emits the standard `x_m,y_m,w_tr_right_m,w_tr_left_m` header followed by one
+/// row per segment. This is the inverse of [`parse_tumftm_csv`].
+pub fn export_tumftm_csv(track: &Track) -> String {
+    let mut out = String::from("x_m,y_m,w_tr_right_m,w_tr_left_m\n");
+    for seg in &track.segments {
+        out.push_str(&format!(
+            "{:.6},{:.6},{:.3},{:.3}\n",
+            seg.x, seg.y, seg.width_right, seg.width_left
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +336,119 @@ mod tests {
             track.total_length,
             expected
         );
+    }
+
+    // ---- TUMFTM CSV import/export ----
+
+    /// A rough square, treated as a closed circuit. Eight points, 10 m spacing,
+    /// uniform 5 m half-widths.
+    const TEST_TUMFTM_CSV: &str = "\
+x_m,y_m,w_tr_right_m,w_tr_left_m
+0.000000,0.000000,5.000,5.000
+10.000000,0.000000,5.000,5.000
+20.000000,0.000000,5.000,5.000
+20.000000,10.000000,5.000,5.000
+20.000000,20.000000,5.000,5.000
+10.000000,20.000000,5.000,5.000
+0.000000,20.000000,5.000,5.000
+0.000000,10.000000,5.000,5.000
+";
+
+    #[test]
+    fn tumftm_parse_inline_square() {
+        let track = parse_tumftm_csv(TEST_TUMFTM_CSV, "Square").expect("parse");
+        assert_eq!(track.name, "Square");
+        assert_eq!(track.segments.len(), 8);
+        assert!(track.is_closed, "TUMFTM tracks are closed");
+
+        // Perimeter of the implicit closed loop: 8 hops of 10 m each.
+        let expected = 80.0;
+        assert!(
+            (track.total_length - expected).abs() < 1e-9,
+            "total_length {} vs expected {}",
+            track.total_length,
+            expected
+        );
+
+        // Half-widths map straight through.
+        for seg in &track.segments {
+            assert_eq!(seg.width_left, 5.0);
+            assert_eq!(seg.width_right, 5.0);
+        }
+    }
+
+    #[test]
+    fn tumftm_width_columns_map_to_correct_side() {
+        // w_tr_right_m = 3, w_tr_left_m = 7 — verify they don't get swapped.
+        let csv = "\
+x_m,y_m,w_tr_right_m,w_tr_left_m
+0,0,3.0,7.0
+10,0,3.0,7.0
+10,10,3.0,7.0
+0,10,3.0,7.0
+";
+        let track = parse_tumftm_csv(csv, "Asym").expect("parse");
+        assert_eq!(track.segments[0].width_right, 3.0);
+        assert_eq!(track.segments[0].width_left, 7.0);
+    }
+
+    #[test]
+    fn tumftm_round_trip() {
+        let original = parse_tumftm_csv(TEST_TUMFTM_CSV, "Square").expect("parse");
+
+        let exported = export_tumftm_csv(&original);
+        let reparsed = parse_tumftm_csv(&exported, "Square").expect("reparse");
+
+        assert_eq!(reparsed.segments.len(), original.segments.len());
+        assert!(
+            (reparsed.total_length - original.total_length).abs() / original.total_length < 0.01,
+            "length {} vs {}",
+            reparsed.total_length,
+            original.total_length
+        );
+    }
+
+    #[test]
+    fn tumftm_header_optional() {
+        // Same data with and without the header line must parse identically.
+        let with_header = TEST_TUMFTM_CSV;
+        let without_header = "\
+0.000000,0.000000,5.000,5.000
+10.000000,0.000000,5.000,5.000
+20.000000,0.000000,5.000,5.000
+20.000000,10.000000,5.000,5.000
+20.000000,20.000000,5.000,5.000
+10.000000,20.000000,5.000,5.000
+0.000000,20.000000,5.000,5.000
+0.000000,10.000000,5.000,5.000
+";
+        let a = parse_tumftm_csv(with_header, "T").expect("with header");
+        let b = parse_tumftm_csv(without_header, "T").expect("without header");
+
+        assert_eq!(a.segments.len(), b.segments.len());
+        assert_eq!(a.total_length, b.total_length);
+        for (sa, sb) in a.segments.iter().zip(b.segments.iter()) {
+            assert_eq!(sa.x, sb.x);
+            assert_eq!(sa.y, sb.y);
+            assert_eq!(sa.curvature, sb.curvature);
+        }
+    }
+
+    #[test]
+    fn tumftm_error_too_few_columns() {
+        let csv = "0.0,0.0,5.0\n10.0,0.0,5.0\n20.0,0.0,5.0\n";
+        assert!(parse_tumftm_csv(csv, "Bad").is_err());
+    }
+
+    #[test]
+    fn tumftm_error_non_numeric() {
+        let csv = "0.0,0.0,5.0,5.0\nhello,world,5.0,5.0\n20.0,0.0,5.0,5.0\n";
+        assert!(parse_tumftm_csv(csv, "Bad").is_err());
+    }
+
+    #[test]
+    fn tumftm_error_empty() {
+        assert!(parse_tumftm_csv("", "Empty").is_err());
+        assert!(parse_tumftm_csv("x_m,y_m,w_tr_right_m,w_tr_left_m\n", "HeaderOnly").is_err());
     }
 }
