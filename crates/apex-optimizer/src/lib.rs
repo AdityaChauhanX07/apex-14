@@ -12,7 +12,7 @@ pub mod solver;
 
 pub use collocation::{
     fourteen_dof_grip_budget, seven_dof_derivatives, tire_limited_forces, CollocationConfig,
-    CollocationOptimizer, OptimizationResult,
+    CollocationMethod, CollocationOptimizer, OptimizationResult,
 };
 pub use direct_solver::{
     solve_direct, CollocationStructure, DirectSolverConfig, DirectSolverResult,

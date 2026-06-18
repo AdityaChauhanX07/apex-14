@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use apex_optimizer::{
-    CollocationConfig, CollocationOptimizer, DetailedTelemetry, DirectSolverConfig,
-    GaussNewtonConfig, OptimizationResult, SolverConfig,
+    CollocationConfig, CollocationMethod, CollocationOptimizer, DetailedTelemetry,
+    DirectSolverConfig, GaussNewtonConfig, OptimizationResult, SolverConfig,
 };
 use apex_physics::{
     qss_lap_sim, qss_lap_sim_tire, AeroModel, CarParams, PacejkaTire, SuspensionSystem,
@@ -76,6 +76,44 @@ fn run_track(
         gn,
         direct,
     })
+}
+
+/// Optimize the same track at the same node count with both collocation schemes
+/// and print a side-by-side comparison of lap time and equality violation.
+fn compare_collocation_methods(
+    track: &Track,
+    car: &CarParams,
+    n_nodes: usize,
+    gn_solver: &GaussNewtonConfig,
+) {
+    let solve = |method: CollocationMethod| {
+        let cfg = CollocationConfig {
+            n_nodes,
+            closed: track.is_closed,
+            method,
+            ..CollocationConfig::default()
+        };
+        CollocationOptimizer::new(cfg, track, car).optimize_gn(gn_solver)
+    };
+    let trap = solve(CollocationMethod::Trapezoidal);
+    let hs = solve(CollocationMethod::HermiteSimpson);
+
+    println!("Collocation method comparison on Oval (GN, N={n_nodes}):");
+    println!(
+        "  Trapezoidal (2nd order):    {:.3}s | eq_viol {:.2e} | converged: {}",
+        trap.lap_time, trap.eq_violation, trap.converged
+    );
+    println!(
+        "  Hermite-Simpson (4th order): {:.3}s | eq_viol {:.2e} | converged: {}",
+        hs.lap_time, hs.eq_violation, hs.converged
+    );
+    if trap.eq_violation > 0.0 {
+        println!(
+            "  -> Hermite-Simpson cuts the dynamics defect by {:.1}x",
+            trap.eq_violation / hs.eq_violation.max(1e-30)
+        );
+    }
+    println!();
 }
 
 /// Print a summary of the 14-DOF forward simulation.
@@ -223,6 +261,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &gn_solver,
         &direct_solver,
     )?;
+
+    // Collocation-method comparison on the oval: the fourth-order Hermite-Simpson
+    // scheme reaches a more dynamically consistent solution (lower equality
+    // violation) than second-order trapezoidal at the same node count, because it
+    // evaluates the dynamics at an interpolated midpoint of every interval.
+    compare_collocation_methods(&oval_track, &car, oval_collocation.n_nodes, &gn_solver);
 
     // 7-DOF tire model on the oval: Pacejka combined-slip forces with
     // four-corner load-sensitive grip, warm-started from the tire-aware QSS so

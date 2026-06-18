@@ -8,7 +8,9 @@
 use apex_physics::CarParams;
 use apex_track::Track;
 
-use crate::collocation::{CollocationConfig, CollocationOptimizer, OptimizationResult};
+use crate::collocation::{
+    CollocationConfig, CollocationMethod, CollocationOptimizer, OptimizationResult,
+};
 use crate::gauss_newton::GaussNewtonConfig;
 
 /// Configuration for mesh refinement.
@@ -69,12 +71,29 @@ fn solver_for_level(config: &MeshRefinementConfig, level: usize) -> GaussNewtonC
     config.solver_configs[idx].clone()
 }
 
-/// Build a collocation config for `n_nodes` on `track`.
-fn level_config(n_nodes: usize, track: &Track) -> CollocationConfig {
+/// Build a collocation config for `n_nodes` on `track` using collocation
+/// `method`.
+fn level_config(n_nodes: usize, track: &Track, method: CollocationMethod) -> CollocationConfig {
     CollocationConfig {
         n_nodes,
         closed: track.is_closed,
+        method,
         ..CollocationConfig::default()
+    }
+}
+
+/// Collocation method for refinement `level` out of `n_levels`.
+///
+/// Coarse meshes use the robust second-order trapezoidal scheme — on a sparse
+/// mesh the fourth-order Hermite-Simpson midpoint cannot resolve sharp curvature
+/// transitions and converges poorly. The finest mesh, where the nodes resolve the
+/// geometry, switches to Hermite-Simpson for its higher accuracy. This is the
+/// standard "robust low order to seed, high order to polish" refinement ladder.
+fn method_for_level(level: usize, n_levels: usize) -> CollocationMethod {
+    if level + 1 == n_levels {
+        CollocationMethod::HermiteSimpson
+    } else {
+        CollocationMethod::Trapezoidal
     }
 }
 
@@ -105,14 +124,24 @@ pub fn optimize_with_refinement(
         config.mesh_sequence.clone()
     };
 
+    let n_levels = sequence.len();
+
     // Coarsest level: cold start from the QSS warm start.
-    let opt0 = CollocationOptimizer::new(level_config(sequence[0], track), track, car);
+    let opt0 = CollocationOptimizer::new(
+        level_config(sequence[0], track, method_for_level(0, n_levels)),
+        track,
+        car,
+    );
     let mut current = opt0.optimize_gn(&solver_for_level(config, 0));
     let mut level_results = vec![level_summary(sequence[0], &current)];
 
     // Finer levels: interpolate the previous solution as the warm start.
     for (level, &n_nodes) in sequence.iter().enumerate().skip(1) {
-        let opt = CollocationOptimizer::new(level_config(n_nodes, track), track, car);
+        let opt = CollocationOptimizer::new(
+            level_config(n_nodes, track, method_for_level(level, n_levels)),
+            track,
+            car,
+        );
         let x0 = opt.initial_guess_from_result(&current);
         current = opt.optimize_gn_from(&x0, &solver_for_level(config, level));
         level_results.push(level_summary(n_nodes, &current));
@@ -165,7 +194,11 @@ mod tests {
 
         let n_fine = 20;
         let car = CarParams::default();
-        let fine_opt = CollocationOptimizer::new(level_config(n_fine, &track), &track, &car);
+        let fine_opt = CollocationOptimizer::new(
+            level_config(n_fine, &track, CollocationMethod::HermiteSimpson),
+            &track,
+            &car,
+        );
         let x = fine_opt.initial_guess_from_result(&coarse);
 
         // Decision-variable layout: s = x[0..N], v = x[2N..3N].
@@ -246,9 +279,14 @@ mod tests {
         };
         let refined = optimize_with_refinement(&track, &car, &config);
 
-        // Cold start directly at N=40 with the same fine-level solver config.
+        // Cold start directly at N=40 with the same fine-level solver config and
+        // the same (Hermite-Simpson) method the refinement ladder ends on.
         let fine_solver = solver_for_level(&config, 1);
-        let cold = CollocationOptimizer::new(level_config(40, &track), &track, &car);
+        let cold = CollocationOptimizer::new(
+            level_config(40, &track, CollocationMethod::HermiteSimpson),
+            &track,
+            &car,
+        );
         let cold_result = cold.optimize_gn(&fine_solver);
 
         let warm_viol = refined.final_result.eq_violation;
@@ -279,9 +317,14 @@ mod tests {
         let refined = optimize_with_refinement(&track, &car, &config);
         assert_eq!(refined.level_results.len(), 1);
 
-        // A single level must match a plain optimize_gn at the same N.
-        let plain =
-            CollocationOptimizer::new(level_config(50, &track), &track, &car).optimize_gn(&solver);
+        // A single level must match a plain optimize_gn at the same N. A lone
+        // level is the finest, so it uses Hermite-Simpson.
+        let plain = CollocationOptimizer::new(
+            level_config(50, &track, CollocationMethod::HermiteSimpson),
+            &track,
+            &car,
+        )
+        .optimize_gn(&solver);
 
         assert!(
             (refined.final_result.lap_time - plain.lap_time).abs() < 1e-9,

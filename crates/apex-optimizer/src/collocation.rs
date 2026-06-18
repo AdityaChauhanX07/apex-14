@@ -22,6 +22,16 @@ const ROLL_STIFFNESS_FRONT: f64 = 0.55;
 use crate::nlp::{NlpEvaluator, NlpProblem};
 use crate::solver::{solve_nlp, SolverConfig, SolverResult};
 
+/// Collocation discretization scheme for the dynamics defects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CollocationMethod {
+    /// Second-order trapezoidal collocation (existing method).
+    Trapezoidal,
+    /// Fourth-order Hermite-Simpson (separated) collocation.
+    /// Adds a midpoint evaluation per interval for higher accuracy.
+    HermiteSimpson,
+}
+
 /// Configuration for the collocation problem.
 #[derive(Debug, Clone)]
 pub struct CollocationConfig {
@@ -35,6 +45,8 @@ pub struct CollocationConfig {
     pub dt_max: f64,
     /// Minimum speed (m/s) — prevents singularities.
     pub v_min: f64,
+    /// Collocation discretization scheme for the dynamics defects.
+    pub method: CollocationMethod,
 }
 
 impl Default for CollocationConfig {
@@ -45,6 +57,9 @@ impl Default for CollocationConfig {
             dt_min: 0.001,
             dt_max: 2.0,
             v_min: 5.0,
+            // Hermite-Simpson is strictly better when the Jacobian is available
+            // (which it is here, via forward-mode autodiff).
+            method: CollocationMethod::HermiteSimpson,
         }
     }
 }
@@ -566,28 +581,51 @@ impl NlpEvaluator for CollocationEvaluator<'_, '_> {
 
         let mut constraints = Vec::with_capacity(opt.n_eq_constraints());
 
-        // Trapezoidal dynamics defects over each interval.
+        // Dynamics defects over each interval, per the configured method.
         for k in 0..n - 1 {
             let kappa_k = opt.track.curvature_at(vars.s[k]);
             let kappa_k1 = opt.track.curvature_at(vars.s[k + 1]);
 
-            let state_k = [vars.s[k], vars.n[k], vars.v[k], vars.alpha[k]];
-            let state_k1 = [
-                vars.s[k + 1],
-                vars.n[k + 1],
-                vars.v[k + 1],
-                vars.alpha[k + 1],
-            ];
-            let control_k = [vars.f_drive[k], vars.curvature_cmd[k]];
-            let control_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
+            let defects = match opt.config.method {
+                CollocationMethod::Trapezoidal => {
+                    let state_k = [vars.s[k], vars.n[k], vars.v[k], vars.alpha[k]];
+                    let state_k1 = [
+                        vars.s[k + 1],
+                        vars.n[k + 1],
+                        vars.v[k + 1],
+                        vars.alpha[k + 1],
+                    ];
+                    let control_k = [vars.f_drive[k], vars.curvature_cmd[k]];
+                    let control_k1 = [vars.f_drive[k + 1], vars.curvature_cmd[k + 1]];
 
-            let deriv_k = point_mass_derivatives(opt.car, &state_k, &control_k, kappa_k);
-            let deriv_k1 = point_mass_derivatives(opt.car, &state_k1, &control_k1, kappa_k1);
+                    let deriv_k = point_mass_derivatives(opt.car, &state_k, &control_k, kappa_k);
+                    let deriv_k1 = point_mass_derivatives(opt.car, &state_k1, &control_k1, kappa_k1);
 
-            let half_dt = vars.dt[k] / 2.0;
-            for j in 0..4 {
-                constraints.push(state_k1[j] - state_k[j] - half_dt * (deriv_k[j] + deriv_k1[j]));
-            }
+                    let half_dt = vars.dt[k] / 2.0;
+                    std::array::from_fn(|j| {
+                        state_k1[j] - state_k[j] - half_dt * (deriv_k[j] + deriv_k1[j])
+                    })
+                }
+                CollocationMethod::HermiteSimpson => hermite_simpson_defect(
+                    opt.car,
+                    vars.s[k],
+                    vars.n[k],
+                    vars.v[k],
+                    vars.alpha[k],
+                    vars.f_drive[k],
+                    vars.curvature_cmd[k],
+                    vars.s[k + 1],
+                    vars.n[k + 1],
+                    vars.v[k + 1],
+                    vars.alpha[k + 1],
+                    vars.f_drive[k + 1],
+                    vars.curvature_cmd[k + 1],
+                    vars.dt[k],
+                    kappa_k,
+                    kappa_k1,
+                ),
+            };
+            constraints.extend_from_slice(&defects);
         }
 
         // Periodicity (closed tracks).
@@ -696,15 +734,33 @@ impl CollocationEvaluator<'_, '_> {
                 6 * n + k,
             ];
 
+            let state_k = [node_k[0], node_k[1], node_k[2], node_k[3]];
+            let control_k = [node_k[4], node_k[5]];
+            let state_k1 = [node_k1[0], node_k1[1], node_k1[2], node_k1[3]];
+            let control_k1 = [node_k1[4], node_k1[5]];
+
             for (wrt, &col) in global_indices.iter().enumerate() {
-                let defects = defect_with_dual(
-                    opt.car,
-                    &node_k,
-                    &node_k1,
-                    vars.dt[k],
-                    [kappa_k, kappa_k1],
-                    wrt,
-                );
+                let defects = match opt.config.method {
+                    CollocationMethod::Trapezoidal => defect_with_dual(
+                        opt.car,
+                        &node_k,
+                        &node_k1,
+                        vars.dt[k],
+                        [kappa_k, kappa_k1],
+                        wrt,
+                    ),
+                    CollocationMethod::HermiteSimpson => hermite_simpson_defect_with_dual(
+                        opt.car,
+                        &state_k,
+                        &control_k,
+                        &state_k1,
+                        &control_k1,
+                        vars.dt[k],
+                        kappa_k,
+                        kappa_k1,
+                        wrt,
+                    ),
+                };
                 for (j, d) in defects.iter().enumerate() {
                     if d.dual.abs() > 1e-15 {
                         builder.add(4 * k + j, col, d.dual);
@@ -713,13 +769,10 @@ impl CollocationEvaluator<'_, '_> {
             }
 
             // Curvature-chain correction for the s-columns: the defects depend
-            // on s through κ(s), which `defect_with_dual` holds constant. Add
-            // -(dt/2)·(∂f/∂κ)·(dκ/ds). On constant-curvature stretches dκ/ds ≈ 0
+            // on s through κ(s), which the dual-defect routines hold constant.
+            // Add (∂defect/∂κ)·(dκ/ds). On constant-curvature stretches dκ/ds ≈ 0
             // so this vanishes; at corner entry/exit it matters and makes the
             // Gauss-Newton step effective.
-            let half_dt = vars.dt[k] / 2.0;
-            let dfk_dkappa = dynamics_dkappa(opt.car, &node_k, kappa_k);
-            let dfk1_dkappa = dynamics_dkappa(opt.car, &node_k1, kappa_k1);
             let h = 1e-3;
             let dkk_ds = (opt.track.curvature_at(node_k[0] + h)
                 - opt.track.curvature_at(node_k[0] - h))
@@ -727,12 +780,65 @@ impl CollocationEvaluator<'_, '_> {
             let dkk1_ds = (opt.track.curvature_at(node_k1[0] + h)
                 - opt.track.curvature_at(node_k1[0] - h))
                 / (2.0 * h);
+            let (ddef_dkk, ddef_dkk1): ([f64; 4], [f64; 4]) = match opt.config.method {
+                CollocationMethod::Trapezoidal => {
+                    // ∂defect/∂κ = -(dt/2)·∂f/∂κ (the trapezoidal weight).
+                    let half_dt = vars.dt[k] / 2.0;
+                    let dfk = dynamics_dkappa(opt.car, &node_k, kappa_k);
+                    let dfk1 = dynamics_dkappa(opt.car, &node_k1, kappa_k1);
+                    (
+                        std::array::from_fn(|j| -half_dt * dfk[j]),
+                        std::array::from_fn(|j| -half_dt * dfk1[j]),
+                    )
+                }
+                CollocationMethod::HermiteSimpson => {
+                    // The midpoint couples both nodal curvatures through κ_mid and
+                    // x_mid, so differentiate the whole defect w.r.t. each passed
+                    // curvature by central differences (skipped where dκ/ds = 0).
+                    let hs = |kk: f64, kk1: f64| {
+                        hermite_simpson_defect(
+                            opt.car,
+                            node_k[0],
+                            node_k[1],
+                            node_k[2],
+                            node_k[3],
+                            node_k[4],
+                            node_k[5],
+                            node_k1[0],
+                            node_k1[1],
+                            node_k1[2],
+                            node_k1[3],
+                            node_k1[4],
+                            node_k1[5],
+                            vars.dt[k],
+                            kk,
+                            kk1,
+                        )
+                    };
+                    let e = 1e-6;
+                    let dkk = if dkk_ds != 0.0 {
+                        let plus = hs(kappa_k + e, kappa_k1);
+                        let minus = hs(kappa_k - e, kappa_k1);
+                        std::array::from_fn(|j| (plus[j] - minus[j]) / (2.0 * e))
+                    } else {
+                        [0.0; 4]
+                    };
+                    let dkk1 = if dkk1_ds != 0.0 {
+                        let plus = hs(kappa_k, kappa_k1 + e);
+                        let minus = hs(kappa_k, kappa_k1 - e);
+                        std::array::from_fn(|j| (plus[j] - minus[j]) / (2.0 * e))
+                    } else {
+                        [0.0; 4]
+                    };
+                    (dkk, dkk1)
+                }
+            };
             for j in 0..4 {
-                let ck = -half_dt * dfk_dkappa[j] * dkk_ds;
+                let ck = ddef_dkk[j] * dkk_ds;
                 if ck.abs() > 1e-15 {
                     builder.add(4 * k + j, k, ck); // s_k column
                 }
-                let ck1 = -half_dt * dfk1_dkappa[j] * dkk1_ds;
+                let ck1 = ddef_dkk1[j] * dkk1_ds;
                 if ck1.abs() > 1e-15 {
                     builder.add(4 * k + j, k + 1, ck1); // s_{k+1} column
                 }
@@ -941,6 +1047,172 @@ fn defect_with_dual(
     let state_k1 = [s_k1, n_k1, v_k1, a_k1];
 
     std::array::from_fn(|j| state_k1[j] - state_k[j] - half * (f_k[j] + f_k1[j]))
+}
+
+/// Fourth-order Hermite-Simpson (separated) dynamics defect for interval `k`,
+/// point-mass model, in `f64`.
+///
+/// The separated form interpolates a midpoint state (a Hermite cubic through the
+/// two nodal states and their derivatives), evaluates the dynamics there, and
+/// then applies Simpson's rule to the ODE:
+///
+/// ```text
+///   x_mid   = (x_k + x_{k+1})/2 + (dt/8)·(f_k − f_{k+1})
+///   u_mid   = (u_k + u_{k+1})/2
+///   f_mid   = f(x_mid, u_mid)
+///   defect  = x_{k+1} − x_k − (dt/6)·(f_k + 4·f_mid + f_{k+1})
+/// ```
+///
+/// The midpoint curvature is the linear interpolation `(κ_k + κ_{k+1})/2`,
+/// matching how the defect treats curvature as held fixed per node (its
+/// `s`-dependence is added back as a chain term in the Jacobian).
+#[allow(clippy::too_many_arguments)]
+fn hermite_simpson_defect(
+    car: &CarParams,
+    // Node k
+    s_k: f64,
+    n_k: f64,
+    v_k: f64,
+    alpha_k: f64,
+    fd_k: f64,
+    curv_k: f64,
+    // Node k+1
+    s_k1: f64,
+    n_k1: f64,
+    v_k1: f64,
+    alpha_k1: f64,
+    fd_k1: f64,
+    curv_k1: f64,
+    // Time step
+    dt: f64,
+    // Track curvatures at the two nodes
+    kappa_k: f64,
+    kappa_k1: f64,
+) -> [f64; 4] {
+    hermite_simpson_defect_generic::<f64>(
+        car,
+        &[s_k, n_k, v_k, alpha_k],
+        &[fd_k, curv_k],
+        &[s_k1, n_k1, v_k1, alpha_k1],
+        &[fd_k1, curv_k1],
+        dt,
+        kappa_k,
+        kappa_k1,
+    )
+}
+
+/// [`Dual`] Hermite-Simpson defect for interval `k`, with local variable `wrt`
+/// (0..13) seeded as the differentiation variable.
+///
+/// Local indices: 0..4 = `state_k` `[s,n,v,alpha]`, 4..6 = `control_k`
+/// `[f_drive,curv]`, 6..10 = `state_k1`, 10..12 = `control_k1`, 12 = `dt`. The
+/// chain rule propagates automatically through the midpoint interpolation and the
+/// three dynamics evaluations, so the returned `.dual` parts are exact partials.
+#[allow(clippy::too_many_arguments)]
+fn hermite_simpson_defect_with_dual(
+    car: &CarParams,
+    state_k: &[f64; 4],
+    control_k: &[f64; 2],
+    state_k1: &[f64; 4],
+    control_k1: &[f64; 2],
+    dt: f64,
+    kappa_k: f64,
+    kappa_k1: f64,
+    wrt: usize,
+) -> [Dual; 4] {
+    let mk = |val: f64, idx: usize| {
+        if idx == wrt {
+            Dual::variable(val)
+        } else {
+            Dual::constant(val)
+        }
+    };
+
+    let sd_k = [
+        mk(state_k[0], 0),
+        mk(state_k[1], 1),
+        mk(state_k[2], 2),
+        mk(state_k[3], 3),
+    ];
+    let cd_k = [mk(control_k[0], 4), mk(control_k[1], 5)];
+    let sd_k1 = [
+        mk(state_k1[0], 6),
+        mk(state_k1[1], 7),
+        mk(state_k1[2], 8),
+        mk(state_k1[3], 9),
+    ];
+    let cd_k1 = [mk(control_k1[0], 10), mk(control_k1[1], 11)];
+    let dt_d = mk(dt, 12);
+
+    hermite_simpson_defect_generic::<Dual>(
+        car,
+        &sd_k,
+        &cd_k,
+        &sd_k1,
+        &cd_k1,
+        dt_d,
+        Dual::constant(kappa_k),
+        Dual::constant(kappa_k1),
+    )
+}
+
+/// Generic Hermite-Simpson defect, usable with `f64` or [`Dual`]. Curvatures are
+/// held fixed (their `s`-dependence is a Jacobian chain term, as for the
+/// trapezoidal defect). `s_mid` is interpolated for completeness but the
+/// point-mass dynamics do not depend on `s`, so only `n,v,alpha` of the midpoint
+/// state feed the midpoint evaluation.
+#[allow(clippy::too_many_arguments)]
+fn hermite_simpson_defect_generic<T: Float>(
+    car: &CarParams,
+    state_k: &[T; 4],
+    control_k: &[T; 2],
+    state_k1: &[T; 4],
+    control_k1: &[T; 2],
+    dt: T,
+    kappa_k: T,
+    kappa_k1: T,
+) -> [T; 4] {
+    // (a,b) nodal dynamics
+    let f_k = point_mass_derivatives_generic::<T>(
+        car,
+        state_k[1],
+        state_k[2],
+        state_k[3],
+        control_k[0],
+        control_k[1],
+        kappa_k,
+    );
+    let f_k1 = point_mass_derivatives_generic::<T>(
+        car,
+        state_k1[1],
+        state_k1[2],
+        state_k1[3],
+        control_k1[0],
+        control_k1[1],
+        kappa_k1,
+    );
+
+    // (c) midpoint state: x_mid = (x_k + x_{k+1})/2 + (dt/8)·(f_k − f_{k+1})
+    let eighth = dt * 0.125;
+    let x_mid: [T; 4] =
+        std::array::from_fn(|j| (state_k[j] + state_k1[j]) * 0.5 + eighth * (f_k[j] - f_k1[j]));
+
+    // (d) midpoint control (linear interpolation)
+    let fd_mid = (control_k[0] + control_k1[0]) * 0.5;
+    let curv_mid = (control_k[1] + control_k1[1]) * 0.5;
+    // (e) midpoint curvature (linear interpolation)
+    let kappa_mid = (kappa_k + kappa_k1) * 0.5;
+
+    // (f) midpoint dynamics (point-mass model ignores s, so x_mid[0] is unused)
+    let f_mid = point_mass_derivatives_generic::<T>(
+        car, x_mid[1], x_mid[2], x_mid[3], fd_mid, curv_mid, kappa_mid,
+    );
+
+    // (g) Simpson's-rule defect
+    let sixth = dt / 6.0;
+    std::array::from_fn(|j| {
+        state_k1[j] - state_k[j] - sixth * (f_k[j] + f_mid[j] * 4.0 + f_k1[j])
+    })
 }
 
 /// Compute a Jacobian numerically using central finite differences.
@@ -2200,4 +2472,349 @@ mod tests {
             result.lap_time
         );
     }
+
+    // --- Hermite-Simpson collocation tests ---
+
+    fn vec_norm(a: &[f64; 4]) -> f64 {
+        a.iter().map(|v| v * v).sum::<f64>().sqrt()
+    }
+
+    /// Trapezoidal point-mass defect for one interval (for accuracy comparisons).
+    #[allow(clippy::too_many_arguments)]
+    fn trapezoidal_defect(
+        car: &CarParams,
+        state_k: &[f64; 4],
+        control_k: &[f64; 2],
+        state_k1: &[f64; 4],
+        control_k1: &[f64; 2],
+        dt: f64,
+        kappa_k: f64,
+        kappa_k1: f64,
+    ) -> [f64; 4] {
+        let fk = point_mass_derivatives(car, state_k, control_k, kappa_k);
+        let fk1 = point_mass_derivatives(car, state_k1, control_k1, kappa_k1);
+        std::array::from_fn(|j| state_k1[j] - state_k[j] - 0.5 * dt * (fk[j] + fk1[j]))
+    }
+
+    /// High-accuracy RK4 reference endpoint for the point-mass ODE under a
+    /// constant control and curvature over `dt` (used as ground truth so that a
+    /// scheme's defect measures only its quadrature error).
+    fn rk4_reference(
+        car: &CarParams,
+        state0: &[f64; 4],
+        control: &[f64; 2],
+        kappa: f64,
+        dt: f64,
+        nsub: usize,
+    ) -> [f64; 4] {
+        let h = dt / nsub as f64;
+        let mut x = *state0;
+        for _ in 0..nsub {
+            let k1 = point_mass_derivatives(car, &x, control, kappa);
+            let x2: [f64; 4] = std::array::from_fn(|j| x[j] + 0.5 * h * k1[j]);
+            let k2 = point_mass_derivatives(car, &x2, control, kappa);
+            let x3: [f64; 4] = std::array::from_fn(|j| x[j] + 0.5 * h * k2[j]);
+            let k3 = point_mass_derivatives(car, &x3, control, kappa);
+            let x4: [f64; 4] = std::array::from_fn(|j| x[j] + h * k3[j]);
+            let k4 = point_mass_derivatives(car, &x4, control, kappa);
+            for j in 0..4 {
+                x[j] += h / 6.0 * (k1[j] + 2.0 * k2[j] + 2.0 * k3[j] + k4[j]);
+            }
+        }
+        x
+    }
+
+    #[test]
+    fn hs_defect_near_zero_on_steady_circle() {
+        // Constant speed on a constant-curvature circle is a steady state: the
+        // dynamics are constant, so the trajectory is exactly representable and
+        // both schemes' defects vanish.
+        let car = CarParams::default();
+        let r = 100.0;
+        let kappa = 1.0 / r;
+        let v = 50.0;
+        let f_hold = car.drag_force(v) + car.rolling_resistance_force();
+        let dt = 0.1;
+        let s_k = 10.0;
+        let s_k1 = s_k + v * dt;
+        let state_k = [s_k, 0.0, v, 0.0];
+        let state_k1 = [s_k1, 0.0, v, 0.0];
+        let ctrl = [f_hold, kappa];
+
+        let hs = hermite_simpson_defect(
+            &car, s_k, 0.0, v, 0.0, f_hold, kappa, s_k1, 0.0, v, 0.0, f_hold, kappa, dt, kappa, kappa,
+        );
+        let trap = trapezoidal_defect(&car, &state_k, &ctrl, &state_k1, &ctrl, dt, kappa, kappa);
+
+        assert!(vec_norm(&hs) < 1e-9, "HS defect {hs:?} should be ~0");
+        assert!(vec_norm(&trap) < 1e-9, "trap defect {trap:?} should be ~0");
+        // HS is never worse than trapezoidal.
+        assert!(vec_norm(&hs) <= vec_norm(&trap) + 1e-12);
+    }
+
+    #[test]
+    fn hs_more_accurate_than_trapezoidal_accelerating() {
+        // A car accelerating along a straight: the speed derivative is nonlinear
+        // (drag ∝ v²), so the schemes differ. Compared against the exact RK4
+        // endpoint, the HS defect (4th order) is far smaller than trapezoidal.
+        let car = CarParams::default();
+        let v0 = 50.0;
+        let f_drive = 9000.0;
+        let kappa = 0.0;
+        let ctrl = [f_drive, 0.0];
+        let dt = 1.8; // ~100 m of travel
+
+        let state0 = [0.0, 0.0, v0, 0.0];
+        let state1 = rk4_reference(&car, &state0, &ctrl, kappa, dt, 4000);
+        // sanity: it accelerated to roughly 60 m/s
+        assert!(state1[2] > 58.0 && state1[2] < 72.0, "v1 = {}", state1[2]);
+
+        let hs = hermite_simpson_defect(
+            &car, state0[0], 0.0, v0, 0.0, f_drive, 0.0, state1[0], state1[1], state1[2], state1[3],
+            f_drive, 0.0, dt, kappa, kappa,
+        );
+        let trap = trapezoidal_defect(&car, &state0, &ctrl, &state1, &ctrl, dt, kappa, kappa);
+
+        let hs_n = vec_norm(&hs);
+        let trap_n = vec_norm(&trap);
+        assert!(
+            hs_n < trap_n,
+            "HS defect {hs_n} should be smaller than trapezoidal {trap_n}"
+        );
+        assert!(
+            hs_n < 0.2 * trap_n,
+            "HS defect {hs_n} should be much smaller than trapezoidal {trap_n}"
+        );
+    }
+
+    #[test]
+    fn hs_autodiff_jacobian_matches_numerical_circle() {
+        let (pts, closed) = circle_track(100.0, 12.0, 200);
+        let track = build_track("circle", &pts, closed);
+        let car = CarParams::default();
+        let config = CollocationConfig {
+            n_nodes: 20,
+            method: CollocationMethod::HermiteSimpson,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x = opt.initial_guess();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        let ad = evaluator.autodiff_equality_jacobian(&x);
+        let fd = numerical_jacobian_fd(&x, opt.n_eq_constraints(), |x| {
+            evaluator.equality_constraints(x)
+        });
+        assert_eq!(ad.nrows(), fd.nrows());
+        assert_eq!(ad.ncols(), fd.ncols());
+        if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
+            panic!("HS eq jacobian mismatch at ({i}, {j}): autodiff {a} vs fd {b}");
+        }
+    }
+
+    #[test]
+    fn hs_autodiff_jacobian_matches_numerical_oval() {
+        // The oval has curvature transitions, so this exercises the s-column
+        // curvature-chain correction (dκ/ds ≠ 0 at corner entry/exit).
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::default();
+        let config = CollocationConfig {
+            n_nodes: 40,
+            method: CollocationMethod::HermiteSimpson,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x = opt.initial_guess();
+        let evaluator = CollocationEvaluator { optimizer: &opt };
+
+        let ad = evaluator.autodiff_equality_jacobian(&x);
+        let fd = numerical_jacobian_fd(&x, opt.n_eq_constraints(), |x| {
+            evaluator.equality_constraints(x)
+        });
+        if let Some((i, j, a, b)) = first_diff(&ad, &fd, 1e-4) {
+            panic!("HS oval eq jacobian mismatch at ({i}, {j}): autodiff {a} vs fd {b}");
+        }
+    }
+
+    #[test]
+    fn hs_optimization_circle_converges() {
+        let (pts, closed) = circle_track(100.0, 12.0, 200);
+        let track = build_track("circle", &pts, closed);
+        let car = CarParams::default();
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let hs = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 30,
+                method: CollocationMethod::HermiteSimpson,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+        let tr = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 30,
+                method: CollocationMethod::Trapezoidal,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+
+        assert!(
+            hs.eq_violation < 1e-3,
+            "HS eq_viol {} should converge",
+            hs.eq_violation
+        );
+        assert!(
+            (hs.lap_time - tr.lap_time).abs() / tr.lap_time < 0.02,
+            "HS lap {} should match trapezoidal {} within 2%",
+            hs.lap_time,
+            tr.lap_time
+        );
+    }
+
+    #[test]
+    fn hs_lower_defect_than_trapezoidal_on_oval() {
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::default();
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-4,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let hs = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 50,
+                method: CollocationMethod::HermiteSimpson,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+        let tr = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 50,
+                method: CollocationMethod::Trapezoidal,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+
+        assert!(hs.lap_time.is_finite(), "HS lap finite");
+        assert!(hs.speeds.iter().all(|&v| v > 0.0), "HS speeds positive");
+        // The key claim: at equal node count the higher-order scheme reaches a
+        // more dynamically consistent solution (lower equality violation).
+        assert!(
+            hs.eq_violation < tr.eq_violation,
+            "HS eq_viol {} should be below trapezoidal {}",
+            hs.eq_violation,
+            tr.eq_violation
+        );
+    }
+
+    #[test]
+    fn hs_high_order_convergence() {
+        // Local defect of HS on an accelerating straight, against the exact RK4
+        // endpoint, as the step is halved. A 4th-order-or-better method cuts the
+        // defect by ≥ ~16× per halving — far steeper than trapezoidal's ~4×.
+        let car = CarParams::default();
+        let v0 = 50.0;
+        let f_drive = 8000.0;
+        let kappa = 0.0;
+        let ctrl = [f_drive, 0.0];
+
+        let hs_defect_norm = |dt: f64| {
+            let state0 = [0.0, 0.0, v0, 0.0];
+            let state1 = rk4_reference(&car, &state0, &ctrl, kappa, dt, 8000);
+            let d = hermite_simpson_defect(
+                &car, 0.0, 0.0, v0, 0.0, f_drive, 0.0, state1[0], state1[1], state1[2], state1[3],
+                f_drive, 0.0, dt, kappa, kappa,
+            );
+            vec_norm(&d)
+        };
+        let trap_defect_norm = |dt: f64| {
+            let state0 = [0.0, 0.0, v0, 0.0];
+            let state1 = rk4_reference(&car, &state0, &ctrl, kappa, dt, 8000);
+            trapezoidal_defect(&car, &state0, &ctrl, &state1, &ctrl, dt, kappa, kappa)
+                .iter()
+                .map(|v| v * v)
+                .sum::<f64>()
+                .sqrt()
+        };
+
+        let d1 = hs_defect_norm(0.4);
+        let d2 = hs_defect_norm(0.2);
+        let d3 = hs_defect_norm(0.1);
+        // monotonic decrease
+        assert!(d1 > d2 && d2 > d3, "HS defect must shrink: {d1} {d2} {d3}");
+        let r1 = d1 / d2;
+        let r2 = d2 / d3;
+        assert!(r1 > 12.0, "HS ratio1 {r1} should be ≥ ~16 (high order)");
+        assert!(r2 > 12.0, "HS ratio2 {r2} should be ≥ ~16 (high order)");
+        // and clearly higher order than trapezoidal (whose ratio is ~4)
+        let tr_ratio = trap_defect_norm(0.4) / trap_defect_norm(0.2);
+        assert!(
+            r2 > 2.0 * tr_ratio,
+            "HS ratio {r2} should far exceed trapezoidal ratio {tr_ratio}"
+        );
+    }
+
+    #[test]
+    fn collocation_method_enum_works() {
+        let (pts, closed) = circle_track(100.0, 12.0, 200);
+        let track = build_track("circle", &pts, closed);
+        let car = CarParams::default();
+        let gn = crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        };
+
+        let tr = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 30,
+                method: CollocationMethod::Trapezoidal,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+        let hs = CollocationOptimizer::new(
+            CollocationConfig {
+                n_nodes: 30,
+                method: CollocationMethod::HermiteSimpson,
+                ..CollocationConfig::default()
+            },
+            &track,
+            &car,
+        )
+        .optimize_gn(&gn);
+
+        assert!(tr.lap_time.is_finite() && tr.lap_time > 0.0, "trap lap valid");
+        assert!(hs.lap_time.is_finite() && hs.lap_time > 0.0, "HS lap valid");
+        // Both valid and close on the easy circle (different schemes, near-equal
+        // optima).
+        assert!(
+            (hs.lap_time - tr.lap_time).abs() / tr.lap_time < 0.02,
+            "HS lap {} and trapezoidal lap {} should be close",
+            hs.lap_time,
+            tr.lap_time
+        );
+    }
 }
+
