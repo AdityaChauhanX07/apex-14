@@ -2,21 +2,32 @@
 
 Minimum-time lap simulation and racing line optimization for open-wheel race cars.
 
-Apex-14 computes optimal racing lines and lap times using nonlinear vehicle dynamics models coupled with direct collocation trajectory optimization. It supports four levels of model fidelity and includes an interactive telemetry viewer.
+Apex-14 computes optimal racing lines and lap times using nonlinear vehicle dynamics models coupled with direct collocation trajectory optimization. It supports four levels of model fidelity, a tire fitting pipeline, thermal degradation modeling, and an interactive telemetry viewer.
 
 ## Quick Start
 
 ```bash
 cargo build --release
-cargo run --release --bin simulate    # lap simulation with telemetry export
-cargo run --release --bin optimize    # trajectory optimization
+apex-14 qss --calibrated                          # lap simulation on default oval
+apex-14 qss --track tracks/test_circle.json        # custom track
+apex-14 optimize --calibrated --hermite-simpson     # trajectory optimization
+apex-14 car-info --calibrated                       # show car parameters
+apex-14 tracks                                      # list available tracks
+```
+
+Or use the standalone binaries directly:
+
+```bash
+cargo run --release --bin simulate    # full lap simulation suite
+cargo run --release --bin optimize    # optimizer comparison
 cargo run --release --bin compare     # model fidelity comparison
 cargo run --release --bin viewer      # interactive telemetry viewer
+cargo run --release --bin validate    # validation against published data
 ```
 
 ## Features
 
-**Vehicle Dynamics** - Four model fidelities sharing a common tire and track interface:
+**Vehicle Dynamics** - four model fidelities sharing a common tire and track interface:
 
 | Model | States | Use Case |
 |-------|--------|----------|
@@ -25,61 +36,72 @@ cargo run --release --bin viewer      # interactive telemetry viewer
 | Four-wheel | 10 | Combined-slip tire forces, per-corner load transfer |
 | Full chassis | 24 | Suspension dynamics, ride-height aerodynamics, transient response |
 
-**Trajectory Optimization** - Direct collocation minimizing lap time subject to vehicle dynamics, grip limits, and track boundaries. Trapezoidal and Hermite-Simpson transcriptions with automatic Jacobian computation via forward-mode dual-number differentiation.
+**Trajectory Optimization** - direct collocation minimizing lap time subject to vehicle dynamics, grip limits, and track boundaries. Trapezoidal and Hermite-Simpson transcriptions with automatic Jacobian computation via forward-mode dual-number differentiation. Progressive mesh refinement with coarse-to-fine solution interpolation.
 
-**Tire Model** - Pacejka Magic Formula with combined slip, load sensitivity, and smooth (C1) friction saturation for gradient-based optimization.
+**Tire Model** - Pacejka Magic Formula with combined slip, load sensitivity, and smooth (C1) friction saturation. Includes a Levenberg-Marquardt coefficient fitter for fitting Pacejka parameters to raw tire test data.
 
-**Track Import** - Native JSON format and TUMFTM racetrack database CSV import (25 real circuits including Silverstone, Monza, Spa, Barcelona).
+**Thermal Tire Model** - temperature-dependent grip with surface and carcass heat transfer, three compound presets (soft, medium, hard), and cumulative wear degradation over race stints.
 
-**Interactive Viewer** - Real-time track map with speed-colored racing line, synchronized telemetry plots (speed, lateral/longitudinal g, curvature), and bidirectional cursor tracking.
+**Powertrain** - engine torque curve with RPM-dependent power delivery, 8-speed sequential gearbox with automatic gear selection, and drivetrain efficiency modeling.
 
-**Calibrated Parameters** - Includes a 2024-era open-wheel preset calibrated against published performance data (320 km/h top speed, 2.5g cornering on medium-speed corners).
+**Controllers** - LQR steering controller with curvature feedforward and preview, PID speed controller with predictive braking and traction limiting.
+
+**Track Import** - native JSON format and TUMFTM racetrack database CSV import (25 real circuits including Silverstone, Monza, Spa, Barcelona).
+
+**Car Configuration** - TOML-based car parameter files with overlay semantics. Missing fields fall back to a base preset, so partial configs work.
+
+**Interactive Viewer** - real-time track map with speed-colored racing line, synchronized telemetry plots (speed, lateral/longitudinal g, curvature), and bidirectional cursor tracking.
+
+**Calibrated Parameters** - 2024-era open-wheel preset validated against published Silverstone data. Top speed within 5% of published values.
 
 ## Usage
 
-### Lap Simulation
+### Unified CLI
 
 ```bash
-cargo run --release --bin simulate
+# Lap simulation
+apex-14 qss --track tracks/test_circle.json --car cars/f1_2024_calibrated.toml
+apex-14 qss --track tracks/test_circle.json --csv telemetry.csv --svg track.svg
+
+# Trajectory optimization
+apex-14 optimize --track tracks/test_circle.json --nodes 80 --hermite-simpson --calibrated
+
+# Import real track data
+apex-14 import-track -i Silverstone.csv -o tracks/silverstone.json -n Silverstone
+
+# Car parameter management
+apex-14 car-info --calibrated
+apex-14 car-info --car cars/f3_car.toml --export my_car.toml
 ```
-
-Runs the quasi-steady-state lap simulator on oval, circle, Silverstone, and Monza circuits. Produces CSV telemetry and SVG track visualizations. Also runs a transient 14-DOF forward simulation with LQR steering and predictive speed control.
-
-### Trajectory Optimization
-
-```bash
-cargo run --release --bin optimize
-```
-
-Solves the minimum-time optimal control problem using direct collocation. Compares augmented Lagrangian, Gauss-Newton, and direct correction solvers.
-
-### Model Comparison
-
-```bash
-cargo run --release --bin compare
-```
-
-Runs all model fidelities on the same track with both default and calibrated car parameters. Outputs a comparison table showing the effect of tire model, load transfer, and ride-height aerodynamics on lap time.
-
-### Interactive Viewer
-
-```bash
-cargo run --release --bin viewer
-```
-
-Opens a desktop application with a track map and telemetry plots. Select circuits from the dropdown, toggle boundary and racing line overlays, zoom and pan the track view, and hover to see speed at any point synchronized across all telemetry channels.
 
 ### Importing Real Tracks
 
 ```bash
-# Clone the TUMFTM racetrack database (LGPL-3.0)
 git clone https://github.com/TUMFTM/racetrack-database.git
-
-# Load in code
-let track = apex_track::load_tumftm_csv(Path::new("racetrack-database/tracks/Silverstone.csv"), "Silverstone")?;
+apex-14 import-track -i racetrack-database/tracks/Silverstone.csv -o tracks/silverstone.json -n Silverstone
+apex-14 qss --track tracks/silverstone.json --calibrated
 ```
 
-See `tracks/README.md` for the JSON track format and import details.
+See `tracks/README.md` for the track file format.
+
+### Car Configuration
+
+Define cars in TOML. All fields are optional - missing fields use the base preset.
+
+```toml
+[car]
+name = "My Car"
+mass = 798.0
+
+[aero]
+drag_coeff = 1.10
+lift_coeff = 2.80
+
+[tires]
+mu = 1.55
+```
+
+See `cars/README.md` for the full schema and sample files.
 
 ## Project Structure
 
@@ -88,42 +110,47 @@ crates/
   apex-math          Linear algebra, dual numbers, sparse matrices
   apex-integrator    RK4 and adaptive RK45 ODE solvers
   apex-track         Track geometry, circuit generators, file import
-  apex-physics       Tire models, vehicle dynamics (2/3/7/14-DOF), controllers
+  apex-physics       Tire models, thermal model, powertrain, vehicle dynamics, controllers
   apex-telemetry     CSV and SVG export
   apex-optimizer     Collocation NLP, solvers, mesh refinement
   apex-viewer        Interactive egui-based telemetry viewer
 
 bins/
+  apex-cli           Unified CLI (installed as apex-14)
   simulate           Lap simulation and telemetry export
-  optimize           Trajectory optimization
+  optimize           Trajectory optimization with solver comparison
   compare            Model fidelity comparison
-  viewer             Interactive viewer
+  viewer             Interactive telemetry viewer
+  validate           Validation against published F1 data
+
+cars/                TOML car configuration files
+tracks/              Track files (JSON and sample data)
+docs/                Mathematical derivations and validation reports
 ```
 
 ## Documentation
 
-Mathematical derivations and validation data are in the `docs/` directory:
+- `docs/math/equations_of_motion.md` - vehicle model derivations (point-mass through 14-DOF)
+- `docs/math/pacejka.md` - tire model theory and implementation
+- `docs/math/collocation.md` - optimal control transcription and solver architecture
+- `docs/analysis.md` - model fidelity comparison with quantitative results
+- `docs/validation/silverstone.md` - validation against published F1 qualifying data
+- `docs/validation/methodology.md` - validation approach and acceptance criteria
 
-- `docs/math/equations_of_motion.md` - Vehicle model derivations (point-mass through 14-DOF)
-- `docs/math/pacejka.md` - Tire model theory and implementation
-- `docs/math/collocation.md` - Optimal control transcription and solver architecture
-- `docs/analysis.md` - Model fidelity comparison with quantitative results
-
-## Build Requirements
-
-- Rust stable toolchain (edition 2021)
-- No external C/C++ dependencies
+## Development
 
 ```bash
-cargo test --workspace              # run all tests
-cargo clippy -- -D warnings         # lint check
-cargo bench                         # performance benchmarks
+git config core.hooksPath .githooks   # enable auto-format pre-commit hook
+cargo test --workspace                # 304 tests
+cargo clippy -- -D warnings           # lint check
+cargo bench                           # criterion benchmarks
+cargo fmt --check                     # format check
 ```
 
-After cloning, enable the pre-commit hook to auto-format before each commit:
+Or run the setup script:
 
 ```bash
-git config core.hooksPath .githooks
+./setup.sh
 ```
 
 ## References
@@ -132,7 +159,13 @@ git config core.hooksPath .githooks
 - W. F. Milliken and D. L. Milliken, *Race Car Vehicle Dynamics*, SAE International, 1995
 - J. T. Betts, *Practical Methods for Optimal Control and Estimation Using Nonlinear Programming*, 2nd ed., SIAM, 2010
 - J. Nocedal and S. J. Wright, *Numerical Optimization*, 2nd ed., Springer, 2006
+- R. Rajamani, *Vehicle Dynamics and Control*, 2nd ed., Springer, 2012
 
 ## License
 
-MIT
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+
+at your option.
