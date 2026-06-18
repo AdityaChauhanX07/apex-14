@@ -98,6 +98,37 @@ enum Commands {
         #[arg(long)]
         export: Option<PathBuf>,
     },
+
+    /// Compute optimal pit stop strategy for a race
+    Strategy {
+        /// Number of race laps
+        #[arg(short, long, default_value_t = 52)]
+        laps: usize,
+
+        /// Base lap time in seconds (from QSS or manual input)
+        #[arg(short, long)]
+        base_time: Option<f64>,
+
+        /// Track file for computing base lap time via QSS
+        #[arg(short, long)]
+        track: Option<PathBuf>,
+
+        /// Car configuration file
+        #[arg(short, long)]
+        car: Option<PathBuf>,
+
+        /// Use calibrated parameters
+        #[arg(long, default_value_t = false)]
+        calibrated: bool,
+
+        /// Maximum number of pit stops to consider
+        #[arg(long, default_value_t = 2)]
+        max_stops: usize,
+
+        /// Pit stop time loss in seconds
+        #[arg(long, default_value_t = 22.0)]
+        pit_loss: f64,
+    },
 }
 
 fn main() {
@@ -136,6 +167,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             calibrated,
             export,
         } => cmd_car_info(car, calibrated, export),
+        Commands::Strategy {
+            laps,
+            base_time,
+            track,
+            car,
+            calibrated,
+            max_stops,
+            pit_loss,
+        } => cmd_strategy(laps, base_time, track, car, calibrated, max_stops, pit_loss),
     }
 }
 
@@ -336,6 +376,133 @@ fn cmd_car_info(
         let toml = apex_physics::export_car_toml(&params, name);
         std::fs::write(&export_path, toml)?;
         println!("\nExported to {}", export_path.display());
+    }
+
+    Ok(())
+}
+
+fn cmd_strategy(
+    laps: usize,
+    base_time: Option<f64>,
+    track: Option<PathBuf>,
+    car: Option<PathBuf>,
+    calibrated: bool,
+    max_stops: usize,
+    pit_loss: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Determine base lap time
+    let base = match base_time {
+        Some(t) => {
+            println!("Base lap time: {:.3} s (manual)", t);
+            t
+        }
+        None => {
+            let track_data = match track {
+                Some(ref path) => load_track_from_path(path)?,
+                None => default_track(),
+            };
+            let params = load_car_params(car, calibrated)?;
+            let qss = apex_physics::qss_lap_sim(&track_data, &params);
+            println!(
+                "Base lap time: {:.3} s (QSS on {})",
+                qss.lap_time, track_data.name
+            );
+            // QSS gives the actual lap time for the track; use it directly as the
+            // single-lap baseline for the strategy model.
+            qss.lap_time
+        }
+    };
+
+    println!(
+        "Race: {} laps, max {} stops, {:.0}s pit loss",
+        laps, max_stops, pit_loss
+    );
+    println!();
+
+    let mut evaluator = apex_physics::StrategyEvaluator::new(base, laps);
+    evaluator.pit_time_loss = pit_loss;
+
+    let results = evaluator.find_optimal(max_stops, 8, true);
+
+    if results.is_empty() {
+        println!("No feasible strategies found.");
+        return Ok(());
+    }
+
+    // Print top 5 strategies
+    println!("Top 5 strategies:");
+    println!(
+        "{:<6} {:<20} {:>12} {:>8}",
+        "Rank", "Strategy", "Race Time", "Gap"
+    );
+    println!("{}", "-".repeat(50));
+
+    let best_time = results[0].total_time;
+    for (i, result) in results.iter().take(5).enumerate() {
+        let gap = result.total_time - best_time;
+        println!(
+            "{:<6} {:<20} {:>10.1}s {:>+7.1}s",
+            i + 1,
+            result.strategy.display(),
+            result.total_time,
+            gap,
+        );
+    }
+
+    println!();
+
+    // Print details of the best strategy
+    let best = &results[0];
+    println!(
+        "Optimal: {} ({} stop{})",
+        best.strategy.display(),
+        best.strategy.num_stops(),
+        if best.strategy.num_stops() == 1 {
+            ""
+        } else {
+            "s"
+        }
+    );
+    println!(
+        "Total race time: {:.1} s ({:.1} min)",
+        best.total_time,
+        best.total_time / 60.0
+    );
+    println!();
+
+    // Stint summary
+    println!("Stint breakdown:");
+    let mut lap_offset = 0;
+    for (i, stint) in best.strategy.stints.iter().enumerate() {
+        let first_lap_time = best.lap_times[lap_offset];
+        let last_lap_time = best.lap_times[lap_offset + stint.laps - 1];
+        println!(
+            "  Stint {}: {} {} laps (lap {}-{}) | {:.2}s -> {:.2}s",
+            i + 1,
+            stint.compound,
+            stint.laps,
+            lap_offset + 1,
+            lap_offset + stint.laps,
+            first_lap_time,
+            last_lap_time,
+        );
+        lap_offset += stint.laps;
+    }
+
+    // Undercut analysis on the first pit stop
+    if best.strategy.num_stops() >= 1 {
+        let pit_lap = best.strategy.stints[0].laps;
+        let analysis = evaluator.undercut_overcut(
+            pit_lap,
+            best.strategy.stints[0].compound,
+            best.strategy.stints[1].compound,
+            0,
+        );
+        println!();
+        println!("Undercut/overcut at lap {}:", pit_lap);
+        println!("  Pit 1 lap early: {:+.3}s", analysis.undercut_delta);
+        println!("  Pit 1 lap late:  {:+.3}s", analysis.overcut_delta);
+        println!("  -> {}", analysis.recommendation);
     }
 
     Ok(())
