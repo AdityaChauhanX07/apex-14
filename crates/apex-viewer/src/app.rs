@@ -12,6 +12,16 @@ pub struct ApexApp {
     pub(crate) speeds: Option<Vec<f64>>,
     pub(crate) lap_time: Option<f64>,
 
+    // Telemetry data (from QSS or forward sim)
+    pub(crate) distances: Option<Vec<f64>>, // arc length at each point
+    pub(crate) lateral_gs: Option<Vec<f64>>, // lateral g at each point
+    pub(crate) longitudinal_gs: Option<Vec<f64>>, // longitudinal g at each point
+    pub(crate) curvatures: Option<Vec<f64>>, // track curvature at each point
+
+    // Cursor state (synced between track map and telemetry)
+    pub(crate) cursor_s: Option<f64>, // current arc length position under cursor
+    pub(crate) cursor_index: Option<usize>, // index into the data arrays
+
     // View state
     pub(crate) zoom: f32,
     pub(crate) pan_offset: egui::Vec2,
@@ -29,10 +39,17 @@ impl Default for ApexApp {
         let track = apex_track::build_track("Oval", &points, closed);
         let params = apex_physics::CarParams::f1_2024_calibrated();
         let qss = apex_physics::qss_lap_sim(&track, &params);
+        let curvatures: Vec<f64> = track.segments.iter().map(|s| s.curvature).collect();
 
         ApexApp {
             speeds: Some(qss.speeds.clone()),
             lap_time: Some(qss.lap_time),
+            distances: Some(qss.distances.clone()),
+            lateral_gs: Some(qss.lateral_gs.clone()),
+            longitudinal_gs: Some(qss.longitudinal_gs.clone()),
+            curvatures: Some(curvatures),
+            cursor_s: None,
+            cursor_index: None,
             track: Some(track),
             track_name: "Oval (500m, R=80m)".to_string(),
             zoom: 1.0,
@@ -106,9 +123,20 @@ impl eframe::App for ApexApp {
                 }
             });
 
-        // Central panel: track map
+        // Central area split: top = track map, bottom = telemetry plots.
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.draw_track_map(ui);
+            let available = ui.available_size();
+            let track_height = available.y * 0.55; // 55% for the track map
+
+            // Track map (top portion)
+            ui.allocate_ui(egui::vec2(available.x, track_height), |ui| {
+                self.draw_track_map(ui);
+            });
+
+            ui.separator();
+
+            // Telemetry plots (bottom portion)
+            self.draw_telemetry(ui);
         });
     }
 }
@@ -150,6 +178,12 @@ impl ApexApp {
 
         self.speeds = Some(qss.speeds.clone());
         self.lap_time = Some(qss.lap_time);
+        self.distances = Some(qss.distances.clone());
+        self.lateral_gs = Some(qss.lateral_gs.clone());
+        self.longitudinal_gs = Some(qss.longitudinal_gs.clone());
+        self.curvatures = Some(track.segments.iter().map(|s| s.curvature).collect());
+        self.cursor_s = None;
+        self.cursor_index = None;
         self.track = Some(track);
         self.track_name = name.to_string();
         self.selected_track = index;

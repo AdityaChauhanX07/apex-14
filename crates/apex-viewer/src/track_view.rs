@@ -115,6 +115,49 @@ impl super::app::ApexApp {
             }
         }
 
+        // Draw cursor position on the track (synced from telemetry hover).
+        if let Some(idx) = self.cursor_index {
+            if idx < track.segments.len() {
+                let seg = &track.segments[idx];
+                let pos = world_to_screen(seg.x, seg.y);
+                // White dot with a black outline
+                painter.circle_filled(pos, 6.0, egui::Color32::WHITE);
+                painter.circle_stroke(pos, 6.0, egui::Stroke::new(2.0, egui::Color32::BLACK));
+
+                // Speed label next to the cursor
+                if let Some(ref speeds) = self.speeds {
+                    if idx < speeds.len() {
+                        painter.text(
+                            pos + egui::vec2(12.0, -8.0),
+                            egui::Align2::LEFT_CENTER,
+                            format!("{:.0} km/h", speeds[idx] * 3.6),
+                            egui::FontId::proportional(13.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Hover detection on the track map -> update the shared cursor.
+        if let Some(hover_pos) = response.hover_pos() {
+            let mut best_dist = f32::MAX;
+            let mut best_idx = 0;
+            for (i, seg) in track.segments.iter().enumerate() {
+                let screen_pos = world_to_screen(seg.x, seg.y);
+                let dist = hover_pos.distance(screen_pos);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = i;
+                }
+            }
+            if best_dist < 50.0 {
+                // within 50 pixels of the track
+                self.cursor_index = Some(best_idx);
+                self.cursor_s = Some(track.segments[best_idx].s);
+            }
+        }
+
         // Title
         painter.text(
             rect.left_top() + egui::vec2(10.0, 10.0),
