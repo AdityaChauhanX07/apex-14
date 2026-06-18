@@ -374,40 +374,71 @@ impl SpeedController {
 
     /// Compute drive torque and brake pressure from a speed error.
     ///
-    /// Returns `(torque_drive, brake_pressure)`:
+    /// Braking is deliberately *asymmetric* with acceleration: missing a braking
+    /// point by a second at 300 km/h is ~80 m of overshoot into a corner, so the
+    /// controller brakes hard and immediately on any meaningful overspeed instead
+    /// of waiting for a PID output to ramp up. Acceleration, where overshoot is
+    /// cheap, stays on the smooth PID path.
+    ///
+    /// Arguments:
+    /// - `target_speed`, `current_speed`: m/s
+    /// - `dt`: control timestep (s)
+    /// - `max_drive_torque`: car's physical maximum drive torque (N·m)
+    /// - `max_brake_force`: car's physical maximum brake force (N); the returned
+    ///   brake fraction is applied against this downstream
+    ///
+    /// Returns `(torque_drive, brake_fraction)`:
     /// - `torque_drive`: engine torque (N·m), 0 when braking
-    /// - `brake_pressure`: 0.0-1.0, 0 when accelerating
-    pub fn compute(&mut self, target_speed: f64, current_speed: f64, dt: f64) -> (f64, f64) {
-        let error = target_speed - current_speed;
+    /// - `brake_fraction`: 0.0-1.0, 0 when accelerating
+    pub fn compute(
+        &mut self,
+        target_speed: f64,
+        current_speed: f64,
+        dt: f64,
+        max_drive_torque: f64,
+        max_brake_force: f64,
+    ) -> (f64, f64) {
+        // The physical brake force is applied downstream; the fraction returned
+        // here is intentionally independent of its magnitude.
+        let _ = max_brake_force;
 
-        // Update integral with anti-windup.
-        self.integral += error * dt;
+        let speed_error = target_speed - current_speed;
+
+        if speed_error < -5.0 {
+            // Emergency braking: more than 5 m/s above target. Brake in
+            // proportion to the overspeed, with a 30% floor so any significant
+            // overspeed immediately starts shedding energy. No PID needed.
+            let brake_fraction = ((-speed_error - 5.0) / 20.0).clamp(0.0, 1.0).max(0.3);
+            // Bleed the integral and track the error so the derivative term is
+            // sane when we transition back to accelerating.
+            self.integral *= 0.9;
+            self.prev_error = speed_error;
+            return (0.0, brake_fraction);
+        }
+
+        if speed_error < 0.0 {
+            // Slightly above target: light braking and coast.
+            let brake_fraction = (-speed_error / 10.0).clamp(0.0, 0.5);
+            self.integral *= 0.9;
+            self.prev_error = speed_error;
+            return (0.0, brake_fraction);
+        }
+
+        // At or below target: PID on drive torque.
+        self.integral += speed_error * dt;
         self.integral = self
             .integral
             .clamp(-self.integral_limit, self.integral_limit);
-
-        // Derivative.
-        let derivative = if dt > 1e-10 {
-            (error - self.prev_error) / dt
+        let derivative = if dt > 1e-6 {
+            (speed_error - self.prev_error) / dt
         } else {
             0.0
         };
-        self.prev_error = error;
+        self.prev_error = speed_error;
 
-        // PID output (force-like quantity).
-        let output = self.kp * error + self.ki * self.integral + self.kd * derivative;
-
-        if output > 0.0 {
-            // Accelerate: convert to torque (clamp to a reasonable range).
-            let torque = output.clamp(0.0, 10000.0);
-            (torque, 0.0)
-        } else {
-            // Brake: convert to brake pressure (0-1 range).
-            let brake = (-output / 30000.0).clamp(0.0, 1.0);
-            // Bleed the integral to avoid windup during braking.
-            self.integral *= 0.9;
-            (0.0, brake)
-        }
+        let output = self.kp * speed_error + self.ki * self.integral + self.kd * derivative;
+        let torque = output.clamp(0.0, max_drive_torque);
+        (torque, 0.0)
     }
 
     /// Reset the controller state (e.g. at lap start).
@@ -505,28 +536,63 @@ mod tests {
         );
     }
 
+    // Physical limits used across the speed-controller tests.
+    const MAX_DRIVE_TORQUE: f64 = 5000.0; // ~15000 N * 0.33 m
+    const MAX_BRAKE_FORCE: f64 = 30000.0;
+
     #[test]
     fn speed_controller_accelerates() {
         let mut pid = SpeedController::f1_default();
-        let (torque, brake) = pid.compute(100.0, 80.0, 0.01);
+        let (torque, brake) =
+            pid.compute(100.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert!(torque > 0.0, "expected positive torque, got {torque}");
+        // Drive torque must respect the physical maximum.
+        assert!(torque <= MAX_DRIVE_TORQUE, "torque {torque} exceeds max");
         assert_eq!(brake, 0.0);
     }
 
     #[test]
     fn speed_controller_brakes() {
         let mut pid = SpeedController::f1_default();
-        let (torque, brake) = pid.compute(50.0, 80.0, 0.01);
+        // 30 m/s above target — emergency braking, expect full brake.
+        let (torque, brake) =
+            pid.compute(50.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
         assert!(brake > 0.0, "expected positive brake, got {brake}");
+        assert!(brake <= 1.0, "brake {brake} out of range");
+    }
+
+    #[test]
+    fn speed_controller_emergency_floor() {
+        let mut pid = SpeedController::f1_default();
+        // Just over the 5 m/s threshold: small overspeed still brakes at the
+        // 30% floor rather than coasting.
+        let (torque, brake) =
+            pid.compute(74.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        assert_eq!(torque, 0.0);
+        assert!(
+            (brake - 0.3).abs() < 1e-9,
+            "expected 30% brake floor, got {brake}"
+        );
+    }
+
+    #[test]
+    fn speed_controller_light_braking() {
+        let mut pid = SpeedController::f1_default();
+        // 3 m/s above target: light braking, well under the emergency level.
+        let (torque, brake) =
+            pid.compute(77.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        assert_eq!(torque, 0.0);
+        assert!(brake > 0.0 && brake <= 0.5, "expected light brake, got {brake}");
     }
 
     #[test]
     fn speed_controller_at_target() {
         let mut pid = SpeedController::f1_default();
         // Prime the derivative term with a steady-state step.
-        let _ = pid.compute(80.0, 80.0, 0.01);
-        let (torque, brake) = pid.compute(80.0, 80.0, 0.01);
+        let _ = pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
+        let (torque, brake) =
+            pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         // At target the command should be essentially nothing.
         assert!(torque < 1.0, "torque {torque} should be ~0");
         assert!(brake < 1e-3, "brake {brake} should be ~0");
@@ -535,10 +601,11 @@ mod tests {
     #[test]
     fn speed_controller_reset_clears_state() {
         let mut pid = SpeedController::f1_default();
-        let _ = pid.compute(100.0, 50.0, 0.1);
+        let _ = pid.compute(100.0, 50.0, 0.1, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         pid.reset();
         // After reset, a zero-error step yields zero integral/derivative action.
-        let (torque, brake) = pid.compute(80.0, 80.0, 0.01);
+        let (torque, brake) =
+            pid.compute(80.0, 80.0, 0.01, MAX_DRIVE_TORQUE, MAX_BRAKE_FORCE);
         assert_eq!(torque, 0.0);
         assert_eq!(brake, 0.0);
     }
