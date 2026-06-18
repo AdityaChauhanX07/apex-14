@@ -1,1 +1,0 @@
-F:\PROJECTS\apex-14\target\release\libapex_math.rlib: F:\PROJECTS\apex-14\crates\apex-math\src\dual.rs F:\PROJECTS\apex-14\crates\apex-math\src\float.rs F:\PROJECTS\apex-14\crates\apex-math\src\lib.rs F:\PROJECTS\apex-14\crates\apex-math\src\mat3.rs F:\PROJECTS\apex-14\crates\apex-math\src\sparse.rs F:\PROJECTS\apex-14\crates\apex-math\src\vec3.rs
