@@ -6,8 +6,8 @@
 
 Apex-14 takes a racetrack definition and a mathematical model of an F1 car and computes the
 theoretical minimum lap time along with the exact racing line required to achieve it. It couples a
-multi-fidelity vehicle dynamics solver — ranging from a 2-DOF point mass up to a 14-DOF full
-chassis — with a direct collocation trajectory optimizer. Everything is built from first principles:
+multi-fidelity vehicle dynamics solver, ranging from a 2-DOF point mass up to a 14-DOF full
+chassis, with a direct collocation trajectory optimizer. Everything is built from first principles:
 no physics engine, no linear algebra crate, no off-the-shelf optimizer. The tire model, automatic
 differentiation, sparse matrices, ODE integrator, and nonlinear program solver are all implemented in
 this repository.
@@ -18,11 +18,12 @@ this repository.
 - 4th-order Runge-Kutta integrator with fixed-size arrays and zero-allocation inner loops
 - Dormand-Prince RK45 adaptive integrator with embedded error estimation and step-size control
 - Forward-mode automatic differentiation engine using dual numbers
-- Generic `Float` trait — the same physics code computes forces (`f64`) and exact Jacobians (`Dual`)
+- Generic `Float` trait: the same physics code computes forces (`f64`) and exact Jacobians (`Dual`)
 - Direct collocation with trapezoidal defects for trajectory optimization
 - Gauss-Newton solver with a conjugate-gradient inner loop exploiting banded Jacobian sparsity
 - Compressed Sparse Row (CSR) matrix implementation for efficient Jacobian assembly
 - Quasi-steady-state (QSS) lap simulator used to warm-start the optimizer
+- Real circuit import from the TUMFTM racetrack database (25 Formula 1 and DTM circuits)
 
 ## Vehicle Models
 
@@ -67,11 +68,14 @@ integrator.
 Run `cargo run --release --bin optimize` to run the collocation optimizer on the oval and circle
 tracks, comparing the augmented-Lagrangian and Gauss-Newton solvers side by side.
 
+Run `cargo run --release --bin compare` to see a side-by-side comparison of all model fidelities
+(QSS, collocation, 7-DOF, 14-DOF) on the same track.
+
 Representative results:
 
 - Silverstone QSS lap time of approximately 68 s on the default car parameters.
 - The 14-DOF forward simulation completes a full oval lap with peak chassis attitudes of about 1.5°
-  roll, 0.3° pitch, and 35 mm of suspension travel — transient behavior the steady-state models
+  roll, 0.3° pitch, and 35 mm of suspension travel, transient behavior the steady-state models
   cannot capture.
 - On the circle, the Gauss-Newton optimizer converges to an equality-constraint violation of
   `2.6e-6` (a dynamically consistent trajectory).
@@ -81,11 +85,11 @@ Representative results:
 ## Build & Test
 
 ```sh
+cargo fmt --check              # enforced consistent formatting
 cargo build --release
-
-cargo test --workspace          # 207 tests, zero warnings
-
-cargo clippy -- -D warnings     # enforced zero-warning policy
+cargo test --workspace         # 232 tests, zero warnings
+cargo clippy -- -D warnings    # enforced zero-warning policy
+cargo bench                    # criterion benchmarks for all critical paths
 ```
 
 ## Project Structure
@@ -102,9 +106,12 @@ crates/
 bins/
   simulate           Runs the QSS lap simulator across several circuits, a 14-DOF forward simulation, and exports CSV + SVG.
   optimize           Runs the collocation optimizer and compares solvers on the oval and circle.
+  compare            Runs all model fidelities on the same track and prints a comparison table.
+
+benches/             Criterion benchmarks for integrators, tire model, optimizer Jacobians, and suspension.
 ```
 
-The workspace is approximately 11,236 lines of Rust across six library crates and two binaries.
+The workspace is approximately 14,500 lines of Rust across six library crates and three binaries.
 
 ## Mathematical References
 
@@ -117,6 +124,6 @@ The workspace is approximately 11,236 lines of Rust across six library crates an
 ## Roadmap
 
 - SQP solver upgrade for robust convergence on complex circuits
-- Adaptive mesh refinement for the collocation discretization
+- Real-time interactive simulator with 3D visualization
 - Full-lap 14-DOF trajectory optimization
 - Real-time telemetry dashboard
