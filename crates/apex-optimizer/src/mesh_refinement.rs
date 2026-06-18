@@ -184,6 +184,7 @@ mod tests {
             lap_time,
             eq_violation: 0.0,
             converged: true,
+            brake_bias: None,
         }
     }
 

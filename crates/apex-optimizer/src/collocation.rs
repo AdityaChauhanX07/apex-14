@@ -7,6 +7,9 @@
 //!     | f_drive_0..f_drive_{N-1} | curv_0..curv_{N-1} | dt_0..dt_{N-2} ]
 //! ```
 //! Block offsets: s=0, n=N, v=2N, alpha=3N, f_drive=4N, curv=5N, dt=6N.
+//!
+//! When `optimize_brake_bias` is set, an extra `brake_bias` block is inserted
+//! between `curv` and `dt`, giving length `8N - 1` and shifting `dt` to `7N`.
 
 use apex_math::{CsrBuilder, CsrMatrix, Dual, Float};
 use apex_physics::car_params::GRAVITY;
@@ -47,6 +50,9 @@ pub struct CollocationConfig {
     pub v_min: f64,
     /// Collocation discretization scheme for the dynamics defects.
     pub method: CollocationMethod,
+    /// Whether to optimize brake bias as an additional control variable.
+    /// When true, adds one variable per node (brake_bias_front, 0.5 to 0.8).
+    pub optimize_brake_bias: bool,
 }
 
 impl Default for CollocationConfig {
@@ -60,6 +66,7 @@ impl Default for CollocationConfig {
             // Hermite-Simpson is strictly better when the Jacobian is available
             // (which it is here, via forward-mode autodiff).
             method: CollocationMethod::HermiteSimpson,
+            optimize_brake_bias: false,
         }
     }
 }
@@ -100,6 +107,8 @@ pub struct OptimizationResult {
     pub eq_violation: f64,
     /// Whether the optimizer converged.
     pub converged: bool,
+    /// Optimized brake bias at each node (if optimize_brake_bias was true).
+    pub brake_bias: Option<Vec<f64>>,
 }
 
 /// Helper struct for unpacked decision variables.
@@ -110,6 +119,8 @@ struct UnpackedVars {
     alpha: Vec<f64>,
     f_drive: Vec<f64>,
     curvature_cmd: Vec<f64>,
+    /// Per-node brake bias, present only when `optimize_brake_bias` is set.
+    brake_bias: Option<Vec<f64>>,
     dt: Vec<f64>,
 }
 
@@ -143,9 +154,28 @@ impl<'a> CollocationOptimizer<'a> {
         CollocationOptimizer { config, track, car }
     }
 
-    /// Number of decision variables (`7N - 1`).
+    /// Number of decision variables: `7N - 1`, or `8N - 1` when brake bias is
+    /// optimized.
     fn n_vars(&self) -> usize {
-        7 * self.config.n_nodes - 1
+        self.dt_offset() + (self.config.n_nodes - 1)
+    }
+
+    /// Start index of the `dt` block in the decision vector. The optional
+    /// `brake_bias` block sits between `curv` and `dt`, so `dt` shifts from `6N`
+    /// to `7N` when brake bias is optimized.
+    fn dt_offset(&self) -> usize {
+        let n = self.config.n_nodes;
+        if self.config.optimize_brake_bias {
+            7 * n
+        } else {
+            6 * n
+        }
+    }
+
+    /// Start index of the optional `brake_bias` block (always `6N`; only present
+    /// when `optimize_brake_bias` is set).
+    fn brake_bias_offset(&self) -> usize {
+        6 * self.config.n_nodes
     }
 
     /// Number of equality constraints.
@@ -197,6 +227,8 @@ impl<'a> CollocationOptimizer<'a> {
             })
             .collect();
 
+        let brake_bias = self.default_brake_bias();
+
         self.pack(&UnpackedVars {
             s,
             n: nn,
@@ -204,8 +236,19 @@ impl<'a> CollocationOptimizer<'a> {
             alpha,
             f_drive,
             curvature_cmd,
+            brake_bias,
             dt,
         })
+    }
+
+    /// Seed brake-bias block (the car's static front bias at every node), or
+    /// `None` when brake bias is not being optimized.
+    fn default_brake_bias(&self) -> Option<Vec<f64>> {
+        if self.config.optimize_brake_bias {
+            Some(vec![self.car.brake_bias_front; self.config.n_nodes])
+        } else {
+            None
+        }
     }
 
     /// Create an initial guess from the grip-circle QSS solution. This warm
@@ -273,6 +316,17 @@ impl<'a> CollocationOptimizer<'a> {
             })
             .collect();
 
+        // Brake bias: interpolate from the source result if it carried one,
+        // otherwise fall back to the static seed.
+        let brake_bias = if self.config.optimize_brake_bias {
+            Some(match &result.brake_bias {
+                Some(bb) => s_fine.iter().map(|&s| interp(src, bb, s)).collect(),
+                None => vec![self.car.brake_bias_front; n],
+            })
+        } else {
+            None
+        };
+
         self.pack(&UnpackedVars {
             s: s_fine,
             n: nn,
@@ -280,6 +334,7 @@ impl<'a> CollocationOptimizer<'a> {
             alpha,
             f_drive,
             curvature_cmd,
+            brake_bias,
             dt,
         })
     }
@@ -301,6 +356,13 @@ impl<'a> CollocationOptimizer<'a> {
     /// Unpack the decision variable vector into individual arrays.
     fn unpack(&self, x: &[f64]) -> UnpackedVars {
         let n = self.config.n_nodes;
+        let dt_start = self.dt_offset();
+        let brake_bias = if self.config.optimize_brake_bias {
+            let bb = self.brake_bias_offset();
+            Some(x[bb..bb + n].to_vec())
+        } else {
+            None
+        };
         UnpackedVars {
             s: x[0..n].to_vec(),
             n: x[n..2 * n].to_vec(),
@@ -308,7 +370,8 @@ impl<'a> CollocationOptimizer<'a> {
             alpha: x[3 * n..4 * n].to_vec(),
             f_drive: x[4 * n..5 * n].to_vec(),
             curvature_cmd: x[5 * n..6 * n].to_vec(),
-            dt: x[6 * n..].to_vec(),
+            brake_bias,
+            dt: x[dt_start..].to_vec(),
         }
     }
 
@@ -321,6 +384,10 @@ impl<'a> CollocationOptimizer<'a> {
         x.extend_from_slice(&vars.alpha);
         x.extend_from_slice(&vars.f_drive);
         x.extend_from_slice(&vars.curvature_cmd);
+        // Optional brake-bias block sits between curv and dt.
+        if let Some(bb) = &vars.brake_bias {
+            x.extend_from_slice(bb);
+        }
         x.extend_from_slice(&vars.dt);
         x
     }
@@ -342,8 +409,16 @@ impl<'a> CollocationOptimizer<'a> {
             lower[4 * n + k] = -self.car.max_brake_force;
             upper[4 * n + k] = self.car.max_drive_force;
         }
+        // brake bias (optional): [0.50, 0.80]
+        if self.config.optimize_brake_bias {
+            let bb = self.brake_bias_offset();
+            for k in 0..n {
+                lower[bb + k] = 0.50;
+                upper[bb + k] = 0.80;
+            }
+        }
         // time steps: [dt_min, dt_max]
-        for k in 6 * n..n_vars {
+        for k in self.dt_offset()..n_vars {
             lower[k] = self.config.dt_min;
             upper[k] = self.config.dt_max;
         }
@@ -372,6 +447,7 @@ impl<'a> CollocationOptimizer<'a> {
             lap_time,
             eq_violation: solver_result.eq_violation,
             converged: solver_result.converged,
+            brake_bias: vars.brake_bias,
         }
     }
 
@@ -394,6 +470,23 @@ impl<'a> CollocationOptimizer<'a> {
         let evaluator = CollocationEvaluator { optimizer: self };
         let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, config);
         self.extract_result_gn(&result)
+    }
+
+    /// Optimize with brake bias as an additional control variable.
+    ///
+    /// Adds one bounded variable per node (`brake_bias_front` in `[0.50, 0.80]`)
+    /// and reports the chosen bias in [`OptimizationResult::brake_bias`]. In the
+    /// point-mass model the bias does not couple to the dynamics, so the solver
+    /// is free to place it anywhere in range; the coupling (and the resulting
+    /// front/rear trade-off) appears once a tire model is used.
+    pub fn optimize_with_brake_bias(
+        &self,
+        solver_config: &crate::gauss_newton::GaussNewtonConfig,
+    ) -> OptimizationResult {
+        let mut cfg = self.config.clone();
+        cfg.optimize_brake_bias = true;
+        let opt = CollocationOptimizer::new(cfg, self.track, self.car);
+        opt.optimize_gn(solver_config)
     }
 
     /// Grip-circle QSS warm-start decision vector (public for benchmarking and
@@ -435,6 +528,7 @@ impl<'a> CollocationOptimizer<'a> {
             lap_time: result.objective,
             eq_violation: result.eq_violation,
             converged: result.converged,
+            brake_bias: vars.brake_bias.clone(),
         }
     }
 
@@ -549,6 +643,7 @@ impl<'a> CollocationOptimizer<'a> {
             lap_time: result.objective,
             eq_violation: result.eq_violation,
             converged: result.converged,
+            brake_bias: vars.brake_bias.clone(),
         }
     }
 }
@@ -561,13 +656,13 @@ struct CollocationEvaluator<'a, 'b> {
 impl NlpEvaluator for CollocationEvaluator<'_, '_> {
     fn objective(&self, x: &[f64]) -> f64 {
         // Sum of all dt_k (total lap time).
-        let dt_start = 6 * self.optimizer.config.n_nodes;
+        let dt_start = self.optimizer.dt_offset();
         x[dt_start..].iter().sum()
     }
 
     fn objective_gradient(&self, x: &[f64]) -> Vec<f64> {
         let mut grad = vec![0.0; x.len()];
-        let dt_start = 6 * self.optimizer.config.n_nodes;
+        let dt_start = self.optimizer.dt_offset();
         for g in &mut grad[dt_start..] {
             *g = 1.0;
         }
@@ -732,7 +827,7 @@ impl CollocationEvaluator<'_, '_> {
                 3 * n + k + 1,
                 4 * n + k + 1,
                 5 * n + k + 1,
-                6 * n + k,
+                opt.dt_offset() + k,
             ];
 
             let state_k = [node_k[0], node_k[1], node_k[2], node_k[3]];
@@ -1540,7 +1635,7 @@ impl SevenDofEvaluator<'_, '_> {
                 3 * n + k + 1,
                 4 * n + k + 1,
                 5 * n + k + 1,
-                6 * n + k,
+                opt.dt_offset() + k,
             ];
 
             for (wrt, &col) in global_indices.iter().enumerate() {
@@ -2804,6 +2899,105 @@ mod tests {
             "HS lap {} and trapezoidal lap {} should be close",
             hs.lap_time,
             tr.lap_time
+        );
+    }
+
+    // --- brake-bias optimization tests ---
+
+    fn gn_cfg() -> crate::gauss_newton::GaussNewtonConfig {
+        crate::gauss_newton::GaussNewtonConfig {
+            max_iterations: 40,
+            constraint_tol: 1e-3,
+            ..crate::gauss_newton::GaussNewtonConfig::default()
+        }
+    }
+
+    #[test]
+    fn brake_bias_off_by_default() {
+        let (track, car, config) = circle(30);
+        assert!(!config.optimize_brake_bias, "default should be off");
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let result = opt.optimize_gn(&gn_cfg());
+        assert!(result.brake_bias.is_none(), "brake_bias should be None when off");
+    }
+
+    #[test]
+    fn brake_bias_variable_count() {
+        let (track, car, mut config) = circle(30);
+
+        // Off: 7N - 1 = 209 variables.
+        config.optimize_brake_bias = false;
+        let off = CollocationOptimizer::new(config.clone(), &track, &car);
+        assert_eq!(off.n_vars(), 7 * 30 - 1);
+        assert_eq!(off.warm_start().len(), 209);
+
+        // On: 8N - 1 = 239 variables.
+        config.optimize_brake_bias = true;
+        let on = CollocationOptimizer::new(config, &track, &car);
+        assert_eq!(on.n_vars(), 8 * 30 - 1);
+        assert_eq!(on.warm_start().len(), 239);
+    }
+
+    #[test]
+    fn brake_bias_on_circle() {
+        let (track, car, config) = circle(30);
+        let opt = CollocationOptimizer::new(config, &track, &car);
+
+        let baseline = opt.optimize_gn(&gn_cfg());
+        let with_bias = opt.optimize_with_brake_bias(&gn_cfg());
+
+        let bias = with_bias
+            .brake_bias
+            .as_ref()
+            .expect("brake_bias should be Some");
+        assert_eq!(bias.len(), 30, "one bias per node");
+        for &b in bias {
+            assert!((0.50..=0.80).contains(&b), "brake bias {b} out of [0.50, 0.80]");
+        }
+
+        // Brake bias doesn't couple to the point-mass dynamics, so the lap time
+        // should be essentially unchanged.
+        assert!(with_bias.lap_time.is_finite());
+        assert!(
+            (with_bias.lap_time - baseline.lap_time).abs() / baseline.lap_time < 0.02,
+            "lap time {} should match baseline {}",
+            with_bias.lap_time,
+            baseline.lap_time
+        );
+    }
+
+    #[test]
+    fn brake_bias_on_oval() {
+        let (pts, closed) = oval_track(1000.0, 100.0, 12.0, 400);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::default();
+        let config = CollocationConfig {
+            n_nodes: 50,
+            closed: true,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+
+        let baseline = opt.optimize_gn(&gn_cfg());
+        let with_bias = opt.optimize_with_brake_bias(&gn_cfg());
+
+        let bias = with_bias
+            .brake_bias
+            .as_ref()
+            .expect("brake_bias should be Some");
+        assert_eq!(bias.len(), 50);
+        assert!(
+            bias.iter().all(|&b| (0.50..=0.80).contains(&b)),
+            "all bias values within bounds"
+        );
+
+        // No dynamic coupling yet, so the lap time should be close to baseline.
+        assert!(with_bias.lap_time.is_finite() && with_bias.lap_time > 0.0);
+        assert!(
+            (with_bias.lap_time - baseline.lap_time).abs() / baseline.lap_time < 0.05,
+            "lap time {} should be close to baseline {}",
+            with_bias.lap_time,
+            baseline.lap_time
         );
     }
 }
