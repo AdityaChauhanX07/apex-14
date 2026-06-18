@@ -1,0 +1,13 @@
+[package]
+name = "apex-viewer"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+apex-math = { path = "../apex-math" }
+apex-physics = { path = "../apex-physics" }
+apex-track = { path = "../apex-track" }
+apex-telemetry = { path = "../apex-telemetry" }
+eframe = "0.31"
+egui = "0.31"
+egui_plot = "0.31"

@@ -1,0 +1,10 @@
+[package]
+name = "viewer"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+apex-viewer = { path = "../../crates/apex-viewer" }
+apex-physics = { path = "../../crates/apex-physics" }
+apex-track = { path = "../../crates/apex-track" }
+eframe = "0.31"
