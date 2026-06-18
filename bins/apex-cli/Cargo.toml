@@ -1,0 +1,11 @@
+[package]
+name = "apex-14"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+apex-physics = { path = "../../crates/apex-physics" }
+apex-track = { path = "../../crates/apex-track" }
+apex-optimizer = { path = "../../crates/apex-optimizer" }
+apex-telemetry = { path = "../../crates/apex-telemetry" }
