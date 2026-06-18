@@ -1,0 +1,22 @@
+[car]
+name = "F1 2024 Default"
+mass = 798.0
+max_drive_force = 15000.0
+max_brake_force = 30000.0
+
+[aero]
+frontal_area = 1.5
+drag_coeff = 0.9
+lift_coeff = 3.5
+aero_balance_front = 0.45
+
+[tires]
+mu = 1.75
+rolling_resistance = 0.015
+
+[geometry]
+wheelbase = 3.60
+cog_to_front = 1.67
+cog_to_rear = 1.93
+cog_height = 0.30
+wheel_radius = 0.330

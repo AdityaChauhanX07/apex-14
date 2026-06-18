@@ -3,6 +3,7 @@
 
 pub mod aero;
 pub mod bicycle;
+pub mod car_config;
 pub mod car_params;
 pub mod controller;
 pub mod drivetrain;
@@ -15,6 +16,10 @@ pub mod tire;
 
 pub use aero::{AeroForces, AeroModel};
 pub use bicycle::BicycleModel;
+pub use car_config::{
+    export_car_toml, load_car_toml, parse_car_toml, AeroSection, CarConfig, CarSection,
+    GeometrySection, PowertrainSection, SuspensionSection, TireSection,
+};
 pub use car_params::CarParams;
 pub use controller::{solve_care_4x4, LqrController, SpeedController};
 pub use drivetrain::{Engine, Gearbox, Powertrain};

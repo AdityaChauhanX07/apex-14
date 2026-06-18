@@ -1,0 +1,22 @@
+[car]
+name = "Formula 3 2024"
+mass = 690.0
+max_drive_force = 6000.0
+max_brake_force = 15000.0
+
+[aero]
+frontal_area = 1.3
+drag_coeff = 0.85
+lift_coeff = 1.80
+aero_balance_front = 0.43
+
+[tires]
+mu = 1.45
+rolling_resistance = 0.018
+
+[geometry]
+wheelbase = 3.10
+cog_to_front = 1.45
+cog_to_rear = 1.65
+cog_height = 0.28
+wheel_radius = 0.310

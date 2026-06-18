@@ -1,0 +1,22 @@
+[car]
+name = "F1 2024 Calibrated"
+mass = 798.0
+max_drive_force = 11000.0
+max_brake_force = 25000.0
+
+[aero]
+frontal_area = 1.5
+drag_coeff = 1.10
+lift_coeff = 2.80
+aero_balance_front = 0.44
+
+[tires]
+mu = 1.55
+rolling_resistance = 0.015
+
+[geometry]
+wheelbase = 3.60
+cog_to_front = 1.67
+cog_to_rear = 1.93
+cog_height = 0.30
+wheel_radius = 0.330
