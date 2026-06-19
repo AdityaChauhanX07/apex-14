@@ -10,6 +10,7 @@ pub mod drivetrain;
 pub mod fourteen_dof;
 pub mod point_mass;
 pub mod qss;
+pub mod sensitivity;
 pub mod seven_dof;
 pub mod strategy;
 pub mod suspension;
@@ -27,6 +28,10 @@ pub use drivetrain::{Engine, Gearbox, Powertrain};
 pub use fourteen_dof::FourteenDofModel;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
+pub use sensitivity::{
+    f1_parameter_set, monte_carlo_sensitivity, oat_sensitivity, tornado_chart_svg,
+    MonteCarloResult, OatResult, ParameterDef,
+};
 pub use seven_dof::SevenDofModel;
 pub use strategy::{
     FuelModel, RaceStrategy, Stint, StrategyEvaluator, StrategyResult, TireCompound, UndercutResult,
