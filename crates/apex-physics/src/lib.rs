@@ -8,6 +8,7 @@ pub mod car_params;
 pub mod controller;
 pub mod drivetrain;
 pub mod fourteen_dof;
+pub mod grip_map;
 pub mod point_mass;
 pub mod qss;
 pub mod sensitivity;
@@ -16,6 +17,7 @@ pub mod strategy;
 pub mod suspension;
 pub mod tire;
 pub mod wake;
+pub mod weather;
 
 pub use aero::{AeroForces, AeroModel};
 pub use bicycle::BicycleModel;
@@ -27,6 +29,7 @@ pub use car_params::CarParams;
 pub use controller::{solve_care_4x4, LqrController, SpeedController};
 pub use drivetrain::{Engine, Gearbox, Powertrain};
 pub use fourteen_dof::FourteenDofModel;
+pub use grip_map::GripMap;
 pub use point_mass::PointMassModel;
 pub use qss::{qss_lap_sim, qss_lap_sim_tire, QssResult};
 pub use sensitivity::{
@@ -40,3 +43,6 @@ pub use strategy::{
 pub use suspension::{AntiRollBar, SuspensionParams, SuspensionSystem};
 pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
 pub use wake::{MultiCarState, OnTrackCar, WakeModel};
+pub use weather::{
+    analyze_tire_change, effective_grip, TireChangeAnalysis, TireType, WeatherState,
+};
