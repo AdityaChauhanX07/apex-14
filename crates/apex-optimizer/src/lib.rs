@@ -8,6 +8,7 @@ pub mod forward_sim;
 pub mod gauss_newton;
 pub mod mesh_refinement;
 pub mod nlp;
+pub mod overtaking;
 pub mod solver;
 
 pub use collocation::{
@@ -23,4 +24,5 @@ pub use mesh_refinement::{
     optimize_with_refinement, LevelResult, MeshRefinementConfig, RefinedResult,
 };
 pub use nlp::{NlpEvaluator, NlpProblem};
+pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
 pub use solver::{solve_nlp, SolverConfig, SolverResult};
