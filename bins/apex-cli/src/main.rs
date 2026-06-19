@@ -129,6 +129,37 @@ enum Commands {
         #[arg(long, default_value_t = 22.0)]
         pit_loss: f64,
     },
+
+    /// Run parameter sensitivity analysis
+    Sensitivity {
+        /// Track file (JSON or TUMFTM CSV)
+        #[arg(short, long)]
+        track: Option<PathBuf>,
+
+        /// Car configuration file (TOML)
+        #[arg(short, long)]
+        car: Option<PathBuf>,
+
+        /// Use calibrated parameters
+        #[arg(long, default_value_t = false)]
+        calibrated: bool,
+
+        /// Number of samples per parameter for OAT analysis
+        #[arg(long, default_value_t = 11)]
+        oat_samples: usize,
+
+        /// Number of Monte Carlo samples
+        #[arg(long, default_value_t = 1000)]
+        mc_samples: usize,
+
+        /// Random seed for reproducibility
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+
+        /// Export tornado chart SVG to this path
+        #[arg(long)]
+        svg: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -176,6 +207,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             max_stops,
             pit_loss,
         } => cmd_strategy(laps, base_time, track, car, calibrated, max_stops, pit_loss),
+        Commands::Sensitivity {
+            track,
+            car,
+            calibrated,
+            oat_samples,
+            mc_samples,
+            seed,
+            svg,
+        } => cmd_sensitivity(track, car, calibrated, oat_samples, mc_samples, seed, svg),
     }
 }
 
@@ -503,6 +543,95 @@ fn cmd_strategy(
         println!("  Pit 1 lap early: {:+.3}s", analysis.undercut_delta);
         println!("  Pit 1 lap late:  {:+.3}s", analysis.overcut_delta);
         println!("  -> {}", analysis.recommendation);
+    }
+
+    Ok(())
+}
+
+fn cmd_sensitivity(
+    track: Option<PathBuf>,
+    car: Option<PathBuf>,
+    calibrated: bool,
+    oat_samples: usize,
+    mc_samples: usize,
+    seed: u64,
+    svg: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let track_data = match track {
+        Some(ref path) => load_track_from_path(path)?,
+        None => default_track(),
+    };
+    let params = load_car_params(car, calibrated)?;
+    let param_set = apex_physics::f1_parameter_set(&params);
+
+    println!(
+        "Track: {} ({:.0} m)",
+        track_data.name, track_data.total_length
+    );
+    println!("Parameters: {} variables", param_set.len());
+    println!();
+
+    // OAT analysis
+    println!("--- One-at-a-Time Sensitivity ---");
+    let oat_results = apex_physics::oat_sensitivity(&track_data, &params, &param_set, oat_samples);
+
+    // Sort by absolute sensitivity
+    let mut sorted: Vec<&apex_physics::OatResult> = oat_results.iter().collect();
+    sorted.sort_by(|a, b| {
+        b.sensitivity_pct
+            .abs()
+            .partial_cmp(&a.sensitivity_pct.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    println!("{:<20} {:>12} {:>10}", "Parameter", "Sensitivity", "% / %");
+    println!("{}", "-".repeat(44));
+    for result in &sorted {
+        println!(
+            "{:<20} {:>+10.4} s {:>+9.2}%",
+            result.name, result.sensitivity, result.sensitivity_pct
+        );
+    }
+    println!();
+    println!("Nominal lap time: {:.3} s", oat_results[0].nominal_lap_time);
+
+    // Monte Carlo
+    println!();
+    println!(
+        "--- Monte Carlo Analysis ({} samples, seed {}) ---",
+        mc_samples, seed
+    );
+    let mc =
+        apex_physics::monte_carlo_sensitivity(&track_data, &params, &param_set, mc_samples, seed);
+    println!("Mean:    {:.3} s", mc.mean);
+    println!(
+        "Std dev: {:.3} s ({:.2}%)",
+        mc.std_dev,
+        mc.std_dev / mc.mean * 100.0
+    );
+    println!("5th pct: {:.3} s", mc.percentile_5);
+    println!("95th pct:{:.3} s", mc.percentile_95);
+    println!(
+        "Range:   {:.3} s ({:.2}%)",
+        mc.percentile_95 - mc.percentile_5,
+        (mc.percentile_95 - mc.percentile_5) / mc.mean * 100.0
+    );
+    println!();
+    println!("Top correlations:");
+    for (name, corr) in mc.correlations.iter().take(5) {
+        let direction = if *corr > 0.0 {
+            "more = slower"
+        } else {
+            "more = faster"
+        };
+        println!("  {:<20} r = {:+.3}  ({})", name, corr, direction);
+    }
+
+    // Export tornado chart
+    if let Some(svg_path) = svg {
+        apex_physics::tornado_chart_svg(&oat_results, &svg_path)?;
+        println!();
+        println!("Tornado chart exported to {}", svg_path.display());
     }
 
     Ok(())
