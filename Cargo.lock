@@ -251,6 +251,19 @@ name = "apex-math"
 version = "0.1.0"
 
 [[package]]
+name = "apex-ml"
+version = "0.1.0"
+dependencies = [
+ "apex-optimizer",
+ "apex-physics",
+ "apex-track",
+ "log",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apex-optimizer"
 version = "0.1.0"
 dependencies = [
