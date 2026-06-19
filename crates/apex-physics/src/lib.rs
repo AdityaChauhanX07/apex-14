@@ -15,6 +15,7 @@ pub mod seven_dof;
 pub mod strategy;
 pub mod suspension;
 pub mod tire;
+pub mod wake;
 
 pub use aero::{AeroForces, AeroModel};
 pub use bicycle::BicycleModel;
@@ -38,3 +39,4 @@ pub use strategy::{
 };
 pub use suspension::{AntiRollBar, SuspensionParams, SuspensionSystem};
 pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
+pub use wake::{MultiCarState, OnTrackCar, WakeModel};
