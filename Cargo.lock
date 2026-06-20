@@ -4321,6 +4321,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "train-driver"
+version = "0.1.0"
+dependencies = [
+ "apex-physics",
+ "apex-rl",
+ "apex-track",
+ "candle-core",
+ "candle-nn",
+ "clap",
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "train-raceline"
 version = "0.1.0"
 dependencies = [
