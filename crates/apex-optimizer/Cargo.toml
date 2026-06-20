@@ -11,6 +11,13 @@ apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
 rand = "0.9"
 rand_distr = "0.5"
+log = "0.4"
+rayon = { version = "1.10", optional = true }
+
+[features]
+# Parallel batch evaluation of car setups via rayon. Disabled by default for
+# targets without threads; mirrors apex-physics's `parallel` feature.
+parallel = ["dep:rayon"]
 
 [dev-dependencies]
 criterion = "0.5"

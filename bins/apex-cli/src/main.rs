@@ -130,6 +130,30 @@ enum Commands {
         pit_loss: f64,
     },
 
+    /// Optimize car setup parameters to minimize lap time (CMA-ES + QSS)
+    SetupOptimize {
+        /// Track to optimize for. Built-in: silverstone, monza, oval, circle;
+        /// anything else is treated as a track file path (JSON or CSV).
+        #[arg(long, default_value = "silverstone")]
+        track: String,
+
+        /// Number of CMA-ES generations.
+        #[arg(long, default_value_t = 50)]
+        generations: usize,
+
+        /// Initial step size (fraction of parameter range).
+        #[arg(long, default_value_t = 0.3)]
+        sigma: f64,
+
+        /// Use calibrated F1 parameters as baseline.
+        #[arg(long)]
+        calibrated: bool,
+
+        /// Output TOML file for the optimized setup.
+        #[arg(long)]
+        output: Option<String>,
+    },
+
     /// Run parameter sensitivity analysis
     Sensitivity {
         /// Track file (JSON or TUMFTM CSV)
@@ -207,6 +231,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             max_stops,
             pit_loss,
         } => cmd_strategy(laps, base_time, track, car, calibrated, max_stops, pit_loss),
+        Commands::SetupOptimize {
+            track,
+            generations,
+            sigma,
+            calibrated,
+            output,
+        } => cmd_setup_optimize(track, generations, sigma, calibrated, output),
         Commands::Sensitivity {
             track,
             car,
@@ -260,6 +291,33 @@ fn load_car_params(
 fn default_track() -> apex_track::Track {
     let (pts, closed) = apex_track::oval_track(500.0, 80.0, 12.0, 300);
     apex_track::build_track("Oval", &pts, closed)
+}
+
+/// Resolve a track argument that may be a built-in circuit name or a file path.
+///
+/// Recognized built-ins: `silverstone`, `monza`, `oval`, `circle`. Anything else
+/// is treated as a path to a track file (JSON or TUMFTM CSV).
+fn resolve_track(name: &str) -> Result<apex_track::Track, Box<dyn std::error::Error>> {
+    let (points, closed, label) = match name.to_lowercase().as_str() {
+        "silverstone" => {
+            let (p, c) = apex_track::silverstone_circuit();
+            (p, c, "Silverstone")
+        }
+        "monza" => {
+            let (p, c) = apex_track::monza_circuit();
+            (p, c, "Monza")
+        }
+        "oval" => {
+            let (p, c) = apex_track::oval_track(1000.0, 100.0, 12.0, 500);
+            (p, c, "Oval")
+        }
+        "circle" => {
+            let (p, c) = apex_track::circle_track(100.0, 12.0, 500);
+            (p, c, "Circle")
+        }
+        _ => return load_track_from_path(std::path::Path::new(name)),
+    };
+    Ok(apex_track::build_track(label, &points, closed))
 }
 
 // --- subcommands ---
@@ -632,6 +690,78 @@ fn cmd_sensitivity(
         apex_physics::tornado_chart_svg(&oat_results, &svg_path)?;
         println!();
         println!("Tornado chart exported to {}", svg_path.display());
+    }
+
+    Ok(())
+}
+
+fn cmd_setup_optimize(
+    track: String,
+    generations: usize,
+    sigma: f64,
+    calibrated: bool,
+    output: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let track_data = resolve_track(&track)?;
+    let base_car = if calibrated {
+        apex_physics::CarParams::f1_2024_calibrated()
+    } else {
+        apex_physics::CarParams::default()
+    };
+
+    println!(
+        "Track: {} ({:.0} m)",
+        track_data.name, track_data.total_length
+    );
+    println!(
+        "Baseline car: {}",
+        if calibrated {
+            "F1 2024 calibrated"
+        } else {
+            "default"
+        }
+    );
+    println!("CMA-ES: {} generations, sigma {:.2}", generations, sigma);
+
+    let track_name = track_data.name.clone();
+    let config = apex_optimizer::SetupEvalConfig::new(track_data, base_car);
+    let cmaes_config = apex_optimizer::CmaEsConfig {
+        max_generations: generations,
+        initial_sigma: sigma,
+        ..Default::default()
+    };
+
+    println!("Optimizing...");
+    let result = apex_optimizer::optimize_setup(&config, cmaes_config);
+
+    println!();
+    println!("Baseline lap time:  {:.3} s", result.baseline_time);
+    println!("Optimized lap time: {:.3} s", result.best_time);
+    println!(
+        "Improvement:        {:.3} s ({:.2}%)",
+        result.improvement,
+        if result.baseline_time > 0.0 {
+            result.improvement / result.baseline_time * 100.0
+        } else {
+            0.0
+        }
+    );
+    println!("Generations run:    {}", result.generations);
+    println!();
+    println!("Optimized setup parameters:");
+    print!("{}", config.space.format_report(&result.best_params));
+
+    if let Some(out_path) = output {
+        let toml = apex_optimizer::export_setup_toml(
+            &config.space,
+            &config.base_car,
+            &result.best_params,
+            &track_name,
+            result.best_time,
+        );
+        std::fs::write(&out_path, toml)?;
+        println!();
+        println!("Optimized setup written to {}", out_path);
     }
 
     Ok(())
