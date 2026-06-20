@@ -991,6 +991,12 @@ mod tests {
         let model = model_for(&rg, 30.0);
         let mut sim = SimState::new(&model, 30.0);
         sim.attach_track(&track);
+        // Use a short cooldown so the test does not need to advance time far.
+        {
+            let tp = sim.track_pos.as_mut().expect("track pos");
+            tp.min_lap_time = 0.1;
+            tp.last_crossing_time = 0.0;
+        }
         assert_eq!(sim.lap, 1);
 
         // Walk the car forward along the centreline toward the end of the lap.
@@ -1000,7 +1006,9 @@ mod tests {
             assert_eq!(sim.lap, 1, "no crossing before wrap (frac {frac})");
         }
 
-        // Wrap back past the start/finish line: the lap count must increment.
+        // Advance well past the cooldown, then wrap back past the start/finish
+        // line: the lap count must increment.
+        sim.sim_time = 1.0;
         let (x, y) = track.position_at(0.02 * l);
         update_track_position(&mut sim, &track, x, y);
         assert_eq!(sim.lap, 2, "lap should increment on start/finish crossing");
@@ -1053,6 +1061,84 @@ mod tests {
             out.lap_time.abs() < 1e-9,
             "lap_time should reset, got {}",
             out.lap_time
+        );
+    }
+
+    #[test]
+    fn test_no_lap_spam_off_track() {
+        // On a straight track the lateral offset is just -y, so we can place the
+        // car a controlled distance off the centreline.
+        let track = straight_track();
+        let l = track.total_length;
+
+        let rg = rig();
+        let model = model_for(&rg, 30.0);
+        let mut sim = SimState::new(&model, 30.0);
+        sim.attach_track(&track);
+        // Park the tracker near the end of the lap, with the cooldown satisfied,
+        // so the ONLY thing that can suppress the crossing is the off-track guard.
+        {
+            let tp = sim.track_pos.as_mut().expect("track pos");
+            tp.min_lap_time = 0.1;
+            tp.last_crossing_time = 0.0;
+            tp.distance = 0.85 * l;
+        }
+        sim.sim_time = 5.0;
+        let lap_before = sim.lap;
+
+        // World point near s=10 m but 60 m off the centreline (offset = -60 m).
+        update_track_position(&mut sim, &track, 10.0, 60.0);
+
+        let tp = sim.track_pos.expect("track pos");
+        assert!(
+            tp.lateral_offset.abs() > OFF_TRACK_OFFSET,
+            "test scenario should be off-track, offset {}",
+            tp.lateral_offset
+        );
+        assert!(
+            !tp.crossed_start_finish,
+            "off-track frame must not flag a crossing"
+        );
+        assert_eq!(
+            sim.lap, lap_before,
+            "off-track projection must not increment the lap count"
+        );
+    }
+
+    #[test]
+    fn test_no_lap_spam_cooldown() {
+        let track = straight_track();
+        let l = track.total_length;
+
+        let rg = rig();
+        let model = model_for(&rg, 30.0);
+        let mut sim = SimState::new(&model, 30.0);
+        sim.attach_track(&track);
+        {
+            let tp = sim.track_pos.as_mut().expect("track pos");
+            tp.min_lap_time = 10.0;
+            tp.last_crossing_time = 0.0;
+            tp.distance = 0.85 * l;
+        }
+
+        // First crossing at t=20s (well past the cooldown): on-track wrap.
+        sim.sim_time = 20.0;
+        update_track_position(&mut sim, &track, 10.0, 0.0);
+        assert_eq!(sim.lap, 2, "first valid crossing should count");
+        assert!((sim.track_pos.expect("track pos").last_crossing_time - 20.0).abs() < 1e-9);
+
+        // Immediately attempt a second crossing barely 0.5 s later (< min_lap_time):
+        // reset the projected distance to the end of the lap to mimic a jump.
+        sim.track_pos.as_mut().expect("track pos").distance = 0.85 * l;
+        sim.sim_time = 20.5;
+        update_track_position(&mut sim, &track, 10.0, 0.0);
+        assert_eq!(
+            sim.lap, 2,
+            "crossing within the cooldown must not increment the lap count"
+        );
+        assert!(
+            !sim.track_pos.expect("track pos").crossed_start_finish,
+            "cooldown frame must not flag a crossing"
         );
     }
 }
