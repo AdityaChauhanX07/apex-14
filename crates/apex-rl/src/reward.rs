@@ -7,7 +7,7 @@
 /// Weights for the reward function components.
 ///
 /// The total reward per step is:
-///   `w_progress * progress + w_speed * speed_bonus`
+///   `w_progress * progress_speed + w_speed * speed_bonus + w_alive`
 ///   `- w_offset * offset_penalty - w_heading * heading_penalty`
 ///   `- w_jerk * jerk_penalty - w_crash * crash_penalty`
 ///
@@ -16,7 +16,10 @@
 #[derive(Debug, Clone)]
 pub struct RewardConfig {
     /// Weight for forward progress along track (primary signal).
-    /// Progress = delta_distance / track_length per step.
+    /// The progress term is the forward speed (`progress / dt`) normalized by
+    /// `v_max`, i.e. roughly `[0, 1]` per step — on the same scale as the other
+    /// terms (the old `progress / track_length` form was orders of magnitude
+    /// smaller than the crash penalty, so the agent could never learn from it).
     pub w_progress: f64,
     /// Weight for speed bonus. Bonus = speed / v_max per step.
     pub w_speed: f64,
@@ -31,6 +34,9 @@ pub struct RewardConfig {
     /// Weight for centering bonus at high speed. Rewards being near centerline
     /// when going fast (encourages using the full track only when beneficial).
     pub w_centering: f64,
+    /// Small per-step reward for being alive (not crashed). Default: 0.01.
+    /// Helps the agent learn that surviving is better than crashing early.
+    pub w_alive: f64,
 }
 
 impl RewardConfig {
@@ -43,8 +49,9 @@ impl RewardConfig {
             w_offset: 0.0,
             w_heading: 0.0,
             w_jerk: 0.0,
-            w_crash: 10.0,
+            w_crash: 2.0,
             w_centering: 0.0,
+            w_alive: 0.01,
         }
     }
 
@@ -59,6 +66,7 @@ impl RewardConfig {
             w_jerk: 0.01,
             w_crash: 10.0,
             w_centering: 0.0,
+            w_alive: 0.01,
         }
     }
 
@@ -73,6 +81,7 @@ impl RewardConfig {
             w_jerk: 0.005,
             w_crash: 5.0,
             w_centering: 0.1,
+            w_alive: 0.01,
         }
     }
 }
@@ -90,6 +99,9 @@ impl Default for RewardConfig {
 pub struct RewardInput {
     /// Forward progress along track this step (m). Positive = correct direction.
     pub progress: f64,
+    /// Simulation time step for this RL step (s). Used to convert progress (m)
+    /// into a velocity for the progress reward.
+    pub dt: f64,
     /// Total track length (m).
     pub track_length: f64,
     /// Current speed (m/s).
@@ -125,20 +137,21 @@ pub struct RewardOutput {
     pub jerk: f64,
     /// Crash penalty component (negative).
     pub crash: f64,
+    /// Alive bonus component (positive while not crashed).
+    pub alive: f64,
 }
 
 /// Compute the shaped reward.
 ///
 /// Returns the total reward and a breakdown for logging/debugging.
 pub fn compute_reward(input: &RewardInput, config: &RewardConfig) -> RewardOutput {
-    let track_length = if input.track_length > 0.0 {
-        input.track_length
-    } else {
-        1.0
-    };
     let v_max = if input.v_max > 0.0 { input.v_max } else { 1.0 };
+    let dt = if input.dt > 0.0 { input.dt } else { 1.0 };
 
-    let progress = config.w_progress * input.progress / track_length;
+    // Progress reward as a forward-velocity fraction: (progress / dt) / v_max,
+    // clamped at zero so backward motion earns no reward. This keeps the term on
+    // a ~[0, 1] per-step scale, comparable to the other reward components.
+    let progress = config.w_progress * (input.progress / dt).max(0.0) / v_max;
     let speed = config.w_speed * (input.speed / v_max);
 
     let offset_ratio = (input.lateral_offset / input.half_width.max(1.0)).clamp(-1.0, 1.0);
@@ -150,8 +163,9 @@ pub fn compute_reward(input: &RewardInput, config: &RewardConfig) -> RewardOutpu
     let jerk = -config.w_jerk * input.steering_change.abs();
 
     let crash = if input.crashed { -config.w_crash } else { 0.0 };
+    let alive = if input.crashed { 0.0 } else { config.w_alive };
 
-    let total = progress + speed + offset + heading + jerk + crash;
+    let total = progress + speed + offset + heading + jerk + crash + alive;
 
     RewardOutput {
         total,
@@ -161,6 +175,7 @@ pub fn compute_reward(input: &RewardInput, config: &RewardConfig) -> RewardOutpu
         heading,
         jerk,
         crash,
+        alive,
     }
 }
 
@@ -172,6 +187,7 @@ mod tests {
     fn neutral_input() -> RewardInput {
         RewardInput {
             progress: 0.0,
+            dt: 0.01,
             track_length: 1000.0,
             speed: 0.0,
             v_max: 100.0,
@@ -190,15 +206,24 @@ mod tests {
         input.progress = 50.0;
 
         let out = compute_reward(&input, &config);
-        let expected = config.w_progress * 50.0 / input.track_length;
+        // Progress term = w_progress * (progress / dt) / v_max.
+        let exp_progress = config.w_progress * (50.0 / input.dt) / input.v_max;
+        let exp_alive = config.w_alive; // not crashed
         assert!(out.total > 0.0, "progress should give positive reward");
         assert!(
-            (out.total - expected).abs() < 1e-12,
+            (out.progress - exp_progress).abs() < 1e-9,
+            "progress {} vs expected {}",
+            out.progress,
+            exp_progress
+        );
+        assert!((out.alive - exp_alive).abs() < 1e-12, "alive {}", out.alive);
+        assert!(
+            (out.total - (exp_progress + exp_alive)).abs() < 1e-9,
             "total {} vs expected {}",
             out.total,
-            expected
+            exp_progress + exp_alive
         );
-        // No other component is active with progress-only and a neutral input.
+        // No penalty component is active with progress-only and a neutral input.
         assert_eq!(out.speed, 0.0);
         assert_eq!(out.offset, 0.0);
         assert_eq!(out.heading, 0.0);
@@ -302,6 +327,7 @@ mod tests {
         let config = RewardConfig::balanced();
         let input = RewardInput {
             progress: 30.0,
+            dt: 0.01,
             track_length: 1000.0,
             speed: 50.0,
             v_max: 100.0,
@@ -314,24 +340,26 @@ mod tests {
 
         let out = compute_reward(&input, &config);
 
-        let exp_progress = config.w_progress * 30.0 / 1000.0;
+        let exp_progress = config.w_progress * (30.0 / input.dt) / input.v_max;
         let exp_speed = config.w_speed * 50.0 / 100.0;
         let exp_offset = -config.w_offset * 0.5 * 0.5;
         let heading_norm = std::f64::consts::FRAC_PI_4 / std::f64::consts::PI;
         let exp_heading = -config.w_heading * heading_norm * heading_norm;
         let exp_jerk = -config.w_jerk * 0.4;
         let exp_crash = -config.w_crash;
+        let exp_alive = 0.0; // crashed
 
-        assert!((out.progress - exp_progress).abs() < 1e-12);
+        assert!((out.progress - exp_progress).abs() < 1e-9);
         assert!((out.speed - exp_speed).abs() < 1e-12);
         assert!((out.offset - exp_offset).abs() < 1e-12);
         assert!((out.heading - exp_heading).abs() < 1e-12);
         assert!((out.jerk - exp_jerk).abs() < 1e-12);
         assert!((out.crash - exp_crash).abs() < 1e-12);
+        assert!((out.alive - exp_alive).abs() < 1e-12);
 
         let expected_total =
-            exp_progress + exp_speed + exp_offset + exp_heading + exp_jerk + exp_crash;
-        assert!((out.total - expected_total).abs() < 1e-12);
+            exp_progress + exp_speed + exp_offset + exp_heading + exp_jerk + exp_crash + exp_alive;
+        assert!((out.total - expected_total).abs() < 1e-9);
     }
 
     #[test]
@@ -339,6 +367,7 @@ mod tests {
         let config = RewardConfig::racing();
         let input = RewardInput {
             progress: 12.0,
+            dt: 0.01,
             track_length: 800.0,
             speed: 70.0,
             v_max: 100.0,
@@ -349,7 +378,8 @@ mod tests {
             crashed: false,
         };
         let out = compute_reward(&input, &config);
-        let sum = out.progress + out.speed + out.offset + out.heading + out.jerk + out.crash;
+        let sum =
+            out.progress + out.speed + out.offset + out.heading + out.jerk + out.crash + out.alive;
         assert!(
             (out.total - sum).abs() < 1e-12,
             "total {} should equal sum of components {}",

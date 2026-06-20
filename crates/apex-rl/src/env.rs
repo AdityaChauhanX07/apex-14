@@ -17,10 +17,16 @@ use crate::reward::{compute_reward, RewardConfig, RewardInput, RewardOutput};
 ///
 /// Trimming the static equilibrium at the start speed means the car begins each
 /// episode already balanced (suspension at rest, tire loads matching gravity and
-/// downforce), so there is no launch transient. It is deliberately gentle so the
-/// car is forgiving to control in the first corner while staying above the
-/// "stuck" speed threshold.
-const START_SPEED: f64 = 10.0;
+/// downforce), so there is no launch transient. It is set high enough that the
+/// car carries real momentum into the first corner and survives the random
+/// initial actions of an untrained policy, while staying well above the "stuck"
+/// speed threshold.
+const START_SPEED: f64 = 20.0;
+
+/// Grace period (s) after each reset during which the stuck detector is
+/// disabled. Gives an untrained agent time to get the car moving before a slow
+/// patch can end the episode.
+const GRACE_PERIOD: f64 = 3.0;
 
 /// Fraction of the grip-limited torque the traction cap allows.
 ///
@@ -141,15 +147,21 @@ fn project_onto_track(track: &Track, x: f64, y: f64) -> (f64, f64) {
 pub struct EnvConfig {
     /// Simulation time step per RL step (s). Default: 0.01 (100Hz control).
     pub dt: f64,
-    /// Number of RK4 sub-steps per RL step. Default: 4.
+    /// Number of RK4 sub-steps per RL step. Default: 10.
+    ///
+    /// With `dt = 0.01` this gives 1 ms sub-steps. The stiff wheel-spin dynamics
+    /// (low wheel inertia, high tire slip stiffness) go unstable under sustained
+    /// full throttle at the original 2.5 ms (4 sub-steps): the driven wheels
+    /// overshoot the friction peak and run away. 1 ms sub-steps are stable and
+    /// converged (10/20/40 sub-steps give identical trajectories).
     pub n_substeps: usize,
     /// Maximum episode length in seconds. Default: 300.0 (5 minutes).
     pub max_episode_time: f64,
-    /// Maximum lateral offset before termination (multiples of half-width). Default: 2.0.
+    /// Maximum lateral offset before termination (multiples of half-width). Default: 3.0.
     pub max_offset_ratio: f64,
     /// Minimum speed before "stuck" timer starts (m/s). Default: 1.0.
     pub min_speed: f64,
-    /// Time below min_speed before termination (s). Default: 5.0.
+    /// Time below min_speed before termination (s). Default: 10.0.
     pub stuck_timeout: f64,
     /// Number of laps per episode. Default: 1.
     pub n_laps: usize,
@@ -165,11 +177,11 @@ impl Default for EnvConfig {
     fn default() -> Self {
         EnvConfig {
             dt: 0.01,
-            n_substeps: 4,
+            n_substeps: 10,
             max_episode_time: 300.0,
-            max_offset_ratio: 2.0,
+            max_offset_ratio: 3.0,
             min_speed: 1.0,
-            stuck_timeout: 5.0,
+            stuck_timeout: 10.0,
             n_laps: 1,
             max_steer_angle: 0.5,
             obs_norm: ObsNormalization::default(),
@@ -257,6 +269,8 @@ pub struct RaceEnv {
     lap: u32,
     lap_start_time: f64,
     stuck_timer: f64,
+    /// Time remaining on the post-reset grace period (no stuck termination).
+    grace_timer: f64,
 
     // For reward computation.
     prev_track_distance: f64,
@@ -295,6 +309,7 @@ impl RaceEnv {
             lap: 1,
             lap_start_time: 0.0,
             stuck_timer: 0.0,
+            grace_timer: 0.0,
             prev_track_distance: 0.0,
         };
         env.reset();
@@ -348,6 +363,7 @@ impl RaceEnv {
         self.lap = 1;
         self.lap_start_time = 0.0;
         self.stuck_timer = 0.0;
+        self.grace_timer = GRACE_PERIOD;
 
         self.observe()
     }
@@ -438,7 +454,12 @@ impl RaceEnv {
         let half_width = (0.5 * (wl + wr)).max(1e-3);
         let off_track = self.lateral_offset.abs() > self.config.max_offset_ratio * half_width;
 
-        if speed < self.config.min_speed {
+        // Stuck detection, suppressed during the post-reset grace period so an
+        // untrained agent has time to get the car moving.
+        if self.grace_timer > 0.0 {
+            self.grace_timer -= self.config.dt;
+            self.stuck_timer = 0.0;
+        } else if speed < self.config.min_speed {
             self.stuck_timer += self.config.dt;
         } else {
             self.stuck_timer = 0.0;
@@ -453,6 +474,7 @@ impl RaceEnv {
         let heading_error = normalize_angle(self.state[5] - self.track_heading);
         let reward_input = RewardInput {
             progress,
+            dt: self.config.dt,
             track_length: self.track_length,
             speed,
             v_max: self.config.obs_norm.v_max,
@@ -587,6 +609,53 @@ mod tests {
         assert!(
             last > v0,
             "full throttle should increase speed: {v0} -> {last}"
+        );
+    }
+
+    #[test]
+    fn test_full_throttle_produces_torque() {
+        // With zero steering, full throttle, no brake, the mapped control vector
+        // must carry a positive drive torque; otherwise the input path is broken.
+        let mut env = RaceEnv::with_defaults(oval());
+        env.reset();
+        let control = env.map_action_to_control(0.0, 1.0, 0.0);
+        assert!(
+            control[1] > 0.0,
+            "full throttle should give positive drive torque, got {}",
+            control[1]
+        );
+        assert_eq!(control[2], 0.0, "no brake expected, got {}", control[2]);
+    }
+
+    #[test]
+    fn test_env_throttle_accelerates() {
+        use crate::policy::postprocess_actions;
+        use candle_core::{Device, Tensor};
+
+        // Raw action [0, 1, 0] post-processes to [0, 1, 0] (no brake, full
+        // throttle) — the neutral-brake fix in action post-processing.
+        let raw =
+            Tensor::from_vec(vec![0.0f32, 1.0, 0.0], (1, ACT_DIM), &Device::Cpu).expect("from_vec");
+        let processed = postprocess_actions(&raw).expect("postprocess");
+        let pv: Vec<f32> = processed
+            .flatten_all()
+            .expect("flat")
+            .to_vec1()
+            .expect("vec");
+        let action = [pv[0] as f64, pv[1] as f64, pv[2] as f64];
+        assert!((action[1] - 1.0).abs() < 1e-6, "throttle should be 1.0");
+        assert!(action[2].abs() < 1e-6, "brake should be 0.0");
+
+        let mut env = RaceEnv::with_defaults(oval());
+        env.reset();
+        let v0 = env.state[6];
+        let mut last = v0;
+        for _ in 0..100 {
+            last = env.step(&action).info.speed;
+        }
+        assert!(
+            last > v0,
+            "post-processed full throttle should increase speed: {v0} -> {last}"
         );
     }
 

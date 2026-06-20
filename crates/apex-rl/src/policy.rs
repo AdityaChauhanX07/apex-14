@@ -31,13 +31,6 @@ fn gaussian_log_prob(x: &Tensor, mean: &Tensor, log_std: &Tensor) -> Result<Tens
     (z.sqr()? * (-0.5))?.sub(log_std)? - half_log_2pi()
 }
 
-/// Sigmoid activation `1 / (1 + exp(-x))`.
-///
-/// Delegates to candle's numerically stable implementation.
-fn sigmoid(x: &Tensor) -> Result<Tensor> {
-    candle_nn::ops::sigmoid(x)
-}
-
 /// Count the trainable parameters (weights + biases) of a set of linear layers.
 fn count_params(layers: &[&Linear]) -> usize {
     let mut total = 0usize;
@@ -201,17 +194,24 @@ impl ValueNet {
 
 /// Convert raw network outputs to valid action ranges.
 ///
-/// - steering: `tanh(raw)` -> `[-1, 1]`
-/// - throttle: `sigmoid(raw)` -> `[0, 1]`
-/// - brake: `sigmoid(raw)` -> `[0, 1]`
+/// - steering: `tanh(raw)` -> `[-1, 1]` (zero-centered, raw 0 = straight)
+/// - throttle: `clamp(raw, 0, 1)` -> `[0, 1]` (raw 0 = no throttle)
+/// - brake: `clamp(raw, 0, 1)` -> `[0, 1]` (raw 0 = no brake)
+///
+/// Clamping (rather than `sigmoid`) is used for throttle/brake so the neutral
+/// raw action `0` maps to *no* throttle and *no* brake. `sigmoid(0) = 0.5` would
+/// instead apply 50% throttle and 50% brake simultaneously at initialization,
+/// stalling the car and making the policy very hard to train. Because PPO's
+/// log-prob is computed on the raw (pre-squash) actions, the clamp's zero
+/// gradient outside `[0, 1]` does not affect the policy-gradient path.
 ///
 /// Takes a tensor whose last dimension is `ACT_DIM` (e.g. `[batch, 3]` or `[3]`)
 /// and returns the same shape.
 pub fn postprocess_actions(raw: &Tensor) -> Result<Tensor> {
     let last = raw.dims().len() - 1;
     let steering = raw.narrow(last, 0, 1)?.tanh()?;
-    let throttle = sigmoid(&raw.narrow(last, 1, 1)?)?;
-    let brake = sigmoid(&raw.narrow(last, 2, 1)?)?;
+    let throttle = raw.narrow(last, 1, 1)?.clamp(0.0, 1.0)?;
+    let brake = raw.narrow(last, 2, 1)?.clamp(0.0, 1.0)?;
     Tensor::cat(&[&steering, &throttle, &brake], last)
 }
 
@@ -351,10 +351,24 @@ mod tests {
         let out = postprocess_actions(&raw).expect("postprocess");
         assert_eq!(out.dims(), &[1, ACT_DIM]);
         let vals: Vec<f32> = out.flatten_all().expect("flatten").to_vec1().expect("vec");
-        // tanh(0) = 0, sigmoid(0) = 0.5, sigmoid(0) = 0.5
+        // Neutral raw action [0,0,0] -> tanh(0)=0, clamp(0)=0, clamp(0)=0.
+        // No throttle and no brake (the key fix: sigmoid would give 0.5/0.5).
         assert!((vals[0] - 0.0).abs() < 1e-6, "steering {}", vals[0]);
-        assert!((vals[1] - 0.5).abs() < 1e-6, "throttle {}", vals[1]);
-        assert!((vals[2] - 0.5).abs() < 1e-6, "brake {}", vals[2]);
+        assert!((vals[1] - 0.0).abs() < 1e-6, "throttle {}", vals[1]);
+        assert!((vals[2] - 0.0).abs() < 1e-6, "brake {}", vals[2]);
+    }
+
+    #[test]
+    fn test_full_throttle_action() {
+        // Raw [0, 2, -2] -> [tanh(0)=0, clamp(2)=1, clamp(-2)=0]:
+        // zero steering, full throttle, no brake.
+        let raw = Tensor::from_vec(vec![0.0f32, 2.0, -2.0], (1, ACT_DIM), &Device::Cpu)
+            .expect("from_vec");
+        let out = postprocess_actions(&raw).expect("postprocess");
+        let vals: Vec<f32> = out.flatten_all().expect("flatten").to_vec1().expect("vec");
+        assert!((vals[0] - 0.0).abs() < 1e-6, "steering {}", vals[0]);
+        assert!((vals[1] - 1.0).abs() < 1e-6, "throttle {}", vals[1]);
+        assert!((vals[2] - 0.0).abs() < 1e-6, "brake {}", vals[2]);
     }
 
     #[test]
