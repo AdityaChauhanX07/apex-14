@@ -2,6 +2,7 @@
 //! Trajectory optimization for Apex-14: NLP problem definition and an
 //! Augmented Lagrangian solver.
 
+pub mod cmaes;
 pub mod collocation;
 pub mod direct_solver;
 pub mod forward_sim;
@@ -9,8 +10,10 @@ pub mod gauss_newton;
 pub mod mesh_refinement;
 pub mod nlp;
 pub mod overtaking;
+pub mod setup;
 pub mod solver;
 
+pub use cmaes::{CmaEs, CmaEsConfig};
 pub use collocation::{
     fourteen_dof_grip_budget, seven_dof_derivatives, tire_limited_forces, CollocationConfig,
     CollocationMethod, CollocationOptimizer, OptimizationResult,
@@ -25,4 +28,5 @@ pub use mesh_refinement::{
 };
 pub use nlp::{NlpEvaluator, NlpProblem};
 pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
+pub use setup::{SetupParam, SetupSpace};
 pub use solver::{solve_nlp, SolverConfig, SolverResult};

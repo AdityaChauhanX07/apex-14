@@ -282,6 +282,8 @@ dependencies = [
  "apex-physics",
  "apex-track",
  "criterion",
+ "rand 0.9.4",
+ "rand_distr",
 ]
 
 [[package]]
@@ -3831,7 +3833,6 @@ dependencies = [
  "apex-sim",
  "apex-track",
  "candle-core",
- "candle-nn",
  "clap",
  "env_logger",
  "log",

@@ -10,7 +10,6 @@ apex-physics = { path = "../../crates/apex-physics" }
 apex-track = { path = "../../crates/apex-track" }
 apex-rl = { path = "../../crates/apex-rl" }
 candle-core = "0.10"
-candle-nn = "0.10"
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
