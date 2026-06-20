@@ -1,0 +1,12 @@
+[package]
+name = "apex-sim"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+apex-math = { path = "../apex-math" }
+apex-integrator = { path = "../apex-integrator" }
+apex-physics = { path = "../apex-physics" }
+apex-track = { path = "../apex-track" }
+log = "0.4"

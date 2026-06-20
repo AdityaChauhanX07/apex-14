@@ -297,6 +297,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-sim"
+version = "0.1.0"
+dependencies = [
+ "apex-integrator",
+ "apex-math",
+ "apex-physics",
+ "apex-track",
+ "log",
+]
+
+[[package]]
 name = "apex-telemetry"
 version = "0.1.0"
 dependencies = [
