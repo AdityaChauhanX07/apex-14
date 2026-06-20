@@ -3794,6 +3794,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-server"
+version = "0.1.0"
+dependencies = [
+ "apex-physics",
+ "apex-sim",
+ "apex-track",
+ "clap",
+ "env_logger",
+ "log",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
