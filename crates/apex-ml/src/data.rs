@@ -16,10 +16,17 @@ pub struct TrainingSample {
     pub width_left_profile: Vec<f64>,
     /// Track width (right boundary distance) at N_FIXED points (normalized, m).
     pub width_right_profile: Vec<f64>,
-    /// Optimized speed profile at N_FIXED points (m/s).
+    /// Optimized speed profile at N_FIXED points, normalized by [`Self::speed_norm`].
     pub speed_profile: Vec<f64>,
-    /// Optimized lateral offset profile at N_FIXED points (m).
+    /// Optimized lateral offset profile at N_FIXED points, normalized by
+    /// [`Self::width_norm`].
     pub offset_profile: Vec<f64>,
+    /// Speed normalization constant (m/s): multiply [`Self::speed_profile`] by
+    /// this to recover physical speeds.
+    pub speed_norm: f64,
+    /// Width normalization constant (m): multiply [`Self::offset_profile`] by
+    /// this to recover physical offsets.
+    pub width_norm: f64,
     /// Achieved lap time (s).
     pub lap_time: f64,
     /// Whether the optimizer converged (eq_viol < threshold).
@@ -63,6 +70,24 @@ pub struct TrainingDataset {
     pub tracks_attempted: usize,
     /// Number of tracks where the optimizer converged.
     pub tracks_converged: usize,
+    /// Global speed normalization constant (m/s): the max per-sample speed norm.
+    /// All sample speed profiles are normalized by this value.
+    pub global_speed_norm: f64,
+    /// Global width normalization constant (m): the mean per-sample width norm.
+    /// All sample offset profiles are normalized by this value.
+    pub global_width_norm: f64,
+}
+
+/// Normalization constants for the ML target profiles.
+///
+/// Saved alongside the model weights so that inference can denormalize the
+/// network output back into physical units (m/s for speed, m for offset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormConstants {
+    /// Speed normalization constant (m/s).
+    pub speed_norm: f64,
+    /// Width normalization constant (m).
+    pub width_norm: f64,
 }
 
 #[cfg(test)]
@@ -77,6 +102,8 @@ mod tests {
             width_right_profile: vec![0.5; n],
             speed_profile: vec![30.0; n],
             offset_profile: vec![0.0; n],
+            speed_norm: 1.0,
+            width_norm: 1.0,
             lap_time: 60.0,
             converged: true,
             track_id: "test".to_string(),
@@ -104,6 +131,8 @@ mod tests {
             samples: vec![make_sample(N_FIXED)],
             tracks_attempted: 2,
             tracks_converged: 1,
+            global_speed_norm: 1.0,
+            global_width_norm: 1.0,
         };
         let json = serde_json::to_string(&dataset).expect("serialize");
         let back: TrainingDataset = serde_json::from_str(&json).expect("deserialize");

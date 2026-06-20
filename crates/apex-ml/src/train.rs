@@ -226,6 +226,8 @@ mod tests {
             width_right_profile: vec![0.5; N_FIXED],
             speed_profile: vec![0.8; N_FIXED],
             offset_profile: vec![0.0; N_FIXED],
+            speed_norm: 1.0,
+            width_norm: 1.0,
             lap_time: 60.0,
             converged: true,
             track_id: "test".to_string(),
@@ -256,6 +258,8 @@ mod tests {
             samples: vec![make_sample(); 5],
             tracks_attempted: 5,
             tracks_converged: 5,
+            global_speed_norm: 1.0,
+            global_width_norm: 1.0,
         };
         let config = TrainConfig {
             epochs: 10,

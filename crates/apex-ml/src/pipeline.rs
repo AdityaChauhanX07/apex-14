@@ -110,8 +110,32 @@ pub fn generate_sample(
     }
 
     let feat = extract_features(track, N_FIXED);
-    let speed_profile = resample_to_fixed(&result.stations, &result.speeds, track.total_length);
-    let offset_profile = resample_to_fixed(&result.stations, &result.offsets, track.total_length);
+    let mut speed_profile = resample_to_fixed(&result.stations, &result.speeds, track.total_length);
+    let mut offset_profile =
+        resample_to_fixed(&result.stations, &result.offsets, track.total_length);
+
+    // Per-sample normalization constants. Speed is normalized by the maximum
+    // speed in the optimizer solution (falling back to a default when the
+    // solution is degenerate); offset is normalized by the mean track
+    // half-width, so normalized offsets land in roughly [-1, 1].
+    let max_speed = result.speeds.iter().cloned().fold(0.0f64, f64::max);
+    let speed_norm = if max_speed > 1.0 { max_speed } else { 100.0 };
+
+    let ds = track.total_length / N_FIXED as f64;
+    let half_width_sum: f64 = (0..N_FIXED)
+        .map(|i| {
+            let (wl, wr) = track.width_at(i as f64 * ds);
+            0.5 * (wl + wr)
+        })
+        .sum();
+    let width_norm = (half_width_sum / N_FIXED as f64).max(1e-3);
+
+    for v in &mut speed_profile {
+        *v /= speed_norm;
+    }
+    for v in &mut offset_profile {
+        *v /= width_norm;
+    }
 
     let converged = result.eq_violation < config.convergence_threshold;
 
@@ -122,6 +146,8 @@ pub fn generate_sample(
         width_right_profile: feat.width_right,
         speed_profile,
         offset_profile,
+        speed_norm,
+        width_norm,
         lap_time: result.lap_time,
         converged,
         track_id: track_id.to_string(),
@@ -136,7 +162,7 @@ pub fn generate_batch(config: &PipelineConfig, tracks: &[(Track, String)]) -> Tr
     let total = tracks.len();
     let completed = AtomicUsize::new(0);
 
-    let samples: Vec<TrainingSample> = tracks
+    let mut samples: Vec<TrainingSample> = tracks
         .par_iter()
         .filter_map(|(track, id)| {
             let sample = generate_sample(config, track, id);
@@ -150,10 +176,40 @@ pub fn generate_batch(config: &PipelineConfig, tracks: &[(Track, String)]) -> Tr
 
     let tracks_converged = samples.iter().filter(|s| s.converged).count();
 
+    // Aggregate per-sample normalization into global constants, then
+    // re-normalize every sample to the shared constants so the network learns
+    // a single consistent mapping. The global speed norm is the max across
+    // samples; the global width norm is the mean.
+    let global_speed_norm = samples
+        .iter()
+        .map(|s| s.speed_norm)
+        .fold(0.0f64, f64::max)
+        .max(1.0);
+    let global_width_norm = if samples.is_empty() {
+        1.0
+    } else {
+        samples.iter().map(|s| s.width_norm).sum::<f64>() / samples.len() as f64
+    };
+
+    for sample in &mut samples {
+        let speed_factor = sample.speed_norm / global_speed_norm;
+        for v in &mut sample.speed_profile {
+            *v *= speed_factor;
+        }
+        let width_factor = sample.width_norm / global_width_norm;
+        for v in &mut sample.offset_profile {
+            *v *= width_factor;
+        }
+        sample.speed_norm = global_speed_norm;
+        sample.width_norm = global_width_norm;
+    }
+
     TrainingDataset {
         samples,
         tracks_attempted: total,
         tracks_converged,
+        global_speed_norm,
+        global_width_norm,
     }
 }
 

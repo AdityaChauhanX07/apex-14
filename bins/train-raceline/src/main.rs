@@ -11,8 +11,8 @@ use candle_nn::{VarBuilder, VarMap};
 use clap::Parser;
 
 use apex_ml::{
-    data::TrainingDataset,
-    io::{load_dataset, save_dataset},
+    data::{NormConstants, TrainingDataset},
+    io::{load_dataset, meta_path, save_dataset, save_norm_constants},
     net::{save_weights, RacelineNet},
     pipeline::{generate_batch, PipelineConfig},
     train::{train, TrainConfig},
@@ -97,6 +97,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataset.tracks_converged
     );
 
+    println!(
+        "normalization: speed_norm={:.1} m/s, width_norm={:.1} m",
+        dataset.global_speed_norm, dataset.global_width_norm
+    );
+
     let device = Device::Cpu;
     let var_map = VarMap::new();
     let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
@@ -124,6 +129,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     save_weights(&var_map, &args.output)?;
     println!("weights saved to {}", args.output.display());
+
+    let norm = NormConstants {
+        speed_norm: dataset.global_speed_norm,
+        width_norm: dataset.global_width_norm,
+    };
+    let meta = meta_path(&args.output);
+    save_norm_constants(&norm, &meta)?;
+    println!("normalization constants saved to {}", meta.display());
 
     Ok(())
 }
