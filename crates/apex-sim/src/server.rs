@@ -12,6 +12,7 @@ use apex_physics::car_params::GRAVITY;
 use apex_physics::{
     AeroModel, CarParams, FourteenDofModel, PacejkaTire, Powertrain, SuspensionSystem,
 };
+use apex_track::Track;
 
 use crate::protocol::{InputPacket, OutputPacket};
 use crate::realtime::RealtimeIntegrator;
@@ -141,6 +142,142 @@ pub fn tire_peak_longitudinal_mu(tire: &PacejkaTire, fz: f64) -> f64 {
     peak / fz
 }
 
+/// Track-relative position state.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackPosition {
+    /// Distance along the track centerline (m), wrapping at `track_length`.
+    pub distance: f64,
+    /// Lateral offset from centerline (m), positive = right.
+    pub lateral_offset: f64,
+    /// Track total length (m).
+    pub track_length: f64,
+    /// Whether the car has crossed the start/finish line this frame.
+    pub crossed_start_finish: bool,
+}
+
+/// Project a world position onto the track centerline.
+///
+/// Finds the closest point on the track and returns
+/// `(distance_along_track, lateral_offset)`, where the offset is positive to the
+/// right of the track direction and negative to the left.
+///
+/// Uses a two-phase approach:
+/// 1. Coarse search: scan candidate segments, find the closest one.
+/// 2. Fine search: project onto that segment chord for sub-segment precision.
+///
+/// The `hint_distance` (last known distance) restricts the scan to a window of
+/// segments around it for O(1) amortized cost at 1kHz. If the best match in that
+/// window is implausibly far (more than [`PROJECT_FALLBACK_DIST`] from the
+/// centerline), the search falls back to a full O(N) scan so the tracker can
+/// recover if the car teleports or goes far off-track.
+pub fn project_onto_track(track: &Track, x: f64, y: f64, hint_distance: f64) -> (f64, f64) {
+    let segs = &track.segments;
+    let n = segs.len();
+    if n < 2 {
+        return (0.0, 0.0);
+    }
+    let last = if track.is_closed { n } else { n - 1 };
+
+    // Coarse window centered on the segment nearest the hint distance.
+    let (hint_idx, _) = track.locate(hint_distance);
+    let (mut best_s, mut best_d, best_d2) =
+        scan_window(track, x, y, hint_idx, PROJECT_WINDOW, last);
+
+    // Fall back to a full scan if the windowed match looks implausibly far.
+    if best_d2.sqrt() > PROJECT_FALLBACK_DIST {
+        let (s, d, d2) = scan_window(track, x, y, 0, last, last);
+        if d2 < best_d2 {
+            best_s = s;
+            best_d = d;
+        }
+    }
+    (best_s, best_d)
+}
+
+/// Half-width (in segments) of the windowed projection scan.
+const PROJECT_WINDOW: usize = 50;
+/// Lateral distance (m) beyond which a windowed projection is deemed unreliable
+/// and a full-track scan is performed instead.
+const PROJECT_FALLBACK_DIST: f64 = 50.0;
+
+/// Scan `2 * half + 1` segments centered on `center_idx` (wrapping on closed
+/// tracks) and return the `(distance, lateral_offset, squared_distance)` of the
+/// closest point on those segment chords to `(x, y)`.
+fn scan_window(
+    track: &Track,
+    x: f64,
+    y: f64,
+    center_idx: usize,
+    half: usize,
+    last: usize,
+) -> (f64, f64, f64) {
+    let segs = &track.segments;
+    let n = segs.len();
+
+    let mut best_s = 0.0;
+    let mut best_off = 0.0;
+    let mut best_d2 = f64::INFINITY;
+
+    // Number of distinct segment chords to consider.
+    let count = (2 * half + 1).min(last);
+    let start = center_idx as isize - half as isize;
+    for k in 0..count {
+        let i = (start + k as isize).rem_euclid(last as isize) as usize;
+        let a = &segs[i];
+        let j = (i + 1) % n;
+        let b = &segs[j];
+        let ex = b.x - a.x;
+        let ey = b.y - a.y;
+        let len2 = ex * ex + ey * ey;
+        let t = if len2 > 1e-12 {
+            (((x - a.x) * ex + (y - a.y) * ey) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let px = a.x + t * ex;
+        let py = a.y + t * ey;
+        let d2 = (x - px) * (x - px) + (y - py) * (y - py);
+        if d2 < best_d2 {
+            best_d2 = d2;
+            let s_b = if j == 0 { track.total_length } else { b.s };
+            best_s = a.s + t * (s_b - a.s);
+            // Lateral offset: positive to the right of the (unit) tangent.
+            // cross = tangent x car_vec is positive on the left, so negate it.
+            let inv_len = if len2 > 1e-12 { 1.0 / len2.sqrt() } else { 0.0 };
+            let (tx, ty) = (ex * inv_len, ey * inv_len);
+            best_off = (x - px) * ty - (y - py) * tx;
+        }
+    }
+    (best_s, best_off, best_d2)
+}
+
+/// Update the car's track position and lap counting from its world position.
+///
+/// Projects `(x, y)` onto the centerline (using the previous distance as a
+/// locality hint), updates `track_pos`, and detects a start/finish crossing
+/// when the distance wraps from near the end of the lap back to near the start.
+/// On a crossing it increments `sim.lap` and resets `sim.lap_start_time` to the
+/// current simulation time so the reported lap time restarts.
+fn update_track_position(sim: &mut SimState, track: &Track, x: f64, y: f64) {
+    let Some(tp) = sim.track_pos.as_mut() else {
+        return;
+    };
+    let length = tp.track_length;
+    let prev = tp.distance;
+    let (s, off) = project_onto_track(track, x, y, prev);
+
+    // Start/finish crossing: distance wrapped from near the end to near 0.
+    let crossed = length > 0.0 && prev > 0.9 * length && s < 0.1 * length;
+    tp.distance = s;
+    tp.lateral_offset = off;
+    tp.crossed_start_finish = crossed;
+
+    if crossed {
+        sim.lap = sim.lap.saturating_add(1);
+        sim.lap_start_time = sim.sim_time;
+    }
+}
+
 /// Running state of the simulation.
 pub struct SimState {
     /// Current 14-DOF state vector [24].
@@ -159,6 +296,9 @@ pub struct SimState {
     pub accel_long: f64,
     /// Lateral acceleration (g); maintained by the server loop.
     pub accel_lat: f64,
+    /// Track-relative position, when a track is attached. `None` runs the sim
+    /// without lap tracking (e.g. in tests).
+    pub track_pos: Option<TrackPosition>,
 }
 
 impl SimState {
@@ -174,7 +314,25 @@ impl SimState {
             lap_start_time: 0.0,
             accel_long: 0.0,
             accel_lat: 0.0,
+            track_pos: None,
         }
+    }
+
+    /// Place the car at the track's start line and enable lap tracking.
+    ///
+    /// Sets the world position and yaw to the track start, and initializes
+    /// [`TrackPosition`] so subsequent frames project onto the centerline.
+    pub fn attach_track(&mut self, track: &Track) {
+        let (x0, y0) = track.position_at(0.0);
+        self.state[0] = x0;
+        self.state[1] = y0;
+        self.state[5] = track.heading_at(0.0);
+        self.track_pos = Some(TrackPosition {
+            distance: 0.0,
+            lateral_offset: 0.0,
+            track_length: track.total_length,
+            crossed_start_finish: false,
+        });
     }
 
     /// Average angular velocity (rad/s) of the rear (driven) wheels.
@@ -240,6 +398,8 @@ pub fn build_output(sim: &SimState) -> OutputPacket {
         lap_time: sim.sim_time - sim.lap_start_time,
         sim_time: sim.sim_time,
         sequence: sim.out_sequence,
+        track_distance: sim.track_pos.map(|tp| tp.distance).unwrap_or(0.0),
+        track_offset: sim.track_pos.map(|tp| tp.lateral_offset).unwrap_or(0.0),
         _pad: 0,
     }
 }
@@ -247,14 +407,16 @@ pub fn build_output(sim: &SimState) -> OutputPacket {
 /// Advance the simulation by one frame.
 ///
 /// This is the core logic extracted from the server loop for testability.
-/// Steps the integrator by one frame, advances the simulation clock, and
-/// updates the derived longitudinal/lateral acceleration telemetry (in g).
+/// Steps the integrator by one frame, advances the simulation clock, updates
+/// the derived longitudinal/lateral acceleration telemetry (in g), and, when a
+/// `track` is supplied, updates the track-relative position and lap counting.
 /// Returns true if a telemetry packet should be sent this frame.
 pub fn step_frame(
     sim: &mut SimState,
     integrator: &RealtimeIntegrator,
     model: &FourteenDofModel,
     control: &[f64; 3],
+    track: Option<&Track>,
     telemetry_interval_frames: u32,
     frame_counter: &mut u32,
 ) -> bool {
@@ -267,6 +429,12 @@ pub fn step_frame(
     // lateral accel from the centripetal term (forward speed × yaw rate).
     sim.accel_long = (sim.state[6] - prev_vx) / dt / GRAVITY;
     sim.accel_lat = sim.state[6] * sim.state[11] / GRAVITY;
+
+    // Track-relative position and lap counting (only when a track is attached).
+    if let Some(track) = track {
+        let (x, y) = (sim.state[0], sim.state[1]);
+        update_track_position(sim, track, x, y);
+    }
 
     *frame_counter = frame_counter.wrapping_add(1);
     frame_counter.is_multiple_of(telemetry_interval_frames)
@@ -288,12 +456,17 @@ pub fn step_frame(
 /// When `shared_mem` is `Some`, driver inputs are also accepted from the
 /// shared memory region (whenever its input sequence advances) and every
 /// telemetry frame is mirrored into it alongside the UDP send.
+///
+/// When `track` is `Some`, the car starts at the track's start line and each
+/// frame projects its world position onto the centerline to report track
+/// distance/offset and count laps. When `None`, lap tracking is skipped.
 pub fn run_server(
     config: SimServerConfig,
     car: &CarParams,
     tire: &PacejkaTire,
     suspension: &SuspensionSystem,
     aero: &AeroModel,
+    track: Option<&Track>,
     mut shared_mem: Option<SimSharedMem>,
 ) -> io::Result<()> {
     /// Forward speed (m/s) the model is trimmed for and started at.
@@ -311,6 +484,9 @@ pub fn run_server(
     let output_socket = UdpSocket::bind("0.0.0.0:0")?;
 
     let mut sim = SimState::new(&model, REFERENCE_SPEED);
+    if let Some(track) = track {
+        sim.attach_track(track);
+    }
     let telemetry_interval = config.telemetry_interval_frames();
     let mut frame_counter: u32 = 0;
     let frame_budget = integrator.target_dt();
@@ -361,6 +537,7 @@ pub fn run_server(
             &integrator,
             &model,
             &control,
+            track,
             telemetry_interval,
             &mut frame_counter,
         );
@@ -385,6 +562,26 @@ pub fn run_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apex_track::{build_track, circle_track, TrackPoint};
+
+    /// A simple 100 m straight track from (0,0) to (100,0).
+    fn straight_track() -> Track {
+        let pts = vec![
+            TrackPoint {
+                x: 0.0,
+                y: 0.0,
+                width_left: 5.0,
+                width_right: 5.0,
+            },
+            TrackPoint {
+                x: 100.0,
+                y: 0.0,
+                width_left: 5.0,
+                width_right: 5.0,
+            },
+        ];
+        build_track("straight", &pts, false)
+    }
 
     struct Rig {
         params: CarParams,
@@ -500,7 +697,15 @@ mod tests {
         let mut counter = 0;
 
         let t0 = sim.sim_time;
-        step_frame(&mut sim, &integ, &model, &[0.0, 0.0, 0.0], 16, &mut counter);
+        step_frame(
+            &mut sim,
+            &integ,
+            &model,
+            &[0.0, 0.0, 0.0],
+            None,
+            16,
+            &mut counter,
+        );
         assert!((sim.sim_time - t0 - integ.target_dt()).abs() < 1e-15);
     }
 
@@ -519,6 +724,7 @@ mod tests {
                 &integ,
                 &model,
                 &[0.0, 0.0, 0.0],
+                None,
                 interval,
                 &mut counter,
             );
@@ -539,7 +745,15 @@ mod tests {
         let mut counter = 0;
 
         for _ in 0..1000 {
-            step_frame(&mut sim, &integ, &model, &[0.0, 0.0, 0.0], 16, &mut counter);
+            step_frame(
+                &mut sim,
+                &integ,
+                &model,
+                &[0.0, 0.0, 0.0],
+                None,
+                16,
+                &mut counter,
+            );
         }
         assert!(
             sim.state.iter().all(|v| v.is_finite()),
@@ -573,7 +787,7 @@ mod tests {
                 sim.drive_wheel_omega(),
                 sim.state[6],
             );
-            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+            step_frame(&mut sim, &integ, &model, &control, None, 16, &mut counter);
         }
         assert!(
             sim.state.iter().all(|v| v.is_finite()),
@@ -612,7 +826,7 @@ mod tests {
                 sim.drive_wheel_omega(),
                 sim.state[6],
             );
-            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+            step_frame(&mut sim, &integ, &model, &control, None, 16, &mut counter);
         }
         let v_brake_point = sim.state[6];
 
@@ -632,7 +846,7 @@ mod tests {
                 sim.drive_wheel_omega(),
                 sim.state[6],
             );
-            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+            step_frame(&mut sim, &integ, &model, &control, None, 16, &mut counter);
         }
         let v_after_brake = sim.state[6];
 
@@ -674,7 +888,7 @@ mod tests {
                 sim.drive_wheel_omega(),
                 sim.state[6],
             );
-            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+            step_frame(&mut sim, &integ, &model, &control, None, 16, &mut counter);
         }
         assert!(
             sim.state.iter().all(|v| v.is_finite()),
@@ -684,6 +898,128 @@ mod tests {
             sim.state[11].abs() > 1e-3,
             "steering should produce a nonzero yaw rate, got {}",
             sim.state[11]
+        );
+    }
+
+    #[test]
+    fn test_project_onto_track_straight() {
+        let track = straight_track();
+        let (dist, offset) = project_onto_track(&track, 50.0, 5.0, 0.0);
+        assert!((dist - 50.0).abs() < 1e-6, "distance {dist}");
+        // (50, 5) is to the LEFT of the +X track direction, so offset is negative
+        // under the positive-is-right convention.
+        assert!((offset - -5.0).abs() < 1e-6, "offset {offset}");
+    }
+
+    #[test]
+    fn test_project_onto_track_circle() {
+        let radius = 100.0;
+        let (pts, closed) = circle_track(radius, 10.0, 200);
+        let track = build_track("circle", &pts, closed);
+
+        // The centre projects to some point on the loop, a radius away on the
+        // inside (left of the CCW direction), so the offset is about -radius.
+        let (_dist, offset) = project_onto_track(&track, 0.0, 0.0, 0.0);
+        assert!(
+            (offset + radius).abs() < 1.0,
+            "offset {offset} should be about -{radius}"
+        );
+    }
+
+    #[test]
+    fn test_project_onto_track_hint() {
+        let radius = 100.0;
+        let (pts, closed) = circle_track(radius, 10.0, 200);
+        let track = build_track("circle", &pts, closed);
+
+        // A point on the centreline half-way round the lap.
+        let s_true = 0.5 * track.total_length;
+        let (x, y) = track.position_at(s_true);
+
+        // A good hint (near the true distance) and a bad hint (start line, far
+        // away, forcing the full-scan fallback) must agree.
+        let good = project_onto_track(&track, x, y, s_true);
+        let bad = project_onto_track(&track, x, y, 0.0);
+        assert!((good.0 - bad.0).abs() < 1e-6, "{good:?} vs {bad:?}");
+        assert!((good.1 - bad.1).abs() < 1e-6, "{good:?} vs {bad:?}");
+        // And the hinted result is the expected arc length (offset ~0).
+        assert!((good.0 - s_true).abs() < 1.0, "distance {}", good.0);
+        assert!(good.1.abs() < 0.5, "offset {}", good.1);
+    }
+
+    #[test]
+    fn test_lap_crossing_detection() {
+        let radius = 100.0;
+        let (pts, closed) = circle_track(radius, 10.0, 200);
+        let track = build_track("circle", &pts, closed);
+        let l = track.total_length;
+
+        let rg = rig();
+        let model = model_for(&rg, 30.0);
+        let mut sim = SimState::new(&model, 30.0);
+        sim.attach_track(&track);
+        assert_eq!(sim.lap, 1);
+
+        // Walk the car forward along the centreline toward the end of the lap.
+        for frac in [0.5, 0.8, 0.92, 0.96] {
+            let (x, y) = track.position_at(frac * l);
+            update_track_position(&mut sim, &track, x, y);
+            assert_eq!(sim.lap, 1, "no crossing before wrap (frac {frac})");
+        }
+
+        // Wrap back past the start/finish line: the lap count must increment.
+        let (x, y) = track.position_at(0.02 * l);
+        update_track_position(&mut sim, &track, x, y);
+        assert_eq!(sim.lap, 2, "lap should increment on start/finish crossing");
+        assert!(
+            sim.track_pos.expect("track pos").crossed_start_finish,
+            "crossing flag should be set on the crossing frame"
+        );
+    }
+
+    #[test]
+    fn test_lap_time_recorded() {
+        let radius = 100.0;
+        let (pts, closed) = circle_track(radius, 10.0, 200);
+        let track = build_track("circle", &pts, closed);
+        let l = track.total_length;
+
+        let rg = rig();
+        let model = model_for(&rg, 30.0);
+        let mut sim = SimState::new(&model, 30.0);
+        sim.attach_track(&track);
+
+        // Approach the line, then cross it at t = 10 s.
+        sim.sim_time = 10.0;
+        let (x, y) = track.position_at(0.95 * l);
+        update_track_position(&mut sim, &track, x, y);
+        let (x, y) = track.position_at(0.02 * l);
+        update_track_position(&mut sim, &track, x, y);
+        assert_eq!(sim.lap, 2);
+        assert!((sim.lap_start_time - 10.0).abs() < 1e-9);
+
+        // 60 s later, the reported lap time is the elapsed time on this lap.
+        sim.sim_time = 70.0;
+        let out = build_output(&sim);
+        assert!(
+            (out.lap_time - 60.0).abs() < 1e-9,
+            "lap_time {}",
+            out.lap_time
+        );
+
+        // Cross again at t = 130 s: lap time resets and the lap advances.
+        let (x, y) = track.position_at(0.95 * l);
+        update_track_position(&mut sim, &track, x, y);
+        sim.sim_time = 130.0;
+        let (x, y) = track.position_at(0.02 * l);
+        update_track_position(&mut sim, &track, x, y);
+        assert_eq!(sim.lap, 3);
+        assert!((sim.lap_start_time - 130.0).abs() < 1e-9);
+        let out = build_output(&sim);
+        assert!(
+            out.lap_time.abs() < 1e-9,
+            "lap_time should reset, got {}",
+            out.lap_time
         );
     }
 }

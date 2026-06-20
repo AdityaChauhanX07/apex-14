@@ -12,10 +12,10 @@
 //! |--------|------|--------------------|------------|
 //! | 0      | 20   | InputPacket        | Client     |
 //! | 20     | 4    | input_sequence     | Client     |
-//! | 24     | 192  | OutputPacket       | Sim        |
-//! | 216    | 4    | output_sequence    | Sim        |
-//! | 220    | 1    | sim_running        | Sim        |
-//! | 221    | 35   | reserved/padding   | --         |
+//! | 24     | 208  | OutputPacket       | Sim        |
+//! | 232    | 4    | output_sequence    | Sim        |
+//! | 236    | 1    | sim_running        | Sim        |
+//! | 237    | 19   | reserved/padding   | --         |
 //!
 //! Total: 256 bytes (aligned to page-friendly boundary).
 //!
@@ -43,9 +43,9 @@ const INPUT_SEQ_OFFSET: usize = InputPacket::SIZE; // 20
 /// Byte offset of the OutputPacket region.
 const OUTPUT_OFFSET: usize = 24;
 /// Byte offset of the output sequence counter (u32 LE).
-const OUTPUT_SEQ_OFFSET: usize = OUTPUT_OFFSET + OutputPacket::SIZE; // 216
-/// Byte offset of the sim_running flag (u8).
-const SIM_RUNNING_OFFSET: usize = 220;
+const OUTPUT_SEQ_OFFSET: usize = OUTPUT_OFFSET + OutputPacket::SIZE;
+/// Byte offset of the sim_running flag (u8), just after the output sequence.
+const SIM_RUNNING_OFFSET: usize = OUTPUT_SEQ_OFFSET + 4;
 
 /// Read a little-endian `u32` from the four bytes of `slice` starting at `off`.
 ///
@@ -269,6 +269,8 @@ mod tests {
             lap_time: 42.5,
             sim_time: 130.25,
             sequence: 7,
+            track_distance: 512.0,
+            track_offset: 1.75,
             _pad: 0,
         }
     }

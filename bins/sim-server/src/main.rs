@@ -76,8 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     env_logger::init();
 
-    // Load or construct the track (used here for reporting; the server trims and
-    // runs the model independently of the track geometry).
+    // Load or construct the track. The server starts the car at the track's
+    // start line and projects each frame onto it for lap tracking.
     let track = load_track(&args.track)?;
     println!(
         "Track: {} ({:.0} m, {})",
@@ -129,6 +129,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Press Ctrl+C to stop.");
 
-    run_server(config, &car, &tire, &suspension, &aero, shared_mem)?;
+    run_server(
+        config,
+        &car,
+        &tire,
+        &suspension,
+        &aero,
+        Some(&track),
+        shared_mem,
+    )?;
     Ok(())
 }

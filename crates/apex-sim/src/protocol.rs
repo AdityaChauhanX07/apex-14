@@ -141,13 +141,17 @@ pub struct OutputPacket {
     pub sim_time: f64,
     /// Packet sequence number.
     pub sequence: u32,
+    /// Distance along the track centerline (m).
+    pub track_distance: f64,
+    /// Lateral offset from centerline (m, positive = right).
+    pub track_offset: f64,
     /// Padding for alignment.
     pub _pad: u32,
 }
 
 impl OutputPacket {
-    /// Size of the packet in bytes (22 f64 + 4 u32).
-    pub const SIZE: usize = 192;
+    /// Size of the packet in bytes (24 f64 + 4 u32).
+    pub const SIZE: usize = 208;
 
     /// Serialize to bytes (little-endian).
     pub fn to_bytes(&self) -> [u8; Self::SIZE] {
@@ -190,6 +194,10 @@ impl OutputPacket {
         o += 8;
         buf[o..o + 4].copy_from_slice(&self.sequence.to_le_bytes());
         o += 4;
+        buf[o..o + 8].copy_from_slice(&self.track_distance.to_le_bytes());
+        o += 8;
+        buf[o..o + 8].copy_from_slice(&self.track_offset.to_le_bytes());
+        o += 8;
         buf[o..o + 4].copy_from_slice(&self._pad.to_le_bytes());
         buf
     }
@@ -227,7 +235,9 @@ impl OutputPacket {
             lap_time: rd_f64(buf, 168)?,
             sim_time: rd_f64(buf, 176)?,
             sequence: rd_u32(buf, 184)?,
-            _pad: rd_u32(buf, 188)?,
+            track_distance: rd_f64(buf, 188)?,
+            track_offset: rd_f64(buf, 196)?,
+            _pad: rd_u32(buf, 204)?,
         })
     }
 }
@@ -284,12 +294,28 @@ mod tests {
             lap_time: 88.123,
             sim_time: 250.5,
             sequence: 999,
+            track_distance: 1234.5,
+            track_offset: -3.25,
             _pad: 0,
         };
         let bytes = pkt.to_bytes();
         assert_eq!(bytes.len(), OutputPacket::SIZE);
         let back = OutputPacket::from_bytes(&bytes).expect("decode");
         assert_eq!(pkt, back);
+    }
+
+    #[test]
+    fn test_output_packet_new_fields() {
+        // The track-position fields round-trip independently of the rest.
+        let pkt = OutputPacket {
+            track_distance: 987.654,
+            track_offset: 2.5,
+            ..Default::default()
+        };
+        let back = OutputPacket::from_bytes(&pkt.to_bytes()).expect("decode");
+        assert_eq!(back.track_distance, 987.654);
+        assert_eq!(back.track_offset, 2.5);
+        assert_eq!(back, pkt);
     }
 
     #[test]

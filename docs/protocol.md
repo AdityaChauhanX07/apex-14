@@ -41,9 +41,9 @@ Python format string: `'<fffII'` (3 floats then 2 unsigned ints).
 
 ## Output Packet (Sim to Driver/Dashboard)
 
-192 bytes, little-endian. This is `OutputPacket::SIZE`: 22 f64 fields
-(8 bytes each) followed by 4 u32 fields (4 bytes each), with the layout
-below.
+208 bytes, little-endian. This is `OutputPacket::SIZE`: 24 f64 fields
+(8 bytes each) and 4 u32 fields (4 bytes each), interleaved as in the
+layout below.
 
 | Offset | Size | Type | Field      | Unit  | Description                   |
 |--------|------|------|------------|-------|-------------------------------|
@@ -71,18 +71,25 @@ below.
 | 164    | 4    | u32  | lap        | -     | Current lap number            |
 | 168    | 8    | f64  | lap_time   | s     | Time on the current lap       |
 | 176    | 8    | f64  | sim_time   | s     | Total simulation time         |
-| 184    | 4    | u32  | sequence   | -     | Packet sequence number        |
-| 188    | 4    | u32  | _pad       | -     | Padding (always 0)            |
+| 184    | 4    | u32  | sequence       | -   | Packet sequence number          |
+| 188    | 8    | f64  | track_distance | m   | Distance along the centerline   |
+| 196    | 8    | f64  | track_offset   | m   | Lateral offset (positive=right) |
+| 204    | 4    | u32  | _pad           | -   | Padding (always 0)              |
 
-Total size: 22 x 8 + 4 x 4 = 192 bytes.
+Total size: 24 x 8 + 4 x 4 = 208 bytes.
+
+`track_distance` and `track_offset` come from projecting the car's world
+position onto the loaded track centerline. When the server runs without a
+track they are both 0.
 
 Note the field ordering: the two u32 fields `gear` and `lap` sit between
 the suspension/acceleration block and the `lap_time`/`sim_time` f64 pair,
+and the `sequence` u32 sits between `sim_time` and the track-position pair,
 so the layout is not a single contiguous run of doubles. Decode by offset
 rather than assuming all doubles come first.
 
-Python format string for the full packet: `'<20d 2I 2d 2I'`
-(20 doubles, 2 unsigned ints, 2 doubles, 2 unsigned ints).
+Python format string for the full packet: `'<20d 2I 2d I 2d I'`
+(20 doubles; gear+lap; lap_time+sim_time; sequence; track_distance+track_offset; pad).
 
 ## Quick Start
 
@@ -119,8 +126,9 @@ To decode the full packet at once:
 ```python
 import struct
 
-# 20 doubles, then gear+lap (u32), then lap_time+sim_time (f64), then seq+pad (u32)
-fields = struct.unpack('<20d2I2d2I', data[:192])
+# 20 doubles, gear+lap (u32), lap_time+sim_time (f64), sequence (u32),
+# track_distance+track_offset (f64), pad (u32)
+fields = struct.unpack('<20d2I2dI2dI', data[:208])
 pos_x, pos_y, pos_z = fields[0:3]
 roll, pitch, yaw = fields[3:6]
 speed, lateral_v, vertical_v, yaw_rate = fields[6:10]
@@ -129,7 +137,9 @@ susp_fl, susp_fr, susp_rl, susp_rr = fields[14:18]
 accel_long, accel_lat = fields[18:20]
 gear, lap = fields[20:22]
 lap_time, sim_time = fields[22:24]
-sequence, _pad = fields[24:26]
+sequence = fields[24]
+track_distance, track_offset = fields[25:27]
+_pad = fields[27]
 ```
 
 ## Shared Memory Interface
@@ -151,13 +161,13 @@ The shared file is 256 bytes with a fixed layout:
 |--------|------|-----------------|--------|-----------------|
 | 0      | 20   | InputPacket     | Client | (see above)     |
 | 20     | 4    | input_sequence  | Client | u32 LE          |
-| 24     | 192  | OutputPacket    | Sim    | (see above)     |
-| 216    | 4    | output_sequence | Sim    | u32 LE          |
-| 220    | 1    | sim_running     | Sim    | u8 (0 or 1)     |
-| 221    | 35   | reserved        | none   | zero            |
+| 24     | 208  | OutputPacket    | Sim    | (see above)     |
+| 232    | 4    | output_sequence | Sim    | u32 LE          |
+| 236    | 1    | sim_running     | Sim    | u8 (0 or 1)     |
+| 237    | 19   | reserved        | none   | zero            |
 
 The InputPacket layout matches the UDP input packet (20 bytes), and the
-OutputPacket layout matches the UDP output packet (192 bytes); only the
+OutputPacket layout matches the UDP output packet (208 bytes); only the
 byte offsets differ.
 
 ### Tearing Prevention
@@ -184,9 +194,9 @@ mm[20:24] = struct.pack('<I', seq)
 
 # Read output (with a torn-read retry on the output sequence).
 while True:
-    seq_before = struct.unpack_from('<I', mm, 216)[0]
-    output_bytes = mm[24:216]
-    seq_after = struct.unpack_from('<I', mm, 216)[0]
+    seq_before = struct.unpack_from('<I', mm, 232)[0]
+    output_bytes = mm[24:232]
+    seq_after = struct.unpack_from('<I', mm, 232)[0]
     if seq_before == seq_after:
         break
 pos_x, pos_y, pos_z = struct.unpack_from('<3d', output_bytes, 0)
