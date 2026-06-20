@@ -25,6 +25,19 @@ cargo run --release --bin viewer      # interactive telemetry viewer
 cargo run --release --bin validate    # validation against published data
 ```
 
+### Real-Time Simulation
+
+```bash
+# Start the simulation server
+cargo run --release --bin sim-server -- --track silverstone
+
+# In another terminal, launch the HUD
+cargo run --release --bin sim-hud
+
+# Train the ML raceline predictor
+cargo run --release --bin train-raceline -- --n-tracks 500 --epochs 200
+```
+
 ## Features
 
 **Vehicle Dynamics** - four model fidelities sharing a common tire and track interface:
@@ -53,6 +66,10 @@ cargo run --release --bin validate    # validation against published data
 **Interactive Viewer** - real-time track map with speed-colored racing line, synchronized telemetry plots (speed, lateral/longitudinal g, curvature), and bidirectional cursor tracking.
 
 **Calibrated Parameters** - 2024-era open-wheel preset validated against published Silverstone data. Top speed within 5% of published values.
+
+**ML Raceline Warmstart** - 1D circular convolutional network (candle) trained on optimizer outputs. Predicts near-optimal speed and lateral offset profiles from track geometry alone. Used as the collocation optimizer's initial guess, reducing convergence iterations. Includes a training data pipeline with Rayon-parallel batch optimization and target normalization.
+
+**Real-Time Simulator** - 14-DOF vehicle model running at 1kHz via fixed-budget integration (4 RK4 sub-steps with Euler fallback). UDP server accepting steering/throttle/brake inputs, broadcasting vehicle state telemetry at configurable rates. Optional shared-memory interface for zero-latency local I/O. Includes a live egui HUD with speedometer, g-force display, gear indicator, and lap timing.
 
 ## Usage
 
@@ -114,6 +131,8 @@ crates/
   apex-telemetry     CSV and SVG export
   apex-optimizer     Collocation NLP, solvers, mesh refinement
   apex-viewer        Interactive egui-based telemetry viewer
+  apex-sim           Real-time simulation server, UDP/shared-memory protocol
+  apex-ml            ML raceline predictor, training pipeline, candle CNN
 
 bins/
   apex-cli           Unified CLI (installed as apex-14)
@@ -122,6 +141,9 @@ bins/
   compare            Model fidelity comparison
   viewer             Interactive telemetry viewer
   validate           Validation against published F1 data
+  train-raceline     Offline ML training (track generation, optimization, CNN training)
+  sim-server         Real-time 14-DOF simulation server (UDP + shared memory)
+  sim-hud            Live telemetry HUD (egui)
 
 cars/                TOML car configuration files
 tracks/              Track files (JSON and sample data)
@@ -133,6 +155,7 @@ docs/                Mathematical derivations and validation reports
 - `docs/math/equations_of_motion.md` - vehicle model derivations (point-mass through 14-DOF)
 - `docs/math/pacejka.md` - tire model theory and implementation
 - `docs/math/collocation.md` - optimal control transcription and solver architecture
+- `docs/protocol.md` - UDP and shared-memory packet protocol for the real-time simulator
 - `docs/analysis.md` - model fidelity comparison with quantitative results
 - `docs/validation/silverstone.md` - validation against published F1 qualifying data
 - `docs/validation/methodology.md` - validation approach and acceptance criteria
@@ -141,7 +164,7 @@ docs/                Mathematical derivations and validation reports
 
 ```bash
 git config core.hooksPath .githooks   # enable auto-format pre-commit hook
-cargo test --workspace                # 304 tests
+cargo test --workspace                # 430 tests
 cargo clippy -- -D warnings           # lint check
 cargo bench                           # criterion benchmarks
 cargo fmt --check                     # format check
