@@ -131,3 +131,63 @@ gear, lap = fields[20:22]
 lap_time, sim_time = fields[22:24]
 sequence, _pad = fields[24:26]
 ```
+
+## Shared Memory Interface
+
+For lowest-latency local communication, the sim-server can expose a
+shared memory file alongside (or instead of) UDP.
+
+### Usage
+
+```sh
+sim-server --track silverstone --shared-mem /tmp/apex14_sim
+```
+
+### Memory Layout
+
+The shared file is 256 bytes with a fixed layout:
+
+| Offset | Size | Field           | Writer | Type            |
+|--------|------|-----------------|--------|-----------------|
+| 0      | 20   | InputPacket     | Client | (see above)     |
+| 20     | 4    | input_sequence  | Client | u32 LE          |
+| 24     | 192  | OutputPacket    | Sim    | (see above)     |
+| 216    | 4    | output_sequence | Sim    | u32 LE          |
+| 220    | 1    | sim_running     | Sim    | u8 (0 or 1)     |
+| 221    | 35   | reserved        | none   | zero            |
+
+The InputPacket layout matches the UDP input packet (20 bytes), and the
+OutputPacket layout matches the UDP output packet (192 bytes); only the
+byte offsets differ.
+
+### Tearing Prevention
+
+Each writer increments its sequence counter after completing a write.
+Readers check the counter before and after reading; if the values
+differ, the read overlapped a write and should be retried.
+
+### Python Example
+
+```python
+import mmap
+import struct
+import os
+
+# Open the shared memory file.
+fd = os.open('/tmp/apex14_sim', os.O_RDWR)
+mm = mmap.mmap(fd, 256)
+
+# Write a throttle input and bump the input sequence.
+steering, throttle, brake, gear, seq = 0.0, 0.8, 0.0, 3, 1
+mm[0:20] = struct.pack('<fffII', steering, throttle, brake, gear, seq)
+mm[20:24] = struct.pack('<I', seq)
+
+# Read output (with a torn-read retry on the output sequence).
+while True:
+    seq_before = struct.unpack_from('<I', mm, 216)[0]
+    output_bytes = mm[24:216]
+    seq_after = struct.unpack_from('<I', mm, 216)[0]
+    if seq_before == seq_after:
+        break
+pos_x, pos_y, pos_z = struct.unpack_from('<3d', output_bytes, 0)
+```

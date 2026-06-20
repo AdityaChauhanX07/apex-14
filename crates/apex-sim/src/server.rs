@@ -15,6 +15,7 @@ use apex_physics::{
 
 use crate::protocol::{InputPacket, OutputPacket};
 use crate::realtime::RealtimeIntegrator;
+use crate::shared_mem::SimSharedMem;
 
 /// Configuration for the simulation server.
 pub struct SimServerConfig {
@@ -211,12 +212,17 @@ pub fn step_frame(
 ///
 /// The simulation uses spin-waiting for precise timing. This will
 /// use 100% of one CPU core.
+///
+/// When `shared_mem` is `Some`, driver inputs are also accepted from the
+/// shared memory region (whenever its input sequence advances) and every
+/// telemetry frame is mirrored into it alongside the UDP send.
 pub fn run_server(
     config: SimServerConfig,
     car: &CarParams,
     tire: &PacejkaTire,
     suspension: &SuspensionSystem,
     aero: &AeroModel,
+    mut shared_mem: Option<SimSharedMem>,
 ) -> io::Result<()> {
     /// Forward speed (m/s) the model is trimmed for and started at.
     const REFERENCE_SPEED: f64 = 50.0;
@@ -233,6 +239,7 @@ pub fn run_server(
     let telemetry_interval = config.telemetry_interval_frames();
     let mut frame_counter: u32 = 0;
     let frame_budget = integrator.target_dt();
+    let mut last_shmem_input_seq: u32 = 0;
 
     let mut recv_buf = [0u8; InputPacket::SIZE];
     loop {
@@ -249,6 +256,18 @@ pub fn run_server(
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e),
+            }
+        }
+
+        // Also accept input from shared memory when its sequence advances.
+        if let Some(shmem) = &shared_mem {
+            let seq = shmem.read_input_sequence();
+            if seq != last_shmem_input_seq {
+                last_shmem_input_seq = seq;
+                if let Some(mut pkt) = shmem.read_input() {
+                    pkt.clamp();
+                    sim.last_input = pkt;
+                }
             }
         }
 
@@ -273,6 +292,9 @@ pub fn run_server(
             sim.out_sequence = sim.out_sequence.wrapping_add(1);
             let out = build_output(&sim);
             output_socket.send_to(&out.to_bytes(), &config.output_addr)?;
+            if let Some(shmem) = &mut shared_mem {
+                shmem.write_output(&out);
+            }
         }
 
         // (h) Spin-wait until the frame budget has elapsed.

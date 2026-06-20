@@ -8,6 +8,7 @@ use std::path::Path;
 
 use apex_physics::{AeroModel, CarParams, PacejkaTire, SuspensionSystem};
 use apex_sim::server::{run_server, SimServerConfig};
+use apex_sim::shared_mem::SimSharedMem;
 use apex_track::{
     build_track, circle_track, load_track_json, monza_circuit, oval_track, silverstone_circuit,
     Track,
@@ -38,6 +39,10 @@ struct Args {
     /// Use calibrated F1 2024 car parameters instead of defaults.
     #[arg(long)]
     calibrated: bool,
+
+    /// Optional path for shared memory file (for zero-latency local I/O).
+    #[arg(long)]
+    shared_mem: Option<String>,
 }
 
 /// Resolve the `--track` argument to a [`Track`].
@@ -111,8 +116,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "default"
         }
     );
+
+    // Optionally expose a shared memory region for zero-latency local I/O.
+    let shared_mem = match &args.shared_mem {
+        Some(path) => {
+            let mem = SimSharedMem::create(Path::new(path))?;
+            println!("  Shared memory: {}", path);
+            Some(mem)
+        }
+        None => None,
+    };
+
     println!("Press Ctrl+C to stop.");
 
-    run_server(config, &car, &tire, &suspension, &aero)?;
+    run_server(config, &car, &tire, &suspension, &aero, shared_mem)?;
     Ok(())
 }
