@@ -325,4 +325,13 @@ mod tests {
         let buf = [0u8; 100];
         assert!(OutputPacket::from_bytes(&buf).is_none());
     }
+
+    #[test]
+    fn test_output_exact_size_decodes() {
+        // A buffer of exactly SIZE bytes decodes; one byte short does not.
+        let exact = [0u8; OutputPacket::SIZE];
+        assert!(OutputPacket::from_bytes(&exact).is_some());
+        let short = [0u8; OutputPacket::SIZE - 1];
+        assert!(OutputPacket::from_bytes(&short).is_none());
+    }
 }

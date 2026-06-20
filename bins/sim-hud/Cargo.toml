@@ -1,0 +1,14 @@
+[package]
+name = "sim-hud"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+apex-viewer = { path = "../../crates/apex-viewer" }
+apex-sim = { path = "../../crates/apex-sim" }
+eframe = "0.31"
+egui = "0.31"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"

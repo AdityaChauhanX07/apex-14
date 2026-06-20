@@ -3,5 +3,6 @@
 //! profile, with pan/zoom, on top of `eframe`/`egui`.
 
 pub mod app;
+pub mod hud;
 pub mod telemetry;
 pub mod track_view;
