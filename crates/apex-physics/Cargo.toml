@@ -4,10 +4,17 @@ version = "0.1.0"
 edition.workspace = true
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["parallel"]
+# Parallel sensitivity analysis via rayon. Disabled for targets without threads
+# (e.g. wasm32-unknown-unknown), where the analysis falls back to a sequential
+# loop.
+parallel = ["dep:rayon"]
+
 [dependencies]
 apex-math = { path = "../apex-math" }
 apex-integrator = { path = "../apex-integrator" }
 apex-track = { path = "../apex-track" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }

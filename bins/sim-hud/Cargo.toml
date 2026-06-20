@@ -5,7 +5,7 @@ edition.workspace = true
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-apex-viewer = { path = "../../crates/apex-viewer" }
+apex-viewer = { path = "../../crates/apex-viewer", features = ["hud"] }
 apex-sim = { path = "../../crates/apex-sim" }
 eframe = "0.31"
 egui = "0.31"

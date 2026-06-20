@@ -132,6 +132,7 @@ pub fn oat_sensitivity(
     parameters: &[ParameterDef],
     n_samples: usize,
 ) -> Vec<OatResult> {
+    #[cfg(feature = "parallel")]
     use rayon::prelude::*;
 
     let nominal_time = super::qss_lap_sim(track, base_params).lap_time;
@@ -146,9 +147,19 @@ pub fn oat_sensitivity(
                 })
                 .collect();
 
-            // Run QSS for each sample point (parallel)
+            // Run QSS for each sample point (parallel when rayon is enabled,
+            // sequential otherwise -- e.g. on wasm32 without threads).
+            #[cfg(feature = "parallel")]
             let lap_times: Vec<f64> = values
                 .par_iter()
+                .map(|&val| {
+                    let modified = apply_parameter(base_params, &param.name, val);
+                    super::qss_lap_sim(track, &modified).lap_time
+                })
+                .collect();
+            #[cfg(not(feature = "parallel"))]
+            let lap_times: Vec<f64> = values
+                .iter()
                 .map(|&val| {
                     let modified = apply_parameter(base_params, &param.name, val);
                     super::qss_lap_sim(track, &modified).lap_time
@@ -214,6 +225,7 @@ pub fn monte_carlo_sensitivity(
     n_samples: usize,
     seed: u64,
 ) -> MonteCarloResult {
+    #[cfg(feature = "parallel")]
     use rayon::prelude::*;
 
     let nominal_time = super::qss_lap_sim(track, base_params).lap_time;
@@ -235,9 +247,22 @@ pub fn monte_carlo_sensitivity(
         })
         .collect();
 
-    // Run QSS for each sample (parallel)
+    // Run QSS for each sample (parallel when rayon is enabled, sequential
+    // otherwise -- e.g. on wasm32 without threads).
+    #[cfg(feature = "parallel")]
     let lap_times: Vec<f64> = samples
         .par_iter()
+        .map(|sample| {
+            let mut modified = base_params.clone();
+            for (j, param) in parameters.iter().enumerate() {
+                modified = apply_parameter(&modified, &param.name, sample[j]);
+            }
+            super::qss_lap_sim(track, &modified).lap_time
+        })
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let lap_times: Vec<f64> = samples
+        .iter()
         .map(|sample| {
             let mut modified = base_params.clone();
             for (j, param) in parameters.iter().enumerate() {

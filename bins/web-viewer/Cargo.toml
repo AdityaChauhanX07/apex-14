@@ -1,0 +1,37 @@
+[package]
+name = "web-viewer"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# apex-physics is pulled without its `parallel` (rayon) feature so the crate
+# compiles to wasm32, which has no threads. The QSS lap sim used here does not
+# use rayon, so this is purely about excluding the optional dependency.
+apex-track = { path = "../../crates/apex-track" }
+apex-physics = { path = "../../crates/apex-physics", default-features = false }
+egui = "0.31"
+egui_plot = "0.31"
+log = "0.4"
+
+# Native build: full eframe (winit/glow windowing) plus env_logger.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = "0.31"
+env_logger = "0.11"
+
+# Web build: trimmed eframe (WebGL via glow, no native windowing) plus the
+# wasm-bindgen / web-sys glue eframe's WebRunner needs.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { version = "0.31", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "web_screen_reader",
+] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3.70", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+] }
