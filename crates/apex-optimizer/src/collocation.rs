@@ -339,6 +339,57 @@ impl<'a> CollocationOptimizer<'a> {
         })
     }
 
+    /// Create an initial guess from pre-computed speed and offset profiles.
+    ///
+    /// The profiles must have exactly `n_nodes` elements (one per collocation
+    /// node). Heading is set to zero, drive force and time steps are derived
+    /// from the speed profile for consistency, and curvature commands are
+    /// sampled from the track. Used for ML warmstart or any other source of
+    /// predicted raceline profiles.
+    pub fn initial_guess_from_profiles(&self, speeds: &[f64], offsets: &[f64]) -> Vec<f64> {
+        let n = self.config.n_nodes;
+        debug_assert_eq!(speeds.len(), n);
+        debug_assert_eq!(offsets.len(), n);
+        let s = self.node_stations();
+        let v: Vec<f64> = speeds.iter().map(|&vi| vi.max(self.config.v_min)).collect();
+        let nn = offsets.to_vec();
+        let alpha = vec![0.0; n];
+        let curvature_cmd: Vec<f64> = s.iter().map(|&sk| self.track.curvature_at(sk)).collect();
+
+        let dt: Vec<f64> = (0..n - 1)
+            .map(|k| {
+                let ds = s[k + 1] - s[k];
+                let v_avg = 0.5 * (v[k] + v[k + 1]);
+                (ds / v_avg).clamp(self.config.dt_min, self.config.dt_max)
+            })
+            .collect();
+
+        let drag_roll = self.car.rolling_resistance_force();
+        let f_drive: Vec<f64> = (0..n)
+            .map(|k| {
+                let a = if k + 1 < n {
+                    (v[k + 1] - v[k]) / dt[k]
+                } else {
+                    0.0
+                };
+                self.car.mass * a + self.car.drag_force(v[k]) + drag_roll
+            })
+            .collect();
+
+        let brake_bias = self.default_brake_bias();
+
+        self.pack(&UnpackedVars {
+            s,
+            n: nn,
+            v,
+            alpha,
+            f_drive,
+            curvature_cmd,
+            brake_bias,
+            dt,
+        })
+    }
+
     /// Run the Gauss-Newton solver from an explicit initial guess `x0` (used for
     /// mesh-refinement warm starts, where `x0` is interpolated from a coarser
     /// solution rather than the QSS warm start).

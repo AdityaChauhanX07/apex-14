@@ -10,3 +10,4 @@ pub mod io;
 pub mod net;
 pub mod pipeline;
 pub mod train;
+pub mod warmstart;
