@@ -4,4 +4,6 @@
 //! Provides a fixed-budget integrator and (in future phases) a UDP
 //! simulation server for hardware-in-the-loop testing.
 
+pub mod protocol;
 pub mod realtime;
+pub mod server;
