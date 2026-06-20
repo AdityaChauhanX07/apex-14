@@ -151,9 +151,9 @@ pub fn random_spline_track(
 /// a diverse training set.
 pub fn generate_track_batch(count: usize, base_seed: u64) -> Vec<(Vec<super::TrackPoint>, bool)> {
     let mut tracks = Vec::with_capacity(count);
-    let mut seed = base_seed;
 
     for i in 0..count {
+        let seed = base_seed + i as u64;
         // Vary parameters across the batch
         let n_points = 6 + (i % 7); // 6 to 12 control points
         let base_radius = 100.0 + 400.0 * simple_hash(seed, i as u64, 100); // 100-500m
@@ -172,8 +172,6 @@ pub fn generate_track_batch(count: usize, base_seed: u64) -> Vec<(Vec<super::Tra
         ) {
             tracks.push(track);
         }
-
-        seed += 1;
     }
 
     tracks
