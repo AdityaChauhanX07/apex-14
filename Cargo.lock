@@ -297,6 +297,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-rl"
+version = "0.1.0"
+dependencies = [
+ "apex-integrator",
+ "apex-math",
+ "apex-physics",
+ "apex-track",
+ "candle-core",
+ "candle-nn",
+ "log",
+ "safetensors",
+]
+
+[[package]]
 name = "apex-sim"
 version = "0.1.0"
 dependencies = [
