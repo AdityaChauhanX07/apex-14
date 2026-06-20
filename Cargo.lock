@@ -3827,8 +3827,11 @@ name = "sim-server"
 version = "0.1.0"
 dependencies = [
  "apex-physics",
+ "apex-rl",
  "apex-sim",
  "apex-track",
+ "candle-core",
+ "candle-nn",
  "clap",
  "env_logger",
  "log",
