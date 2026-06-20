@@ -122,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "training complete: final_train={:.6}  final_val={:.6}  best_val={:.6} (epoch {})",
         result.final_train_loss, result.final_val_loss, result.best_val_loss, result.best_epoch
     );
+    println!("Restored best weights from epoch {}", result.best_epoch);
     println!(
         "train samples: {}  val samples: {}",
         result.n_train, result.n_val

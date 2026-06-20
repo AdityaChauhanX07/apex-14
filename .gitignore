@@ -20,3 +20,9 @@ APEX-14_PROJECT_PLAN.md
 
 # Local scratch / manual test scripts
 test_udp.py
+
+# Trained model weights (generated, not checked in)
+raceline_model_lr2.safetensors
+raceline_model_lr2.safetensors.meta.json
+raceline_model_lr3.safetensors
+raceline_model_lr3.safetensors.meta.json

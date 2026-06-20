@@ -1,10 +1,28 @@
 //! Training loop for the raceline prediction network.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use candle_core::{Device, Result, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarMap};
 
 use crate::data::{TrainingDataset, TrainingSample, N_FIXED};
 use crate::net::RacelineNet;
+
+/// Monotonic counter used to give each in-flight checkpoint file a unique name.
+static CHECKPOINT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Build a unique temporary path for the best-weight checkpoint.
+///
+/// Combines the process id and a monotonic counter so concurrent training runs
+/// (e.g. parallel tests) never collide on the same file.
+fn checkpoint_path() -> std::path::PathBuf {
+    let seq = CHECKPOINT_SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "apex_ml_best_{}_{}.safetensors",
+        std::process::id(),
+        seq
+    ))
+}
 
 /// Configuration for the training loop.
 pub struct TrainConfig {
@@ -21,6 +39,12 @@ pub struct TrainConfig {
     pub report_interval: usize,
     /// Stop if validation loss has not improved for this many report intervals.
     pub patience: usize,
+    /// Factor to multiply learning rate by when validation loss plateaus.
+    /// Set to 1.0 to disable decay. Default: 0.5.
+    pub lr_decay_factor: f64,
+    /// Number of report intervals without improvement before decaying LR.
+    /// Default: 3 (separate from early-stopping patience).
+    pub lr_decay_patience: usize,
 }
 
 impl Default for TrainConfig {
@@ -31,7 +55,9 @@ impl Default for TrainConfig {
             speed_weight: 2.0,
             validation_fraction: 0.2,
             report_interval: 10,
-            patience: 5,
+            patience: 8,
+            lr_decay_factor: 0.5,
+            lr_decay_patience: 3,
         }
     }
 }
@@ -132,6 +158,13 @@ pub fn train(
     let mut best_val_loss = f64::INFINITY;
     let mut best_epoch = 0usize;
     let mut patience_counter = 0usize;
+    let mut lr_decay_counter = 0usize;
+    let mut current_lr = config.learning_rate;
+
+    // Best weights are snapshotted to this temp file whenever a new best
+    // validation loss is seen, then restored into `var_map` after training so
+    // the caller saves the best (not the final, possibly diverged) weights.
+    let ckpt = checkpoint_path();
 
     for epoch in 0..config.epochs {
         let pred = net.forward(&train_input)?;
@@ -180,8 +213,26 @@ pub fn train(
                 best_val_loss = v_loss;
                 best_epoch = epoch + 1;
                 patience_counter = 0;
+                lr_decay_counter = 0;
+
+                // Snapshot the current (best-so-far) weights.
+                var_map.save(&ckpt)?;
+                log::info!("Checkpoint at epoch {best_epoch} (val_loss={v_loss:.6})");
             } else {
                 patience_counter += 1;
+                lr_decay_counter += 1;
+
+                // Decay the learning rate once the plateau reaches the (shorter)
+                // LR-decay patience, then reset only the LR-decay counter so the
+                // model gets a fresh window to improve before early stopping.
+                if config.lr_decay_factor < 1.0 && lr_decay_counter >= config.lr_decay_patience {
+                    let old_lr = current_lr;
+                    current_lr *= config.lr_decay_factor;
+                    optimizer.set_learning_rate(current_lr);
+                    lr_decay_counter = 0;
+                    log::info!("LR decay: {old_lr} -> {current_lr}");
+                }
+
                 if patience_counter >= config.patience {
                     log::info!(
                         "early stopping at epoch {} (no improvement for {} intervals)",
@@ -192,6 +243,16 @@ pub fn train(
                 }
             }
         }
+    }
+
+    // Restore the best weights into the shared VarMap (it uses interior
+    // mutability, so a clone writes through to the same variables), then remove
+    // the temporary checkpoint file.
+    if ckpt.exists() {
+        let mut vm = var_map.clone();
+        vm.load(&ckpt)?;
+        std::fs::remove_file(&ckpt).ok();
+        log::info!("Restored best weights from epoch {best_epoch}");
     }
 
     let final_train_loss = train_losses.last().copied().unwrap_or(f64::NAN);
@@ -292,5 +353,96 @@ mod tests {
         assert_ne!(pre, post, "training did not update network weights");
         assert_eq!(result.n_train, 4);
         assert_eq!(result.n_val, 1);
+    }
+
+    /// Compute the weighted validation loss for `net` on `val_input`/`val_target`,
+    /// mirroring the exact loss used inside `train`.
+    fn weighted_val_loss(
+        net: &RacelineNet,
+        val_input: &Tensor,
+        val_target: &Tensor,
+        speed_weight: f64,
+    ) -> f64 {
+        let pred = net.forward(val_input).expect("forward");
+        let s_mse = pred
+            .narrow(1, 0, 1)
+            .unwrap()
+            .sub(&val_target.narrow(1, 0, 1).unwrap())
+            .unwrap()
+            .sqr()
+            .unwrap()
+            .mean_all()
+            .unwrap();
+        let o_mse = pred
+            .narrow(1, 1, 1)
+            .unwrap()
+            .sub(&val_target.narrow(1, 1, 1).unwrap())
+            .unwrap()
+            .sqr()
+            .unwrap()
+            .mean_all()
+            .unwrap();
+        let total = (s_mse * speed_weight).unwrap().add(&o_mse).unwrap();
+        total.to_scalar::<f32>().unwrap() as f64
+    }
+
+    #[test]
+    fn test_best_weights_restored_after_divergence() {
+        let (net, var_map) = make_net_and_map();
+
+        // Enough identical converged samples to give a multi-sample val split.
+        let dataset = TrainingDataset {
+            samples: vec![make_sample(); 20],
+            tracks_attempted: 20,
+            tracks_converged: 20,
+            global_speed_norm: 1.0,
+            global_width_norm: 1.0,
+        };
+
+        // A deliberately high learning rate with LR decay disabled, so training
+        // overshoots and the final epoch is worse than the best one. Patience is
+        // large enough that early stopping does not mask the divergence.
+        let config = TrainConfig {
+            epochs: 40,
+            learning_rate: 0.5,
+            report_interval: 4,
+            patience: 1000,
+            validation_fraction: 0.2,
+            lr_decay_factor: 1.0,
+            ..TrainConfig::default()
+        };
+
+        let result = train(&dataset, &config, &var_map, &net).expect("train");
+
+        // Rebuild the same validation split train() used (converged samples,
+        // last n_val of them) to recompute the loss from the restored weights.
+        let converged: Vec<TrainingSample> = dataset
+            .samples
+            .iter()
+            .filter(|s| s.converged)
+            .cloned()
+            .collect();
+        let (val_input, val_target) =
+            samples_to_tensors(&converged[result.n_train..], &Device::Cpu).expect("val tensors");
+        let restored_loss = weighted_val_loss(&net, &val_input, &val_target, config.speed_weight);
+
+        // The weights left in the VarMap must reproduce the BEST validation loss,
+        // not the final one.
+        assert!(
+            (restored_loss - result.best_val_loss).abs() < 1e-4,
+            "restored weights give val_loss {restored_loss:.6}, expected best {:.6}",
+            result.best_val_loss
+        );
+        // Sanity: best is no worse than final.
+        assert!(result.best_val_loss <= result.final_val_loss + 1e-9);
+        // The high LR should have diverged so the best epoch is earlier than the last.
+        assert!(
+            result.best_epoch < config.epochs,
+            "expected divergence (best_epoch {} < {}), final_val={:.6} best_val={:.6}",
+            result.best_epoch,
+            config.epochs,
+            result.final_val_loss,
+            result.best_val_loss
+        );
     }
 }
