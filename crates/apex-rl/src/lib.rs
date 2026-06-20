@@ -7,4 +7,5 @@
 pub mod env;
 pub mod observation;
 pub mod policy;
+pub mod ppo;
 pub mod reward;
