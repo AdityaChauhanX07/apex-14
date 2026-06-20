@@ -17,3 +17,6 @@ Thumbs.db
 
 # Internal planning docs
 APEX-14_PROJECT_PLAN.md
+
+# Local scratch / manual test scripts
+test_udp.py

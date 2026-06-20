@@ -55,18 +55,90 @@ impl SimServerConfig {
 /// - Steering is scaled by `max_steer_angle`.
 /// - Throttle is converted to a wheel drive torque (Nm) by the `powertrain`,
 ///   which selects the optimal gear for the current `drive_wheel_omega`. The
-///   14-DOF model splits this total torque across the driven axle internally.
+///   torque is then capped at the traction limit (see below) before being
+///   handed to the model, which splits it across the driven axle internally.
 /// - Brake passes through unchanged (already normalized to [0, 1]).
+///
+/// ## Traction limiting
+///
+/// The powertrain's raw output in a low gear (over 11 kN·m) far exceeds what
+/// the tires can transmit. Feeding it directly makes the driven wheels spin up
+/// to several times road speed. That stored wheel momentum then keeps the car
+/// accelerating for a noticeable window *after* the throttle is released and
+/// the brake applied, so braking appears not to work. Capping the drive torque
+/// at the per-axle traction limit (`mu * axle_load * wheel_radius`, accounting
+/// for the drive split) keeps the wheels tracking road speed, so the brake
+/// bites immediately. `speed` is the vehicle's forward speed (m/s), used for
+/// the downforce-dependent axle loads.
 pub fn map_input_to_control(
     input: &InputPacket,
     config: &SimServerConfig,
     powertrain: &mut Powertrain,
+    car: &CarParams,
+    grip_mu: f64,
     drive_wheel_omega: f64,
+    speed: f64,
 ) -> [f64; 3] {
     let steering = input.steering as f64 * config.max_steer_angle;
-    let drive = powertrain.drive_torque(input.throttle as f64, drive_wheel_omega);
+    let raw_drive = powertrain.drive_torque(input.throttle as f64, drive_wheel_omega);
+    let drive = raw_drive.min(traction_torque_limit(car, grip_mu, speed));
     let brake = input.brake as f64;
     [steering, drive, brake]
+}
+
+/// Fraction of the grip-limited torque the cap allows.
+///
+/// The driven wheels have small rotational inertia, so with explicit 1kHz
+/// integration a torque near the grip peak lets the wheel overshoot the
+/// peak-slip point and run away (unbounded wheelspin), which is what defeated
+/// braking. Capping at 60% of the grip-limited torque places the steady-state
+/// operating point well down the rising (stable) side of the longitudinal slip
+/// curve (slip ~0.04 vs a peak near 0.1), so the wheels track road speed and
+/// the brake bites immediately while acceleration stays strong.
+const TRACTION_MARGIN: f64 = 0.6;
+
+/// Maximum total drive torque (Nm) the driven axle(s) can transmit at `speed`.
+///
+/// The model distributes the total drive torque to the axles by
+/// `drive_distribution` (fraction to the rear). For each driven axle the torque
+/// is bounded by `grip_mu * axle_load * wheel_radius` (times [`TRACTION_MARGIN`]);
+/// the overall cap is the tightest of those bounds so neither axle is asked to
+/// exceed its grip. `grip_mu` is the tire's actual peak longitudinal friction
+/// coefficient (see [`tire_peak_longitudinal_mu`]), which is lower than the
+/// point-mass `car.tire_mu`.
+fn traction_torque_limit(car: &CarParams, grip_mu: f64, speed: f64) -> f64 {
+    let (front_load, rear_load) = car.axle_loads(speed, 0.0);
+    let r = car.wheel_radius;
+    let dd = car.drive_distribution;
+
+    let rear_cap = if dd > 0.0 {
+        TRACTION_MARGIN * grip_mu * rear_load * r / dd
+    } else {
+        f64::INFINITY
+    };
+    let front_cap = if dd < 1.0 {
+        TRACTION_MARGIN * grip_mu * front_load * r / (1.0 - dd)
+    } else {
+        f64::INFINITY
+    };
+    rear_cap.min(front_cap)
+}
+
+/// Estimate the tire's peak longitudinal friction coefficient (`max fx / Fz`)
+/// at the reference load `fz`, by sweeping the slip ratio.
+///
+/// Computed once at startup; the 14-DOF Pacejka tire peaks below the nominal
+/// `CarParams::tire_mu`, so this gives an accurate traction cap.
+pub fn tire_peak_longitudinal_mu(tire: &PacejkaTire, fz: f64) -> f64 {
+    if fz <= 0.0 {
+        return 0.0;
+    }
+    let mut peak = 0.0_f64;
+    for i in 0..=200 {
+        let sr = i as f64 * 0.01;
+        peak = peak.max(tire.combined_forces_smooth(0.0, sr, fz).fx);
+    }
+    peak / fz
 }
 
 /// Running state of the simulation.
@@ -231,6 +303,9 @@ pub fn run_server(
     let integrator = RealtimeIntegrator::new_1khz();
     let mut powertrain = Powertrain::f1_2024();
 
+    // Peak tire grip (computed once) used to traction-limit the drive torque.
+    let grip_mu = tire_peak_longitudinal_mu(tire, car.mass * GRAVITY / 4.0);
+
     let input_socket = UdpSocket::bind(&config.input_addr)?;
     input_socket.set_nonblocking(true)?;
     let output_socket = UdpSocket::bind("0.0.0.0:0")?;
@@ -276,7 +351,10 @@ pub fn run_server(
             &sim.last_input,
             &config,
             &mut powertrain,
+            car,
+            grip_mu,
             sim.drive_wheel_omega(),
+            sim.state[6],
         );
         let send_telemetry = step_frame(
             &mut sim,
@@ -331,7 +409,11 @@ mod tests {
     #[test]
     fn test_map_input_to_control() {
         let config = SimServerConfig::default();
+        let rg = rig();
+        let car = &rg.params;
+        let grip_mu = tire_peak_longitudinal_mu(&rg.tire, car.mass * 9.81 / 4.0);
         let mut powertrain = Powertrain::f1_2024();
+        let omega = 50.0 / 0.330;
 
         // Full right steering, no throttle, half brake.
         let input = InputPacket {
@@ -341,7 +423,8 @@ mod tests {
             gear: 3,
             sequence: 0,
         };
-        let control = map_input_to_control(&input, &config, &mut powertrain, 50.0 / 0.330);
+        let control =
+            map_input_to_control(&input, &config, &mut powertrain, car, grip_mu, omega, 50.0);
         assert!((control[0] - config.max_steer_angle).abs() < 1e-12);
         assert_eq!(
             control[1], 0.0,
@@ -354,18 +437,25 @@ mod tests {
             steering: -1.0,
             ..Default::default()
         };
-        let control = map_input_to_control(&left, &config, &mut powertrain, 50.0 / 0.330);
+        let control =
+            map_input_to_control(&left, &config, &mut powertrain, car, grip_mu, omega, 50.0);
         assert!((control[0] + config.max_steer_angle).abs() < 1e-12);
 
-        // Full throttle produces positive drive torque.
+        // Full throttle produces positive drive torque, capped at the traction
+        // limit (never exceeding the powertrain's raw output).
         let gas = InputPacket {
             throttle: 1.0,
             ..Default::default()
         };
-        let control = map_input_to_control(&gas, &config, &mut powertrain, 50.0 / 0.330);
+        let control =
+            map_input_to_control(&gas, &config, &mut powertrain, car, grip_mu, omega, 50.0);
         assert!(
             control[1] > 0.0,
             "full throttle should give positive torque"
+        );
+        assert!(
+            control[1] <= traction_torque_limit(car, grip_mu, 50.0) + 1e-9,
+            "drive torque should be capped at the traction limit"
         );
     }
 
@@ -467,14 +557,22 @@ mod tests {
         let mut sim = SimState::new(&model, 30.0);
         let mut counter = 0;
 
+        let grip_mu = tire_peak_longitudinal_mu(&rg.tire, rg.params.mass * 9.81 / 4.0);
         let v0 = sim.state[6];
         let input = InputPacket {
             throttle: 1.0,
             ..Default::default()
         };
         for _ in 0..500 {
-            let control =
-                map_input_to_control(&input, &config, &mut powertrain, sim.drive_wheel_omega());
+            let control = map_input_to_control(
+                &input,
+                &config,
+                &mut powertrain,
+                &rg.params,
+                grip_mu,
+                sim.drive_wheel_omega(),
+                sim.state[6],
+            );
             step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
         }
         assert!(
@@ -489,6 +587,68 @@ mod tests {
     }
 
     #[test]
+    fn test_braking_reduces_speed() {
+        let rg = rig();
+        let model = model_for(&rg, 40.0);
+        let integ = RealtimeIntegrator::new_1khz();
+        let config = SimServerConfig::default();
+        let mut powertrain = Powertrain::f1_2024();
+        let mut sim = SimState::new(&model, 40.0);
+        let mut counter = 0;
+        let grip_mu = tire_peak_longitudinal_mu(&rg.tire, rg.params.mass * 9.81 / 4.0);
+
+        // Phase 1: full throttle to build speed.
+        let throttle_input = InputPacket {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..500 {
+            let control = map_input_to_control(
+                &throttle_input,
+                &config,
+                &mut powertrain,
+                &rg.params,
+                grip_mu,
+                sim.drive_wheel_omega(),
+                sim.state[6],
+            );
+            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+        }
+        let v_brake_point = sim.state[6];
+
+        // Phase 2: full brake, zero throttle.
+        let brake_input = InputPacket {
+            throttle: 0.0,
+            brake: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..500 {
+            let control = map_input_to_control(
+                &brake_input,
+                &config,
+                &mut powertrain,
+                &rg.params,
+                grip_mu,
+                sim.drive_wheel_omega(),
+                sim.state[6],
+            );
+            step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
+        }
+        let v_after_brake = sim.state[6];
+
+        assert!(
+            sim.state.iter().all(|v| v.is_finite()),
+            "state went non-finite during throttle/brake"
+        );
+        // Braking must decelerate the car, and strongly: over 0.5 s of full
+        // F1 braking we expect to shed well over 5 m/s, not 1-2 m/s.
+        assert!(
+            v_after_brake < v_brake_point - 5.0,
+            "full brake should strongly reduce speed: {v_brake_point:.1} -> {v_after_brake:.1} m/s"
+        );
+    }
+
+    #[test]
     fn test_steering_produces_yaw() {
         let rg = rig();
         let model = model_for(&rg, 30.0);
@@ -498,14 +658,22 @@ mod tests {
         let mut sim = SimState::new(&model, 30.0);
         let mut counter = 0;
 
+        let grip_mu = tire_peak_longitudinal_mu(&rg.tire, rg.params.mass * 9.81 / 4.0);
         let input = InputPacket {
             steering: 0.5,
             throttle: 0.5,
             ..Default::default()
         };
         for _ in 0..500 {
-            let control =
-                map_input_to_control(&input, &config, &mut powertrain, sim.drive_wheel_omega());
+            let control = map_input_to_control(
+                &input,
+                &config,
+                &mut powertrain,
+                &rg.params,
+                grip_mu,
+                sim.drive_wheel_omega(),
+                sim.state[6],
+            );
             step_frame(&mut sim, &integ, &model, &control, 16, &mut counter);
         }
         assert!(
