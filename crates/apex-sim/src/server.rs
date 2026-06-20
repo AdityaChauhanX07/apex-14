@@ -153,7 +153,19 @@ pub struct TrackPosition {
     pub track_length: f64,
     /// Whether the car has crossed the start/finish line this frame.
     pub crossed_start_finish: bool,
+    /// Simulation time of the last lap crossing (for cooldown).
+    pub last_crossing_time: f64,
+    /// Minimum time between lap crossings (s).
+    pub min_lap_time: f64,
 }
+
+/// Default minimum time between lap crossings (s). No real circuit lap is
+/// faster than this, so crossings closer together are projection artifacts.
+pub const DEFAULT_MIN_LAP_TIME: f64 = 10.0;
+
+/// Lateral offset (m) beyond which the car is treated as off-track and lap
+/// crossings are suppressed (the nearest-point projection is unreliable there).
+const OFF_TRACK_OFFSET: f64 = 50.0;
 
 /// Project a world position onto the track centerline.
 ///
@@ -258,6 +270,14 @@ fn scan_window(
 /// when the distance wraps from near the end of the lap back to near the start.
 /// On a crossing it increments `sim.lap` and resets `sim.lap_start_time` to the
 /// current simulation time so the reported lap time restarts.
+///
+/// Two guards prevent the projection from spamming lap increments when the car
+/// is far off-track (where the nearest-point can jump erratically between
+/// distant segments and repeatedly satisfy the wrap condition):
+/// - a cooldown that ignores crossings within `min_lap_time` of the last one
+///   (no real lap is that fast), and
+/// - off-track suppression that ignores crossings while the lateral offset
+///   exceeds [`OFF_TRACK_OFFSET`].
 fn update_track_position(sim: &mut SimState, track: &Track, x: f64, y: f64) {
     let Some(tp) = sim.track_pos.as_mut() else {
         return;
@@ -266,13 +286,23 @@ fn update_track_position(sim: &mut SimState, track: &Track, x: f64, y: f64) {
     let prev = tp.distance;
     let (s, off) = project_onto_track(track, x, y, prev);
 
-    // Start/finish crossing: distance wrapped from near the end to near 0.
-    let crossed = length > 0.0 && prev > 0.9 * length && s < 0.1 * length;
+    // Start/finish crossing: the distance wrapped from near the end of the lap
+    // back to near the start, the car is on-track, and the cooldown has elapsed.
+    let time_since_crossing = sim.sim_time - tp.last_crossing_time;
+    let crossed = length > 0.0
+        && prev > 0.8 * length
+        && s < 0.2 * length
+        && off.abs() < OFF_TRACK_OFFSET
+        && time_since_crossing > tp.min_lap_time;
+
+    // Always update the projected position so the next frame has a good hint,
+    // even when a crossing is suppressed.
     tp.distance = s;
     tp.lateral_offset = off;
     tp.crossed_start_finish = crossed;
 
     if crossed {
+        tp.last_crossing_time = sim.sim_time;
         sim.lap = sim.lap.saturating_add(1);
         sim.lap_start_time = sim.sim_time;
     }
@@ -332,6 +362,9 @@ impl SimState {
             lateral_offset: 0.0,
             track_length: track.total_length,
             crossed_start_finish: false,
+            // Negative infinity so the very first crossing is never on cooldown.
+            last_crossing_time: f64::NEG_INFINITY,
+            min_lap_time: DEFAULT_MIN_LAP_TIME,
         });
     }
 
