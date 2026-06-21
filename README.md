@@ -38,6 +38,25 @@ cargo run --release --bin sim-hud
 cargo run --release --bin train-raceline -- --n-tracks 500 --epochs 200
 ```
 
+### RL Driver, Setup Optimization, Race Monte Carlo, and Web Viewer
+
+```bash
+# Train an RL driver
+cargo run --release --bin train-driver -- --track oval --total-steps 2000000
+
+# Run AI driver in sim server
+cargo run --release --bin sim-server -- --track oval --ai-driver driver_policy.safetensors
+
+# Optimize car setup for a track
+apex-14 setup-optimize --track silverstone --generations 30 --calibrated --output cars/silverstone_setup.toml
+
+# Monte Carlo race simulation (5000 races, 20-car field)
+apex-14 race-sim --track silverstone --laps 52 --sims 5000 --calibrated
+
+# WASM web viewer
+cd bins/web-viewer && trunk serve --release
+```
+
 ## Features
 
 **Vehicle Dynamics** - four model fidelities sharing a common tire and track interface:
@@ -70,6 +89,16 @@ cargo run --release --bin train-raceline -- --n-tracks 500 --epochs 200
 **ML Raceline Warmstart** - 1D circular convolutional network (candle) trained on optimizer outputs. Predicts near-optimal speed and lateral offset profiles from track geometry alone. Used as the collocation optimizer's initial guess, reducing convergence iterations. Includes a training data pipeline with Rayon-parallel batch optimization and target normalization.
 
 **Real-Time Simulator** - 14-DOF vehicle model running at 1kHz via fixed-budget integration (4 RK4 sub-steps with Euler fallback). UDP server accepting steering/throttle/brake inputs, broadcasting vehicle state telemetry at configurable rates. Optional shared-memory interface for zero-latency local I/O. Includes a live egui HUD with speedometer, g-force display, gear indicator, and lap timing.
+
+**Reinforcement Learning Driver** - PPO agent trained to drive the 14-DOF car using a gym-style environment. Observation space includes speed, track curvature lookahead, lateral offset, and slip angle. Continuous action space (steering, throttle, brake). Includes a training binary and AI driver mode in the sim server for autonomous driving.
+
+**Car Setup Optimizer** - CMA-ES derivative-free optimization of car setup parameters (drag, downforce, aero balance, brake bias, weight distribution, CoG height) to minimize lap time. Uses QSS as the inner loop. Produces optimized TOML setup files.
+
+**Full-Field Race Monte Carlo** - lap-by-lap simulation of 20-car Grand Prix races with probabilistic events: safety cars, VSC, mechanical DNFs, driver errors, rain transitions, and overtaking. Rayon-parallel Monte Carlo runs thousands of races to produce win probability distributions, expected championship points, and optimal pit strategy under uncertainty.
+
+**Track Design Optimizer** - CMA-ES optimization of track layouts from spline control points. Maximizes an overtaking opportunity metric (braking zones, DRS straights, speed variation) subject to boundary, lap time, and geometric constraints. Interactive WASM demo in the web viewer: draw a boundary polygon, set constraints, generate an optimized track in seconds.
+
+**WASM Web Viewer** - browser-based track viewer compiled to WebAssembly. Displays built-in circuits or custom JSON tracks with speed-colored racing lines and speed profile plots. Includes the interactive track designer.
 
 ## Usage
 
@@ -133,6 +162,8 @@ crates/
   apex-viewer        Interactive egui-based telemetry viewer
   apex-sim           Real-time simulation server, UDP/shared-memory protocol
   apex-ml            ML raceline predictor, training pipeline, candle CNN
+  apex-rl            Reinforcement learning environment, PPO agent, policy networks
+  apex-race          Full-field race simulation, Monte Carlo framework, strategy optimization
 
 bins/
   apex-cli           Unified CLI (installed as apex-14)
@@ -142,8 +173,10 @@ bins/
   viewer             Interactive telemetry viewer
   validate           Validation against published F1 data
   train-raceline     Offline ML training (track generation, optimization, CNN training)
+  train-driver       PPO driver training binary
   sim-server         Real-time 14-DOF simulation server (UDP + shared memory)
   sim-hud            Live telemetry HUD (egui)
+  web-viewer         WASM web viewer and track designer
 
 cars/                TOML car configuration files
 tracks/              Track files (JSON and sample data)
@@ -164,7 +197,7 @@ docs/                Mathematical derivations and validation reports
 
 ```bash
 git config core.hooksPath .githooks   # enable auto-format pre-commit hook
-cargo test --workspace                # 430 tests
+cargo test --workspace                # 556 tests
 cargo clippy -- -D warnings           # lint check
 cargo bench                           # criterion benchmarks
 cargo fmt --check                     # format check
