@@ -241,6 +241,7 @@ version = "0.1.0"
 dependencies = [
  "apex-optimizer",
  "apex-physics",
+ "apex-race",
  "apex-telemetry",
  "apex-track",
  "clap",
@@ -304,6 +305,7 @@ dependencies = [
 name = "apex-race"
 version = "0.1.0"
 dependencies = [
+ "apex-optimizer",
  "apex-physics",
  "apex-track",
  "log",

@@ -154,6 +154,34 @@ enum Commands {
         output: Option<String>,
     },
 
+    /// Simulate a full Grand Prix with Monte Carlo analysis.
+    RaceSim {
+        /// Track for the race.
+        #[arg(long, default_value = "silverstone")]
+        track: String,
+
+        /// Number of race laps.
+        #[arg(long, default_value_t = 52)]
+        laps: usize,
+
+        /// Number of Monte Carlo simulations.
+        #[arg(long, default_value_t = 1000)]
+        sims: usize,
+
+        /// Random seed for reproducibility.
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+
+        /// Optimize strategy for car at this grid position (1-indexed).
+        /// If provided, runs strategy optimization for this car.
+        #[arg(long)]
+        optimize_car: Option<usize>,
+
+        /// Use calibrated car as baseline for lap time computation.
+        #[arg(long)]
+        calibrated: bool,
+    },
+
     /// Run parameter sensitivity analysis
     Sensitivity {
         /// Track file (JSON or TUMFTM CSV)
@@ -238,6 +266,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             calibrated,
             output,
         } => cmd_setup_optimize(track, generations, sigma, calibrated, output),
+        Commands::RaceSim {
+            track,
+            laps,
+            sims,
+            seed,
+            optimize_car,
+            calibrated,
+        } => cmd_race_sim(track, laps, sims, seed, optimize_car, calibrated),
         Commands::Sensitivity {
             track,
             car,
@@ -690,6 +726,125 @@ fn cmd_sensitivity(
         apex_physics::tornado_chart_svg(&oat_results, &svg_path)?;
         println!();
         println!("Tornado chart exported to {}", svg_path.display());
+    }
+
+    Ok(())
+}
+
+fn cmd_race_sim(
+    track: String,
+    laps: usize,
+    sims: usize,
+    seed: u64,
+    optimize_car: Option<usize>,
+    calibrated: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let track_data = resolve_track(&track)?;
+    let params = if calibrated {
+        apex_physics::CarParams::f1_2024_calibrated()
+    } else {
+        apex_physics::CarParams::default()
+    };
+
+    // Base lap time from a QSS lap on this track/car drives the grid pace.
+    let qss = apex_physics::qss_lap_sim(&track_data, &params);
+    let base_lap_time = qss.lap_time;
+
+    println!(
+        "Track: {} ({:.0} m)",
+        track_data.name, track_data.total_length
+    );
+    println!(
+        "Base lap time: {:.3} s (QSS, {} car)",
+        base_lap_time,
+        if calibrated { "calibrated" } else { "default" }
+    );
+    println!(
+        "Race: {} laps | {} Monte Carlo sims | seed {}",
+        laps, sims, seed
+    );
+    println!();
+
+    let race_config = apex_race::config::RaceConfig::for_track(track_data.total_length, laps);
+    let mut entries = apex_race::config::default_f1_grid(base_lap_time);
+
+    // Optionally optimize the strategy for one car before the headline run.
+    let mut opt_result = None;
+    if let Some(grid_pos) = optimize_car {
+        if grid_pos == 0 || grid_pos > entries.len() {
+            return Err(format!(
+                "--optimize-car must be between 1 and {} (1-indexed grid position)",
+                entries.len()
+            )
+            .into());
+        }
+        let car_idx = grid_pos - 1;
+        println!(
+            "Optimizing strategy for car {} ({})...",
+            grid_pos, entries[car_idx].name
+        );
+
+        let opt_config = apex_race::strategy_opt::StrategyOptConfig {
+            // Keep per-evaluation sims modest so the CMA-ES loop stays tractable.
+            n_sims_per_eval: (sims / 10).max(20),
+            seed,
+            ..Default::default()
+        };
+        let result = apex_race::strategy_opt::optimize_strategy(
+            &race_config,
+            &entries,
+            car_idx,
+            &opt_config,
+        );
+
+        // Apply the optimized strategy to the grid for the headline simulation.
+        entries[car_idx].strategy = apex_race::config::RaceStrategy {
+            start_compound: result
+                .compounds
+                .first()
+                .copied()
+                .unwrap_or(apex_race::config::TireCompound::Medium),
+            stops: result
+                .stop_laps
+                .iter()
+                .enumerate()
+                .map(|(i, &lap)| apex_race::config::PlannedStop {
+                    lap,
+                    compound: result
+                        .compounds
+                        .get(i + 1)
+                        .copied()
+                        .unwrap_or(apex_race::config::TireCompound::Hard),
+                })
+                .collect(),
+        };
+        opt_result = Some((grid_pos, result));
+        println!();
+    }
+
+    let mc = apex_race::monte_carlo::monte_carlo_race(&race_config, &entries, sims, seed);
+    print!("{}", apex_race::monte_carlo::format_report(&mc, &entries));
+
+    if let Some((grid_pos, result)) = opt_result {
+        let name = &entries[grid_pos - 1].name;
+        println!();
+        println!(
+            "--- Strategy optimization for car {} ({}) ---",
+            grid_pos, name
+        );
+        let stops: Vec<String> = result.stop_laps.iter().map(|l| format!("L{l}")).collect();
+        println!("Optimized pit stops: {}", stops.join(", "));
+        let compounds: Vec<String> = result.compounds.iter().map(|c| c.to_string()).collect();
+        println!("Compound sequence:   {}", compounds.join(" -> "));
+        println!("CMA-ES generations:  {}", result.generations);
+        println!("Baseline E[pts]:     {:.2}", result.baseline_points);
+        println!("Optimized E[pts]:    {:.2}", result.expected_points);
+        println!(
+            "Improvement:         {:+.2} pts",
+            result.expected_points - result.baseline_points
+        );
+        println!("Optimized E[pos]:    {:.2}", result.expected_position);
+        println!("Optimized win prob:  {:.1}%", result.win_prob * 100.0);
     }
 
     Ok(())

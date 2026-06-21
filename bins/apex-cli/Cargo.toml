@@ -10,3 +10,4 @@ apex-physics = { path = "../../crates/apex-physics" }
 apex-track = { path = "../../crates/apex-track" }
 apex-optimizer = { path = "../../crates/apex-optimizer" }
 apex-telemetry = { path = "../../crates/apex-telemetry" }
+apex-race = { path = "../../crates/apex-race" }
