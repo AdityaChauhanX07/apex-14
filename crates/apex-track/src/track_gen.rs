@@ -18,7 +18,7 @@ fn simple_hash(seed: u64, i: u64, j: u64) -> f64 {
 }
 
 /// One coordinate of a Catmull-Rom segment at parameter `t` in [0, 1].
-fn catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
+pub(crate) fn catmull_rom(p0: f64, p1: f64, p2: f64, p3: f64, t: f64) -> f64 {
     let t2 = t * t;
     let t3 = t2 * t;
     0.5 * (2.0 * p1
