@@ -5,6 +5,7 @@
 
 pub mod builder;
 pub mod circuits;
+pub mod constraints;
 pub mod generators;
 pub mod layout;
 pub mod parser;
@@ -14,6 +15,7 @@ pub mod types;
 
 pub use builder::{build_track, normalize_angle};
 pub use circuits::{monza_circuit, silverstone_circuit};
+pub use constraints::{check_constraints, ConstraintViolation, TrackConstraints};
 pub use generators::{circle_track, oval_track};
 pub use layout::{
     is_valid_layout, point_in_polygon, track_within_boundary, ControlPoint, TrackLayout,
