@@ -63,6 +63,9 @@ pub struct RaceResult {
     pub winner_time: f64,
     /// Number of laps completed.
     pub laps_completed: usize,
+    /// Number of full safety car deployments during the race. Always 0 for the
+    /// deterministic [`simulate_race`]; populated by [`simulate_race_stochastic`].
+    pub sc_count: usize,
 }
 
 impl RaceResult {
@@ -178,6 +181,7 @@ fn finalize_result(mut states: Vec<CarState>, config: &RaceConfig) -> RaceResult
         car_states: states,
         winner_time,
         laps_completed: config.n_laps,
+        sc_count: 0,
     }
 }
 
@@ -362,7 +366,9 @@ pub fn simulate_race_stochastic<R: Rng>(
         }
     }
 
-    finalize_result(states, config)
+    let mut result = finalize_result(states, config);
+    result.sc_count = event_state.total_sc;
+    result
 }
 
 #[cfg(test)]

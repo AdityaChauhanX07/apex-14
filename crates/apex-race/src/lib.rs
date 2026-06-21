@@ -7,4 +7,5 @@
 
 pub mod config;
 pub mod events;
+pub mod monte_carlo;
 pub mod sim;
