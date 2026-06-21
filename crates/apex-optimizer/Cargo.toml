@@ -7,9 +7,16 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 apex-math = { path = "../apex-math" }
 apex-integrator = { path = "../apex-integrator" }
-apex-physics = { path = "../apex-physics" }
+# apex-physics is pulled WITHOUT its default `parallel` (rayon) feature so that
+# downstream wasm32 consumers (e.g. web-viewer) don't drag rayon in through
+# Cargo feature unification. The `parallel` feature below re-enables it for
+# native parallel builds.
+apex-physics = { path = "../apex-physics", default-features = false }
 apex-track = { path = "../apex-track" }
-rand = "0.9"
+# Only the seeded StdRng is used (never the OS RNG), so the default `thread_rng`
+# / `os_rng` features — which pull `getrandom` and break wasm32-unknown-unknown —
+# are disabled. This keeps the layout optimizer wasm-compatible.
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
 rand_distr = "0.5"
 log = "0.4"
 rayon = { version = "1.10", optional = true }
@@ -17,7 +24,7 @@ rayon = { version = "1.10", optional = true }
 [features]
 # Parallel batch evaluation of car setups via rayon. Disabled by default for
 # targets without threads; mirrors apex-physics's `parallel` feature.
-parallel = ["dep:rayon"]
+parallel = ["dep:rayon", "apex-physics/parallel"]
 
 [dev-dependencies]
 criterion = "0.5"

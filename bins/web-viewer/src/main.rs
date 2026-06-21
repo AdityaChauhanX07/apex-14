@@ -8,10 +8,11 @@
 //! their own track JSON. A quasi-steady-state lap simulation colours the
 //! centreline by speed and drives the speed-profile plot.
 
+use apex_optimizer::{optimize_layout, CmaEsConfig, LayoutOptConfig, RacingQuality};
 use apex_physics::{qss_lap_sim, CarParams};
 use apex_track::{
     build_track, circle_track, monza_circuit, oval_track, parse_track_json, silverstone_circuit,
-    Track,
+    Track, TrackConstraints,
 };
 use eframe::egui;
 
@@ -30,6 +31,28 @@ struct TrackData {
     lap_time: Option<f64>,
 }
 
+/// Number of CMA-ES generations the interactive designer runs per "Generate".
+/// Kept modest so a synchronous run finishes in ~1-2 s, even in single-threaded
+/// WebAssembly.
+const DESIGNER_GENERATIONS: usize = 20;
+
+/// Half-extent (m) of the fixed world view used by the designer canvas. The
+/// designer uses its own fixed transform (not the main viewer's auto-fit +
+/// zoom/pan) so that boundary clicks map to stable world coordinates.
+const DESIGNER_WORLD_HALF: f64 = 1200.0;
+
+/// A track produced by the interactive designer, with its analysis.
+struct DesignerResult {
+    /// Generated geometry plus its speed profile.
+    data: TrackData,
+    /// Racing-quality metrics for the generated track.
+    quality: RacingQuality,
+    /// World-space control points of the optimized layout (for markers).
+    control_points: Vec<(f64, f64)>,
+    /// Whether the generated track satisfied all hard constraints.
+    feasible: bool,
+}
+
 /// Top-level web viewer application state.
 struct WebViewerApp {
     /// Currently selected track name.
@@ -46,6 +69,25 @@ struct WebViewerApp {
     zoom: f32,
     /// Map pan offset (screen pixels).
     pan: egui::Vec2,
+
+    /// Whether the interactive track designer is active (replaces the viewer).
+    designer_active: bool,
+    /// Whether boundary-drawing mode is on (canvas clicks add vertices).
+    designer_drawing: bool,
+    /// Drawn boundary polygon vertices, in world coordinates.
+    designer_boundary: Vec<(f64, f64)>,
+    /// Number of control points for the generated layout.
+    designer_n_points: usize,
+    /// Target lap-time lower bound (s).
+    designer_lap_min: f64,
+    /// Target lap-time upper bound (s).
+    designer_lap_max: f64,
+    /// Minimum straight length for overtaking (m).
+    designer_min_straight: f64,
+    /// The most recently generated track, if any.
+    designer_result: Option<DesignerResult>,
+    /// Status / progress text for the designer.
+    designer_status: String,
 }
 
 /// Construct a built-in circuit by name, or `None` if the name is unknown.
@@ -62,8 +104,12 @@ fn build_builtin(name: &str) -> Option<Track> {
 
 /// Run the QSS lap simulation to build the speed-coloured [`TrackData`].
 fn make_track_data(track: Track) -> TrackData {
-    let params = CarParams::f1_2024_calibrated();
-    let qss = qss_lap_sim(&track, &params);
+    make_track_data_with(track, &CarParams::f1_2024_calibrated())
+}
+
+/// Run the QSS lap simulation with the given car to build the [`TrackData`].
+fn make_track_data_with(track: Track, params: &CarParams) -> TrackData {
+    let qss = qss_lap_sim(&track, params);
     TrackData {
         track,
         speeds: qss.speeds,
@@ -91,6 +137,15 @@ impl WebViewerApp {
             error_msg: None,
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
+            designer_active: false,
+            designer_drawing: false,
+            designer_boundary: Vec::new(),
+            designer_n_points: 10,
+            designer_lap_min: 60.0,
+            designer_lap_max: 120.0,
+            designer_min_straight: 200.0,
+            designer_result: None,
+            designer_status: String::new(),
         }
     }
 
@@ -185,6 +240,234 @@ impl WebViewerApp {
             ui.separator();
             ui.colored_label(egui::Color32::from_rgb(255, 120, 120), err);
         }
+
+        ui.separator();
+        egui::CollapsingHeader::new("Track Designer")
+            .default_open(false)
+            .show(ui, |ui| self.designer_controls(ui));
+    }
+
+    /// Draw the interactive track designer controls.
+    fn designer_controls(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(&mut self.designer_active, "Designer mode");
+        if !self.designer_active {
+            return;
+        }
+        ui.add_space(4.0);
+
+        // Boundary drawing.
+        let draw_label = if self.designer_drawing {
+            "Drawing boundary - click the canvas"
+        } else {
+            "Draw Boundary"
+        };
+        if ui
+            .selectable_label(self.designer_drawing, draw_label)
+            .clicked()
+        {
+            self.designer_drawing = !self.designer_drawing;
+        }
+        if ui.button("Clear Boundary").clicked() {
+            self.designer_boundary.clear();
+        }
+        ui.label(format!("Boundary points: {}", self.designer_boundary.len()));
+
+        ui.separator();
+        ui.label("Constraints:");
+        ui.add(egui::Slider::new(&mut self.designer_lap_min, 30.0..=200.0).text("Lap min (s)"));
+        ui.add(egui::Slider::new(&mut self.designer_lap_max, 30.0..=200.0).text("Lap max (s)"));
+        if self.designer_lap_max < self.designer_lap_min {
+            self.designer_lap_max = self.designer_lap_min;
+        }
+        ui.add(
+            egui::Slider::new(&mut self.designer_min_straight, 100.0..=500.0)
+                .text("Min straight (m)"),
+        );
+        ui.add(egui::Slider::new(&mut self.designer_n_points, 6..=15).text("Control points"));
+
+        ui.separator();
+        if ui.button("Generate Track").clicked() {
+            self.generate_track();
+        }
+        ui.small("Generation runs synchronously (~1-2 s); the page may pause briefly.");
+        if !self.designer_status.is_empty() {
+            ui.label(&self.designer_status);
+        }
+
+        if let Some(result) = &self.designer_result {
+            ui.separator();
+            ui.label("Racing quality:");
+            ui.label(format!("Lap time: {:.2} s", result.quality.lap_time));
+            ui.label(format!(
+                "Overtaking score: {:.1}",
+                result.quality.overtaking_score
+            ));
+            ui.label(format!("Braking zones: {}", result.quality.braking_zones));
+            ui.label(format!("DRS straights: {}", result.quality.drs_straights));
+            ui.label(format!(
+                "Mean straight: {:.0} m",
+                result.quality.mean_straight_length
+            ));
+            ui.label(format!("Length: {:.0} m", result.data.track.total_length));
+            if !result.feasible {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 180, 80),
+                    "Constraints not fully satisfied",
+                );
+            }
+        }
+    }
+
+    /// Build constraints from the UI, run the layout optimizer, and store the
+    /// generated track. Runs synchronously (Option A): the CMA-ES loop is pure
+    /// computation and works in single-threaded WebAssembly.
+    fn generate_track(&mut self) {
+        let mut constraints = TrackConstraints {
+            target_lap_time: (self.designer_lap_min, self.designer_lap_max),
+            min_straight_length: self.designer_min_straight,
+            ..TrackConstraints::default()
+        };
+        // Only apply a boundary constraint once it forms a polygon.
+        if self.designer_boundary.len() >= 3 {
+            constraints.boundary = self.designer_boundary.clone();
+        }
+
+        let config = LayoutOptConfig {
+            n_control_points: self.designer_n_points,
+            cmaes_config: CmaEsConfig {
+                max_generations: DESIGNER_GENERATIONS,
+                initial_sigma: 0.3,
+                ..CmaEsConfig::default()
+            },
+            constraints,
+            car: CarParams::default(),
+            initial_radius: 300.0,
+        };
+
+        let result = optimize_layout(&config);
+        match result.layout.to_track() {
+            Some(track) => {
+                // Use the same car the optimizer scored with, so the displayed
+                // lap time matches the reported racing quality.
+                let data = make_track_data_with(track, &CarParams::default());
+                let control_points = result
+                    .layout
+                    .control_points
+                    .iter()
+                    .map(|c| (c.x, c.y))
+                    .collect();
+                self.designer_status = format!(
+                    "Generated in {} generations (overtaking score {:.1}).",
+                    result.generations, result.quality.overtaking_score
+                );
+                self.designer_result = Some(DesignerResult {
+                    data,
+                    feasible: result.violation.feasible,
+                    quality: result.quality,
+                    control_points,
+                });
+            }
+            None => {
+                self.designer_status = "Generation failed: invalid layout.".to_string();
+                self.designer_result = None;
+            }
+        }
+    }
+
+    /// Render the designer canvas: the boundary polygon, the generated
+    /// speed-coloured track, and control-point markers, on a fixed world view.
+    fn render_designer(&mut self, ui: &mut egui::Ui) {
+        let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click());
+        let rect = response.rect;
+        painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(26, 26, 46));
+
+        // Fixed world->screen transform centred on the origin.
+        let scale = (rect.width().min(rect.height()) * 0.9) / (2.0 * DESIGNER_WORLD_HALF as f32);
+        let center = rect.center();
+        let to_screen = |wx: f64, wy: f64| -> egui::Pos2 {
+            egui::pos2(center.x + wx as f32 * scale, center.y - wy as f32 * scale)
+        };
+        let to_world = |p: egui::Pos2| -> (f64, f64) {
+            (
+                ((p.x - center.x) / scale) as f64,
+                ((center.y - p.y) / scale) as f64,
+            )
+        };
+
+        // Boundary drawing: add a vertex at each click.
+        if self.designer_drawing && response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.designer_boundary.push(to_world(pos));
+            }
+        }
+
+        // Boundary polygon as a dashed grey outline.
+        if self.designer_boundary.len() >= 2 {
+            let mut pts: Vec<egui::Pos2> = self
+                .designer_boundary
+                .iter()
+                .map(|&(x, y)| to_screen(x, y))
+                .collect();
+            pts.push(pts[0]); // close the loop
+            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 150, 150));
+            painter.extend(egui::Shape::dashed_line(&pts, stroke, 8.0, 6.0));
+        }
+        for &(x, y) in &self.designer_boundary {
+            painter.circle_filled(to_screen(x, y), 3.0, egui::Color32::from_rgb(200, 200, 120));
+        }
+
+        // Generated track with speed colouring + control-point markers.
+        if let Some(result) = &self.designer_result {
+            let data = &result.data;
+            let segs = &data.track.segments;
+            if !data.speeds.is_empty() && segs.len() > 1 {
+                let min_v = data.speeds.iter().cloned().fold(f64::MAX, f64::min);
+                let max_v = data.speeds.iter().cloned().fold(f64::MIN, f64::max);
+                for (pair, &speed) in segs.windows(2).zip(data.speeds.iter()) {
+                    painter.line_segment(
+                        [
+                            to_screen(pair[0].x, pair[0].y),
+                            to_screen(pair[1].x, pair[1].y),
+                        ],
+                        egui::Stroke::new(2.5, speed_to_color(speed, min_v, max_v)),
+                    );
+                }
+                if data.track.is_closed {
+                    let last = segs.len() - 1;
+                    let speed = data.speeds.get(last).copied().unwrap_or(min_v);
+                    painter.line_segment(
+                        [
+                            to_screen(segs[last].x, segs[last].y),
+                            to_screen(segs[0].x, segs[0].y),
+                        ],
+                        egui::Stroke::new(2.5, speed_to_color(speed, min_v, max_v)),
+                    );
+                }
+                draw_legend(&painter, rect, min_v, max_v);
+            }
+            for &(x, y) in &result.control_points {
+                painter.circle_stroke(
+                    to_screen(x, y),
+                    5.0,
+                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                );
+            }
+        }
+
+        let hint = if self.designer_result.is_some() {
+            "Generated track (speed-coloured). White rings mark control points."
+        } else if self.designer_drawing {
+            "Click to add boundary vertices, then press Generate Track."
+        } else {
+            "Toggle 'Draw Boundary' to sketch a region, or press Generate Track."
+        };
+        painter.text(
+            rect.left_top() + egui::vec2(10.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            hint,
+            egui::FontId::proportional(15.0),
+            egui::Color32::WHITE,
+        );
     }
 }
 
@@ -194,8 +477,13 @@ impl eframe::App for WebViewerApp {
             .min_width(220.0)
             .show(ctx, |ui| self.controls(ui));
 
-        // Speed-profile plot along the bottom.
-        if let Some(data) = &self.track_data {
+        // Speed-profile plot along the bottom, for whichever track is showing.
+        let plot_data = if self.designer_active {
+            self.designer_result.as_ref().map(|r| &r.data)
+        } else {
+            self.track_data.as_ref()
+        };
+        if let Some(data) = plot_data {
             if !data.speeds.is_empty() {
                 egui::TopBottomPanel::bottom("speed_profile")
                     .resizable(false)
@@ -204,12 +492,18 @@ impl eframe::App for WebViewerApp {
             }
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| match &self.track_data {
-            Some(data) => render_track(ui, data, &mut self.zoom, &mut self.pan),
-            None => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("No track loaded. Pick a circuit or paste JSON.");
-                });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.designer_active {
+                self.render_designer(ui);
+            } else {
+                match &self.track_data {
+                    Some(data) => render_track(ui, data, &mut self.zoom, &mut self.pan),
+                    None => {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("No track loaded. Pick a circuit or paste JSON.");
+                        });
+                    }
+                }
             }
         });
     }

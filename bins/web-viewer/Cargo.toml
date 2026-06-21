@@ -10,6 +10,9 @@ license = "MIT OR Apache-2.0"
 # use rayon, so this is purely about excluding the optional dependency.
 apex-track = { path = "../../crates/apex-track" }
 apex-physics = { path = "../../crates/apex-physics", default-features = false }
+# Track-layout optimizer (CMA-ES). default-features = false drops its `parallel`
+# (rayon) feature; its rand usage is seeded-only, so it compiles to wasm32.
+apex-optimizer = { path = "../../crates/apex-optimizer", default-features = false }
 egui = "0.31"
 egui_plot = "0.31"
 log = "0.4"

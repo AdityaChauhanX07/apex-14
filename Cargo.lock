@@ -4734,6 +4734,7 @@ dependencies = [
 name = "web-viewer"
 version = "0.1.0"
 dependencies = [
+ "apex-optimizer",
  "apex-physics",
  "apex-track",
  "eframe",
