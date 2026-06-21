@@ -301,6 +301,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-race"
+version = "0.1.0"
+dependencies = [
+ "apex-physics",
+ "apex-track",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "apex-rl"
 version = "0.1.0"
 dependencies = [
