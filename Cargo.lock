@@ -307,6 +307,8 @@ dependencies = [
  "apex-physics",
  "apex-track",
  "log",
+ "rand 0.9.4",
+ "rand_distr",
  "serde",
 ]
 

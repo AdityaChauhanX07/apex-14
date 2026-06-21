@@ -24,6 +24,28 @@ pub struct RaceConfig {
     pub fuel_per_lap: f64,
     /// Lap time benefit per kg of fuel burned (s/kg). Lighter car = faster.
     pub fuel_time_factor: f64,
+
+    /// Safety car probability per lap (0.0-1.0). Default: 0.02 (~1 per race).
+    pub safety_car_prob: f64,
+    /// Virtual safety car probability per lap. Default: 0.01.
+    pub vsc_prob: f64,
+    /// Mechanical DNF probability per car per lap. Default: 0.001.
+    pub dnf_prob: f64,
+    /// Probability of a weather transition per lap (dry->wet or wet->dry).
+    /// Default: 0.0 (dry race).
+    pub rain_prob: f64,
+    /// Driver error probability per lap (causes ~1-3s time loss). Default: 0.02.
+    pub driver_error_prob: f64,
+    /// Safety car duration in laps. Default: 3.
+    pub safety_car_laps: usize,
+    /// VSC duration in laps. Default: 2.
+    pub vsc_laps: usize,
+    /// Safety car pace (seconds per lap, typically slow). Default: 120.0.
+    pub safety_car_pace: f64,
+    /// Gap threshold for an overtaking attempt (s). Default: 1.0.
+    pub overtake_gap_threshold: f64,
+    /// Base overtaking probability when within the gap threshold. Default: 0.3.
+    pub overtake_base_prob: f64,
 }
 
 impl RaceConfig {
@@ -37,6 +59,16 @@ impl RaceConfig {
             start_fuel_kg: 110.0,
             fuel_per_lap: 2.1,
             fuel_time_factor: 0.035,
+            safety_car_prob: 0.02,
+            vsc_prob: 0.01,
+            dnf_prob: 0.001,
+            rain_prob: 0.0,
+            driver_error_prob: 0.02,
+            safety_car_laps: 3,
+            vsc_laps: 2,
+            safety_car_pace: 120.0,
+            overtake_gap_threshold: 1.0,
+            overtake_base_prob: 0.3,
         }
     }
 

@@ -9,3 +9,5 @@ apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
+rand = "0.9"
+rand_distr = "0.5"

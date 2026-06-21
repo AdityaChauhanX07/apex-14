@@ -6,4 +6,5 @@
 //! events like safety cars, rain, and mechanical failures.
 
 pub mod config;
+pub mod events;
 pub mod sim;
