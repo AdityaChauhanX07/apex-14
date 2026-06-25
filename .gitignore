@@ -18,6 +18,7 @@ Thumbs.db
 
 # Internal planning docs
 APEX-14_PROJECT_PLAN.md
+PROJECT_REPORT.md
 
 # Local scratch / manual test scripts
 test_*.py
