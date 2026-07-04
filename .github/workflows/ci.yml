@@ -34,6 +34,14 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace -- -D warnings
 
+      # Runs before the broad workspace test suite so a physics regression
+      # fails fast under an unambiguous step name instead of being buried in
+      # workspace-wide test output. If this fails, see PHYSICS_CHANGE.md for
+      # the required next step (fix a regression, or log + regenerate the
+      # fixture for an intended change).
+      - name: Golden-lap physics regression gate
+        run: cargo test -p apex-14 --test golden_lap
+
       - name: Test
         run: cargo test --workspace
 
