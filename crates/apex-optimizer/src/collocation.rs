@@ -483,100 +483,54 @@ impl<'a> CollocationOptimizer<'a> {
         }
     }
 
-    /// Largest absolute curvature anywhere on the track (static, from `Track`).
-    fn max_abs_curvature(&self) -> f64 {
-        self.track
-            .segments
-            .iter()
-            .map(|seg| seg.curvature.abs())
-            .fold(0.0_f64, f64::max)
-    }
-
-    /// Largest half-width anywhere on the track (static, from `Track`).
-    fn max_half_width(&self) -> f64 {
-        self.track
-            .segments
-            .iter()
-            .map(|seg| seg.width_left.max(seg.width_right))
-            .fold(0.0_f64, f64::max)
-    }
-
-    /// Builds the static, one-shot reference scales for this problem's
-    /// decision-variable and constraint blocks (see
-    /// `docs/design/nlp-scaling.md`). Computed once, before the solve, from
-    /// `car`/`track`/`config` plus the QSS-derived warmstart already
-    /// computed for `initial_guess()` — never updated during iteration.
-    fn build_scaling(&self, x0: &[f64]) -> crate::scaling::Scaling {
+    /// Per-column Jacobi (diagonal) preconditioning scale: `x_scale[j] =
+    /// 1 / max(‖J_eq[:,j]‖, floor)`, measured from the equality Jacobian at
+    /// `x`. Choosing `x_scale` this way drives every scaled column's
+    /// contribution to `diag(JᵀJ)` to exactly `1.0` (up to the floor),
+    /// because `diag(JᵀJ)_scaled_j = ‖J[:,j]‖² · x_scale[j]² = 1`. This
+    /// replaces an earlier attempt at reusing each variable's raw physical
+    /// magnitude (track length, max force, ...) as its scale, which badly
+    /// over-scaled the `s` block (its raw column norm is a small, purely
+    /// structural `√2` — from the ±1 state-difference coefficients — no
+    /// relation to the track being 1500m long) and broke several
+    /// previously-passing tests. Jacobi scaling is measured, not assumed.
+    fn jacobi_scale(&self, x: &[f64]) -> Vec<f64> {
         use crate::scaling::floor_scale;
 
-        let n = self.config.n_nodes;
-        let warm = self.unpack(x0);
-
-        let s_scale = floor_scale(self.track.total_length);
-        let n_scale = floor_scale(self.max_half_width());
-        let v_scale = floor_scale(warm.v.iter().cloned().fold(f64::MIN, f64::max));
-        let alpha_scale = 1.0_f64;
-        let f_scale = floor_scale(self.car.max_drive_force.max(self.car.max_brake_force));
-        let curv_scale = floor_scale(self.max_abs_curvature());
-        // `dt_scale` is the expected per-interval time step at THIS mesh
-        // density (`n_nodes`): a finer mesh implies a shorter expected time
-        // step by design (same lap time spread over more, smaller steps).
-        // If a node-count sweep shows `dt_scale` changing across N, that is
-        // expected and correct, not a bug — see the D4 re-run in the
-        // implementation report.
-        let lap_time_guess: f64 = warm.dt.iter().sum();
-        let dt_scale = floor_scale(lap_time_guess / (n - 1) as f64);
-
-        let mut x_scale = vec![0.0; self.n_vars()];
-        x_scale[0..n].fill(s_scale);
-        x_scale[n..2 * n].fill(n_scale);
-        x_scale[2 * n..3 * n].fill(v_scale);
-        x_scale[3 * n..4 * n].fill(alpha_scale);
-        x_scale[4 * n..5 * n].fill(f_scale);
-        x_scale[5 * n..6 * n].fill(curv_scale);
-        if self.config.optimize_brake_bias {
-            let bb = self.brake_bias_offset();
-            // Already unit-order ([0.50, 0.80]); no rescaling needed.
-            x_scale[bb..bb + n].fill(1.0);
+        let evaluator = CollocationEvaluator { optimizer: self };
+        let j = evaluator.equality_jacobian(x);
+        let mut sumsq = vec![0.0; self.n_vars()];
+        for row in 0..j.nrows() {
+            let (values, cols) = j.row_entries(row);
+            for (&v, &col) in values.iter().zip(cols.iter()) {
+                sumsq[col] += v * v;
+            }
         }
-        let dt_start = self.dt_offset();
-        x_scale[dt_start..].fill(dt_scale);
+        sumsq
+            .into_iter()
+            .map(|s| 1.0 / floor_scale(s.sqrt()))
+            .collect()
+    }
 
-        // DEVIATION from the approved design's A2 table, recorded here
-        // deliberately: A2 proposed reusing each defect's matching
-        // state-variable scale as its `c_eq_scale` (e.g. dividing the
-        // `dv/dt` defect by `v_scale`). Implementing that literally makes
-        // `constraint_tol` inside `solve_gauss_newton` compare against a
-        // residual that has been shrunk by that block's (large) reference
-        // scale — e.g. a scaled residual of `1e-4` on the `dv/dt` block
-        // corresponds to an SI residual of `1e-4 * v_scale`, not `1e-4`
-        // m/s. That silently changes what `constraint_tol` means for the
-        // solver's OWN termination decision, which conflicts directly with
-        // this task's hard requirement that `constraint_tol` keep its exact
-        // SI meaning for both the solver's convergence check and any
-        // reported violation. Reconciling that would require editing
-        // `solve_gauss_newton`'s internal feasibility check to compare
-        // against separately-recomputed SI residuals — out of bounds per
-        // the "don't modify gauss_newton.rs internals" constraint.
-        //
-        // Resolution: this integration applies COLUMN-ONLY scaling —
-        // `c_eq_scale`/`c_ineq_scale` are left at `1.0` (constraint VALUES
-        // are never rescaled, only decision VARIABLES are, via `x_scale`
-        // above). This is the standard variable-scaled Gauss-Newton /
-        // Levenberg-Marquardt reformulation (equivalent to solving in
-        // `y = x / x_scale` coordinates; see e.g. MINPACK's `diag`
-        // parameter) and still directly targets the column-magnitude
-        // spread the diagnosis identified as the primary conditioning
-        // driver (e.g. `∂dalpha/∂curvature_cmd ≈ v` becomes `≈ v·curv_scale
-        // ≈ 1` once the `curvature_cmd` column is scaled). Because
+    /// Builds the reference scales for this problem's decision variables,
+    /// measured once from the equality Jacobian at the QSS warmstart `x0`
+    /// (see `jacobi_scale`) — a pure, reproducible function of
+    /// (car, track, n_nodes, method). Never updated during iteration.
+    fn build_scaling(&self, x0: &[f64]) -> crate::scaling::Scaling {
+        let x_scale = self.jacobi_scale(x0);
+
+        // Column-only scaling: constraint VALUES are never rescaled, only
+        // decision VARIABLES are (via `x_scale` above). This is the
+        // standard variable-scaled Gauss-Newton / Levenberg-Marquardt
+        // reformulation (equivalent to solving in `y = x / x_scale`
+        // coordinates; see e.g. MINPACK's `diag` parameter). Because
         // constraint values are untouched, `constraint_tol` and any
         // reported `eq_violation`/`ineq_violation` are IDENTICAL to what
         // the unscaled evaluator would report — not merely close, provably
-        // equal — so the SI-boundary requirement holds by construction, not
-        // by a post-hoc correction. `Scaling`/`ScaledEvaluator` in
-        // `scaling.rs` still support full row scaling generically (for a
-        // future solver where this tension may not apply); this call site
-        // simply chooses not to use it.
+        // equal — so the SI-boundary requirement holds by construction.
+        // `Scaling`/`ScaledEvaluator` in `scaling.rs` still support full row
+        // scaling generically (for a future solver where a different
+        // tradeoff may apply); this call site simply chooses not to use it.
         let c_eq_scale = vec![1.0; self.n_eq_constraints()];
         let c_ineq_scale = vec![1.0; self.n_ineq_constraints()];
 

@@ -1,16 +1,24 @@
-# Design note: variable/constraint scaling for the collocation NLP
+# Design note: variable scaling for the collocation NLP
 
-Status: PROPOSED — not implemented. This note designs a fix for the Gauss-Newton
-convergence failure characterized in the Phase 0.1 slice-3 diagnosis (oval and
+Status: **ADOPTED** (conditioning fix only — see "What this does and does not
+fix" below). Implemented in `crates/apex-optimizer/src/scaling.rs` and
+`crates/apex-optimizer/src/collocation.rs` (`CollocationOptimizer::optimize_gn`,
+`build_scaling`, `jacobi_scale`).
+
+This note originally proposed a fix for the Gauss-Newton convergence failure
+characterized in the Phase 0.1 slice-3 diagnosis (oval and
 `random_spline_track(seed=42)` fail to converge at N=50; violation *worsens*
-50→400 nodes; `circle_track` converges cleanly to 8e-6). Root cause: raw-SI
-decision variables and residuals span ~5 orders of magnitude in the Jacobian,
-fed into a single flat `regularization = 1e-4` in `(JᵀJ + reg·I)`. This is a
-conditioning failure, not a resolution or warmstart failure alone.
+50→400 nodes; `circle_track` converges cleanly to `7.9e-6`). Root cause:
+raw-SI decision variables span several orders of magnitude in the Jacobian,
+fed into a single flat `regularization = 1e-4` in `(JᵀJ + reg·I)`. The
+originally-proposed fix (a per-block physical-reference-value heuristic) was
+implemented, measured, and disproven — see "Superseded approach" below. What
+shipped instead is Jacobi (diagonal) preconditioning, described in A2.
 
-## A1 — Abstraction & placement
+## A1 — Abstraction & placement (unchanged from the original proposal)
 
-The current trait/struct boundary (`crates/apex-optimizer/src/nlp.rs`):
+The trait/struct boundary (`crates/apex-optimizer/src/nlp.rs`, not modified
+by this work):
 
 ```rust
 pub struct NlpProblem {
@@ -32,20 +40,16 @@ pub trait NlpEvaluator {
 ```
 
 Both `solve_gauss_newton` (`gauss_newton.rs`) and the existing `solve_nlp`
-(`solver.rs`) already consume nothing but `&impl NlpEvaluator` + `&NlpProblem`.
-Neither file needs to change. Scaling should be a **decorator that produces
-another `NlpEvaluator`**, sitting entirely on the problem-definition side of
-that boundary — so a future interior-point solver written against the same
-trait gets scaling for free, with zero solver-side code.
-
-Proposed new module, `crates/apex-optimizer/src/scaling.rs`:
+(`solver.rs`) consume nothing but `&impl NlpEvaluator` + `&NlpProblem`.
+Neither file was modified. Scaling is a decorator that produces another
+`NlpEvaluator`, in the new `crates/apex-optimizer/src/scaling.rs`:
 
 ```rust
 /// Diagonal (per-component) reference scales. `x_si = x_scale[i] * x_scaled[i]`.
 pub struct Scaling {
     pub x_scale: Vec<f64>,      // len n_vars
-    pub c_eq_scale: Vec<f64>,   // len n_eq
-    pub c_ineq_scale: Vec<f64>, // len n_ineq
+    pub c_eq_scale: Vec<f64>,   // len n_eq   — held at 1.0 (see A2)
+    pub c_ineq_scale: Vec<f64>, // len n_ineq — held at 1.0 (see A2)
 }
 
 impl Scaling {
@@ -54,261 +58,179 @@ impl Scaling {
     pub fn scale_problem(&self, p: &NlpProblem) -> NlpProblem { /* divide bounds by x_scale */ }
 }
 
-/// Wraps any NlpEvaluator to present a scaled-space NlpEvaluator.
-/// Solvers never know scaling exists.
 pub struct ScaledEvaluator<'a, E: NlpEvaluator> {
     pub inner: &'a E,
     pub scaling: &'a Scaling,
 }
-
-impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> {
-    // objective(x_scaled)            = inner.objective(unscale(x_scaled))
-    // objective_gradient(x_scaled)   = inner.objective_gradient(unscale(x)) .* x_scale   (chain rule)
-    // equality_constraints(x_scaled) = inner.equality_constraints(unscale(x)) ./ c_eq_scale
-    // equality_jacobian(x_scaled)[i,j] = inner_jacobian[i,j] * x_scale[j] / c_eq_scale[i]
-    // (inequality_* mirror the equality_* rows)
-}
+// impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> — chain-rule
+// scaling of objective/gradient/constraints/Jacobian; unchanged since the
+// original proposal.
 ```
 
-This is deliberately the whole abstraction: one data struct (scales), one
-generic wrapper. No pluggable strategy trait, no per-solver scaling variants,
-no runtime scale selection, no configuration enum. Things I considered and am
-explicitly leaving out because they are not needed to fix conditioning:
+`CollocationOptimizer::optimize_gn` is the only call site: it builds a
+`Scaling` from the QSS warmstart via `build_scaling`/`jacobi_scale`, wraps
+the evaluator/problem/`x0`, runs `solve_gauss_newton` unchanged, then
+unscales the result and **recomputes** `eq_violation`/`ineq_violation`
+against the unscaled evaluator before returning `OptimizationResult` (SI at
+the boundary — see A6).
 
-- **Automatic/adaptive scaling** (e.g. iterative re-scaling from the running
-  Jacobian, as some interior-point codes do). The diagnosis shows the
-  magnitude spread is a *static* property of the physical units involved
-  (mass, track width, curvature), not something that drifts during the solve
-  — static scales computed once are sufficient (see A2) and are simpler to
-  reason about and test.
-- **A general `Scaler` trait with swappable implementations.** There is
-  exactly one scaling scheme in this design; a trait would only exist to have
-  one implementer, which is speculative generality with no current consumer.
-- **Scaling the inequality grip-circle constraint.** It is already
-  dimensionless by construction (see A2) — touching it would be scaling
-  something that isn't broken.
+## A2 — Reference scales: Jacobi (diagonal) preconditioning, adopted
 
-`CollocationOptimizer::optimize_gn` is the only call site that changes: it
-builds a `Scaling` from `self.car`/`self.track`/`self.config` (and the
-existing QSS warmstart it already computes), wraps the evaluator, problem,
-and `x0`, runs the solver unchanged, then unscales the returned `x` before
-calling `extract_result_gn`. Everything downstream of that point is identical
-to today.
+**Superseded approach.** The original version of this note proposed a static
+per-block scale keyed to each variable's raw *physical* magnitude — `s` by
+track length (`≈1503` m), `n` by half-width, `v` by warmstart top speed,
+`curv` by max track curvature, `f_drive` by max drive/brake force, `dt` by
+expected time step, `alpha` left at `1.0`. This was implemented and measured
+directly: it drove the `s` column's contribution to `diag(JᵀJ)` from a raw,
+already-fine value of `√2 ≈ 1.41` (structural — `s` appears with a ±1
+coefficient in exactly two dynamics-defect rows, from the `state_k1[0] -
+state_k[0]` term, independent of the track's physical length) up to `2114`
+after scaling — a ~1500× *over*-correction, because the heuristic conflated
+"how large is this variable's raw value" with "how large is this variable's
+actual Jacobian sensitivity," which are unrelated for `s`. This broke 5
+previously-passing tests (`gn_circle_collocation`,
+`hs_optimization_circle_converges`, `hs_lower_defect_than_trapezoidal_on_oval`,
+`mesh_refinement::refinement_on_circle`,
+`mesh_refinement::refinement_beats_cold_start_on_oval`) and was replaced,
+not patched, by the approach below.
 
-## A2 — Reference scales per block
+**What shipped: Jacobi/diagonal preconditioning, measured at the warmstart.**
+For each decision-variable column `j`, scale by the reciprocal of that
+column's actual measured Jacobian norm in the equality Jacobian, evaluated
+once at the QSS warmstart `x0`:
 
-All scales below are **static**: computed once from `CarParams`, `Track`, and
-`CollocationConfig` (plus the QSS warmstart pass that `initial_guess()`
-already runs — reusing its output costs nothing extra), before the GN loop
-starts. Nothing depends on the solver's iterates, so scales are reproducible
-run-to-run and trivial to unit test in isolation. I see no evidence in the
-diagnosis that static scales are insufficient (the magnitude spread is a
-fixed property of the problem, not something that changes as `x` moves), so
-I'm not proposing iteration-dependent (adaptive) scaling.
+```
+x_scale[j] = 1 / max(‖J_eq[:, j]‖, floor)      (floor = 1e-6, unchanged from the original proposal)
+```
 
-| Variable block | Proposed reference scale | Justification |
-|---|---|---|
-| `s` (station, m) | `track.total_length` | `s ∈ [0, L]` by construction; `s/L ∈ [0,1]`. Purely static from `Track`. |
-| `n` (lateral offset, m) | half the track width (e.g. mean or max of `width_at(s)` half-widths over the track) | `n` is physically bounded to roughly this range by the track-boundary inequality; measured warmstart range was `[0,0]` but the *bound*, not the warmstart value, is the right static reference since `n` moves during optimization. |
-| `v` (speed, m/s) | `max(qss_warmstart.speeds)` | Already computed for free as part of `initial_guess()`. Ties the scale to *this* car+track pair exactly (measured oval range was `[44.8, 88.0]` m/s), rather than a generic formula that could be wrong for a very different car. |
-| `alpha` (heading deviation, rad) | `1.0` (no rescaling) | Heading deviation from the track tangent is already O(0.1–1) rad for normal driving — it is not part of the 5-order-of-magnitude spread the diagnosis identified. Rescaling an already-unit-order quantity would add a moving part for no conditioning benefit — explicitly one of the "don't touch what isn't broken" cases from A1. |
-| `f_drive` (drive/brake force, N) | `max(car.max_drive_force, car.max_brake_force)` | A hard physical bound already stored on `CarParams`; static, requires no solve. Puts `f_drive/f_ref` inside roughly `[-1, 0.5]`. |
-| `curv` (curvature command, 1/m) | `max(\|track.segments[i].curvature\|)` over the track | Static, computed once from `Track`. For the default oval this is `0.0125` (`1/80`), putting scaled curvature in roughly `[-1, 1]`. |
-| `dt` (time step, s) | `qss_warmstart.lap_time / (n_nodes - 1)` | Reuses the QSS pass again; gives the "expected" interval duration at this car/track/mesh-density combination, again for free. |
+(`crates/apex-optimizer/src/collocation.rs`, `jacobi_scale`). This drives
+every scaled column's contribution to `diag(JᵀJ)` to *exactly* `1.0` by
+construction (`diag(JᵀJ)_scaled_j = ‖J[:,j]‖² · x_scale[j]² = 1`), rather than
+to "roughly comparable" as the physical-heuristic table aimed for. Measured
+on the default oval, calibrated car, N=50 — the same case where the old
+heuristic produced a `1.40`–`2114` (3.2 orders of magnitude) scaled spread —
+Jacobi scaling produces exactly `1.0` for all seven blocks (`s`, `n`, `v`,
+`alpha`, `f_drive`, `curv`, `dt`), with none hitting the `1e-6` floor at this
+measurement point (every block has genuine, non-degenerate sensitivity — see
+the implementation report for the full per-block table).
 
-**Equality-constraint (defect) residual scales**: each dynamics-defect
-component is literally a difference of one state variable's values at two
-nodes (`state_k1[j] - state_k[j] - ...`), so it has the *same physical units*
-as that state component. The minimal, dimensionally-correct choice is to
-reuse the matching variable's scale rather than invent an independent
-constant:
+The reference point is **static**: measured once at the QSS warmstart, a
+pure function of `(car, track, n_nodes, method)`, then frozen for the entire
+solve — never updated during iteration. An adaptive variant (re-measuring at
+a few early iterations before freezing) was also implemented and measured;
+its convergence gain over the static warmstart measurement was marginal to
+negative on the cases that matter (oval, `random_spline_track`) while adding
+a real new knob (a re-measurement schedule) and tripling early-iteration
+Jacobian-evaluation cost. The static warmstart measurement was kept on
+reproducibility grounds.
 
-| Defect component | `c_eq_scale` |
-|---|---|
-| `ds/dt` residual (index `4k+0`) | `s_scale` (`= total_length`) |
-| `dn/dt` residual (index `4k+1`) | `n_scale` |
-| `dv/dt` residual (index `4k+2`) | `v_scale` |
-| `dalpha/dt` residual (index `4k+3`) | `alpha_scale` (`= 1.0`) |
-| periodicity: `s`/`n`/`v`/`alpha` wrap (4 extra, closed tracks) | same four scales, respectively |
+**Equality/inequality constraint scales stay at `1.0` (column-only
+scaling).** This was already true under the physical-heuristic version's
+forced deviation and is unchanged: scaling constraint *values* (not just
+variables) would make `constraint_tol` inside `solve_gauss_newton`'s own
+feasibility check compare against a residual shrunk by that block's
+reference scale, silently changing what `constraint_tol` means for the
+solver's own termination decision. Column-only scaling (the standard
+variable-scaled Gauss-Newton/Levenberg-Marquardt reformulation — see e.g.
+MINPACK's `diag` parameter) avoids this: because constraint values are never
+rescaled, `constraint_tol` and any reported `eq_violation`/`ineq_violation`
+are *identical* to what the unscaled evaluator would report — provably
+equal, not merely close — so the SI-boundary requirement holds by
+construction. `Scaling`/`ScaledEvaluator` still support full row scaling
+generically, for a future solver where this tradeoff may not apply; the
+collocation call site does not use it.
 
-**Inequality-constraint scales**: the track-width residual (`n - w_l`,
-`-w_r - n`) is a difference of `n`-like quantities → scale by `n_scale`. The
-grip-circle residual, `(f_lon/f_grip)^2 + (f_lat/f_grip)^2 - 1`, is **already
-dimensionless by construction** — leave its scale at `1.0` (see A1's
-explicit-exclusion list).
+## A3 — Invertibility & neutrality (confirmed, not just argued)
 
-With this table, every scaled-space quantity is O(0.1–1) instead of spanning
-`~1e-3` (force-related) to `~1e2` (curvature/heading-rate-related), which is
-exactly the ratio the diagnosis flagged as the conditioning problem.
+The invertibility argument is unchanged: `unscale_x(scale_x(x)) == x` up to
+IEEE-754 rounding (~1e-12 relative), since `x_scale` is a fixed, positive,
+finite, iterate-independent vector. This is now backed by passing tests:
+`scaling::tests::round_trip_unscale_scale_is_identity` and
+`collocation::tests::scaling_round_trip_matches_warmstart_within_1e12` (the
+latter using a real oval warmstart vector).
 
-## A3 — Invertibility & neutrality argument
-
-Scaling is a diagonal linear change of variables: `x_si = diag(x_scale) · x_scaled`.
-
-- **Exact invertibility**: `scale_x` divides elementwise by `x_scale`,
-  `unscale_x` multiplies elementwise by the same `x_scale`. Since every entry
-  of `x_scale` is a positive, finite, iterate-independent constant (guarded
-  with a small floor, e.g. `max(scale, 1e-9)`, for the degenerate edge case
-  of a track with zero curvature everywhere, so `curv_scale` is never
-  literally zero), `unscale_x(scale_x(x)) == x` up to IEEE-754 floating-point
-  rounding — one multiply and one divide by the same constant, which is
-  accurate to machine epsilon (~2.2e-16 relative), not exact bit-for-bit in
-  general. The round-trip unit test in A5 should therefore assert closeness
-  to ~1e-12 relative, not `==`.
-- **Physical neutrality**: dividing every decision variable and every
-  constraint residual by a fixed positive constant is exactly
-  non-dimensionalization — it relabels coordinates and rescales the
-  magnitude of "how far from zero" a constraint reads, but the *zero set*
-  `{x : c_eq(x) = 0}` and the *objective's ordering* (`f(x_1) < f(x_2)` iff
-  `f(unscale(x_1)) < f(unscale(x_2))`, since unscaling the objective is
-  identity — the objective itself, lap time, is not rescaled, only its
-  gradient picks up a chain-rule factor) are unchanged. The physical optimum
-  cannot move; only the numerical path the solver takes to reach it changes.
-- **Correctness invariant**: because `circle_track` already converges
-  cleanly today (`eq_violation = 7.93e-6`), it is the neutrality control —
-  after implementing scaling, it **must** still converge, and its lap time
-  must land within a very tight tolerance of today's value (proposed:
-  `1e-6` s, far tighter than the golden-lap harness's `0.010` s — this test
-  is checking mathematical equivalence of a reparametrized problem, not
-  cross-build FP portability, so it should use a much stricter bound than
-  the physics golden's tolerance).
+Neutrality was measured directly on `circle_track(100.0, 12.0, 200)`, N=50,
+calibrated car (the case that already converged cleanly before any scaling
+work): lap time `11.494986` s post-scaling vs. `11.495100` s pre-scaling —
+**delta = 1.14e-4 s**. This is roughly 23× tighter than the abandoned
+physical-heuristic attempt's delta (`2.59e-3` s) and well within the
+golden-lap harness's `0.010` s tolerance. It is not exactly `0` because
+pre- and post-scaling runs stop at different (both tiny) feasibility levels
+along mathematically-equivalent-but-not-bit-identical iterative paths — the
+underlying claim (a change of variables cannot move the physical optimum)
+holds; two different stopping iterations landing on identical floats was
+always an unrealistic bar.
 
 ## A4 — Regularization interaction
 
-Today, `regularization = 1e-4` is added flatly to every diagonal entry of
-`JᵀJ`, but the diagnosis's D5 finding shows `JᵀJ`'s diagonal already spans
-~5 orders of magnitude (`~1e-3` for force-related entries to `~1e2` for
-curvature/heading-rate entries) *before* regularization is added. A single
-flat `reg` cannot be simultaneously right-sized for both ends of that range —
-it over-damps the small-magnitude directions and under-damps the
-large-magnitude ones.
+`regularization = 1e-4` was **not changed**, per the original recommendation.
+Jacobi scaling collapses `diag(JᵀJ)` to exactly `1.0` for every column
+(stronger than the "roughly O(1)" the physical-heuristic table aimed for),
+which is precisely the regime a single flat regularization constant suits.
 
-After scaling, `JᵀJ`'s diagonal collapses to roughly O(1) uniformly (by
-construction of the per-block scales in A2), which is precisely the regime a
-single flat regularization constant is designed for. **Recommendation:
-leave `regularization = 1e-4` unchanged as the starting point** — scaling
-should reduce or eliminate the need to touch it, not require a coordinated
-change alongside it. This is the minimal move: don't retune two things when
-only one was diagnosed as broken. It should be the first thing re-verified
-empirically once scaling is implemented (part of A5's efficacy test), rather
-than assumed correct or preemptively changed.
+`constraint_tol` also required no reinterpretation, unlike the original
+proposal's open concern: because column-only scaling never touches
+constraint values, `constraint_tol = 1e-4` means exactly the same thing —
+"defect satisfied to `1e-4` in SI units" — before and after scaling, for
+both the solver's own internal termination check and any reported
+violation. This is proven, not just argued, by
+`collocation::tests::build_scaling_leaves_constraints_unscaled` (asserts
+`c_eq_scale`/`c_ineq_scale` are literally `1.0`) and
+`collocation::tests::optimize_gn_reports_si_violation_not_scaled`
+(independently recomputes the reported violation via the public API and
+asserts equality to `<1e-9`).
 
-One real, first-order side effect that is **not** a regularization question
-but is adjacent to it: `constraint_tol = 1e-4` in `GaussNewtonConfig` is
-compared against the solver's own internal `eq_violation`/`ineq_violation`
-during its termination check (`gauss_newton.rs`'s `feasible = ev <
-config.constraint_tol && iv < config.constraint_tol`). If the solver runs
-against the *scaled* evaluator (as designed), that internal check now
-compares `1e-4` against a scaled residual, not an SI one. Because the
-`c_eq_scale` table in A2 reuses each defect's own state-variable scale, a
-scaled residual of `1e-4` roughly corresponds to an SI residual of
-`1e-4 * (that block's scale)` — e.g. for the `dv/dt` block, `1e-4 * v_scale
-≈ 1e-4 * 88 ≈ 8.8e-3` m/s, not `1e-4` m/s. **This is a semantic shift in
-what `constraint_tol` means and is flagged here explicitly as an open
-decision for the implementer, not silently absorbed** — see A6.
+## What this does and does not fix
 
-## A5 — Test/verification plan
+**Fixed (conditioning):**
+- `diag(JᵀJ)` column spread: `1.40`–`111.8` raw (broken heuristic made it
+  `1.40`–`2114`, ~3.2 orders) → **exactly `1.0` for every block** under
+  Jacobi scaling.
+- All 5 previously-regressed tests pass again (`gn_circle_collocation`,
+  `hs_optimization_circle_converges`, `hs_lower_defect_than_trapezoidal_on_oval`,
+  `mesh_refinement::refinement_on_circle`,
+  `mesh_refinement::refinement_beats_cold_start_on_oval`).
+- Neutrality: circle lap time moves by `1.14e-4` s (23× tighter than the
+  broken heuristic's `2.59e-3` s), well inside golden tolerance.
 
-1. **Neutrality** (falsifiable pass/fail): `circle_track(100.0, 12.0, 200)`,
-   same `CollocationConfig` as the existing `gn_circle_collocation` test.
-   Assert `converged == true` (unchanged) and
-   `|lap_time_post_scaling - lap_time_baseline| <= 1e-6` s. This is the
-   single most important test in the suite — if it fails, the scaling
-   implementation has a bug (most likely a Jacobian chain-rule error or an
-   inconsistent scale/unscale pair), not a research finding.
+**NOT fixed (convergence on hard tracks):** `optimize --hermite-simpson`
+still does **not** converge on the default oval or
+`random_spline_track(seed=42)` at N=50 — `eq_violation` stays at `4.08e-1`
+(oval) and `3.73e-1` (spline), both *worse in absolute terms* than the
+abandoned heuristic's non-converged values (`8.96e-3` and `6.65e-3`
+respectively), even though Jacobi scaling is the mathematically correct
+conditioning fix. This shows that perfect *local* conditioning at the
+warmstart does not guarantee good conditioning along the whole solve
+trajectory for a badly nonlinear problem — the frozen Jacobian stops
+representing the system well once the iterate moves far from the warmstart,
+which happens far more on oval/spline (large speed swings through braking
+zones) than on the circle (near-constant speed throughout, converges in a
+handful of iterations). **This is a conditioning fix, not a convergence
+fix.** Achieving convergence on non-trivial tracks needs warmstart quality /
+mesh continuation work — a separate, later slice. The `optimize`
+golden (paused since Phase 0.1 slice 3) remains paused until that work
+lands.
 
-2. **Efficacy**: oval (default, N=50, calibrated) and
-   `random_spline_track(seed=42, 50 nodes)`. Primary target:
-   `converged == true`. Fallback success criterion, stated in advance, if
-   full convergence isn't reached: `eq_violation` drops by **at least two
-   orders of magnitude** relative to the unscaled baseline (oval:
-   `6.42e-2 → < 6.42e-4`; spline: `2.90e-2 → < 2.90e-4`), with no regression
-   on either track.
+## A6 — Blast radius (as shipped)
 
-3. **Conditioning signature**: reproduce the D4 node-count table exactly
-   (N = 50, 100, 200, 400) post-scaling. Success = violation does **not**
-   worsen with `N` (flat or improving trend), in contrast to the pre-scaling
-   `6.42e-2 → 4.75e-2 → 3.62e-1 → 5.58e-1` trend. This is the most
-   diagnostic single check for "did scaling fix the conditioning issue" as
-   opposed to "got lucky on one track" — it's the one result that most
-   directly targets the root cause rather than a symptom.
-
-4. **Round-trip unit test**: for a handful of representative vectors (the
-   QSS warmstart `x0`, the raw variable bounds themselves, and one
-   arbitrarily perturbed vector within bounds), assert
-   `unscale_x(scale_x(x))` matches `x` elementwise within relative tolerance
-   `~1e-12` (per A3's machine-epsilon argument).
-
-**Falsification criterion** (one sentence, stated in advance): if, after
-implementing scaling exactly as designed, the oval's and
-`random_spline_track(seed=42)`'s `eq_violation` values move by less than
-roughly one order of magnitude and/or the N=50→400 violation trend still
-worsens rather than flattens or improves, that falsifies "unscaled
-conditioning is the dominant cause," and the next investigation should be
-warmstart quality / mesh continuation (candidate fix #2 from the prior
-diagnosis), not further scaling tuning.
-
-## A6 — Blast radius
-
-**Changes**:
-- New file `crates/apex-optimizer/src/scaling.rs` (`Scaling`,
-  `ScaledEvaluator`, `scale_x`/`unscale_x`/`scale_problem`).
+**Changed:**
+- New `crates/apex-optimizer/src/scaling.rs` (`Scaling`, `ScaledEvaluator`,
+  `floor_scale`).
 - `crates/apex-optimizer/src/lib.rs`: `pub mod scaling;` + re-export.
-- `crates/apex-optimizer/src/collocation.rs`: `optimize_gn` gains a build
-  step (construct `Scaling`, wrap evaluator/problem/x0, unscale the result).
-  Scope is deliberately limited to `optimize_gn`'s point-mass path — the
-  diagnosis was run against that path specifically. `optimize`,
-  `optimize_seven_dof`, `optimize_fourteen_dof`, and `optimize_direct` are
-  **not** touched by this design and are explicitly out of scope; if they
-  show similar conditioning issues, that's a separate follow-up informed by
-  re-running the same diagnosis against them.
+- `crates/apex-optimizer/src/collocation.rs`: `jacobi_scale`, `build_scaling`,
+  `optimize_gn` (build/wrap/unscale/recompute-in-SI at the boundary).
+  Scope is limited to `optimize_gn`'s point-mass path, as originally scoped.
+  `optimize`, `optimize_seven_dof`, `optimize_fourteen_dof`, and
+  `optimize_direct` are untouched and out of scope.
 
-**Not changed, and must not change**:
+**Not changed:**
 - `crates/apex-optimizer/src/{nlp.rs, gauss_newton.rs, solver.rs}` — zero
-  edits. This is the entire point: any current or future solver (including
-  the Phase 3 interior-point solver) consumes `NlpEvaluator`/`NlpProblem`
-  exactly as today, oblivious to whether scaling sits underneath.
-- `apex-physics::qss_lap_sim` / `qss.rs` — completely untouched; scaling only
-  touches the collocation NLP path. `golden_oval_qss` is unaffected by
-  construction.
+  edits, as designed.
+- `apex-physics::qss_lap_sim` / `qss.rs` — untouched. `golden_oval_qss` is
+  unaffected by construction and confirmed green.
 - `OptimizationResult` — struct definition and field units stay SI.
-  Unscaling happens *before* `extract_result_gn` runs, so nothing downstream
-  (CLI printout, telemetry CSV/SVG export, the paused optimize golden from
-  slice 3, the viewer) sees anything different in shape or units.
 
-**Explicit risk to guard against**: `eq_violation`/`ineq_violation` in
-`OptimizationResult` must be **recomputed against the unscaled inner
-evaluator on the unscaled final `x`**, not read off the scaled solver's
-`GaussNewtonResult` directly. If that recompute step is skipped, a
-scaled-space residual number would leak past the NLP boundary into
-`OptimizationResult`, and from there into golden fixtures, telemetry, or CLI
-output — silently changing what "eq_violation" means to a human reading it,
-even though `lap_time`/`speeds`/`offsets` would still be correct. This must
-be enforced by construction (the recompute call is mandatory in
-`extract_result_gn`'s call path), not left as a comment or convention.
-
-**Secondary flag**: per A4, `constraint_tol`'s effective meaning shifts once
-the solver's internal termination check runs against scaled residuals. The
-converged/not-converged decision boundary will move slightly relative to
-today even though the *reported* `eq_violation` (recomputed in SI) stays
-honest. This is a real behavior change to call out to the maintainer at
-implementation time, not something to quietly work around.
-
----
-
-## Summary
-
-- **File**: this design note lives at `docs/design/nlp-scaling.md`.
-- **Per-block scale table**: `s → total_length`, `n → track half-width`,
-  `v → max(QSS warmstart speed)`, `alpha → 1.0` (unscaled), `f_drive →
-  max(max_drive_force, max_brake_force)`, `curv → max(|track curvature|)`,
-  `dt → QSS lap_time / (n_nodes - 1)`; equality-defect scales reuse the
-  matching state-variable scale; the grip-circle inequality is left
-  unscaled (already dimensionless).
-- **Falsification criterion**: if oval/spline `eq_violation` moves less than
-  roughly an order of magnitude and the N=50→400 trend still worsens after
-  implementing exactly this design, unscaled conditioning is not the
-  dominant cause and the investigation should move to warmstart/mesh
-  continuation instead.
-
-Nothing in this note has been implemented. Stopping for review.
+**Guardrail enforced, not just documented:** `eq_violation`/`ineq_violation`
+are recomputed against the unscaled evaluator on the unscaled final `x`
+before returning from `optimize_gn` — proven by
+`optimize_gn_reports_si_violation_not_scaled`, not left as a comment.

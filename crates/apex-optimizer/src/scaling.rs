@@ -90,9 +90,8 @@ impl Scaling {
     /// x_scaled` composed with `c_scaled = c_si / row_scale`).
     fn scale_jacobian(&self, j_si: &CsrMatrix, row_scale: &[f64]) -> CsrMatrix {
         let mut builder = CsrBuilder::new(j_si.nrows(), j_si.ncols());
-        for row in 0..j_si.nrows() {
+        for (row, &c) in row_scale.iter().enumerate().take(j_si.nrows()) {
             let (values, cols) = j_si.row_entries(row);
-            let c = row_scale[row];
             for (&v, &col) in values.iter().zip(cols.iter()) {
                 builder.add(row, col, v * self.x_scale[col] / c);
             }
@@ -127,8 +126,7 @@ impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> {
     fn equality_constraints(&self, x: &[f64]) -> Vec<f64> {
         let x_si = self.scaling.unscale_x(x);
         let c_si = self.inner.equality_constraints(&x_si);
-        c_si
-            .iter()
+        c_si.iter()
             .zip(&self.scaling.c_eq_scale)
             .map(|(&c, &s)| c / s)
             .collect()
@@ -137,8 +135,7 @@ impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> {
     fn inequality_constraints(&self, x: &[f64]) -> Vec<f64> {
         let x_si = self.scaling.unscale_x(x);
         let c_si = self.inner.inequality_constraints(&x_si);
-        c_si
-            .iter()
+        c_si.iter()
             .zip(&self.scaling.c_ineq_scale)
             .map(|(&c, &s)| c / s)
             .collect()

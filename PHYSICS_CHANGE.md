@@ -70,3 +70,33 @@ change, not chased as a bug.
 - Lap-time delta: n/a (initial baseline)
 - Speed-RMSE delta: n/a (initial baseline)
 - Fixtures regenerated: f1_2024_calibrated__oval_default__qss.json (created)
+
+### 2026-07-03 — Jacobi variable scaling adopted in the collocation NLP (conditioning fix only)
+- Change: `CollocationOptimizer::optimize_gn` now scales decision variables
+  by the reciprocal of their measured equality-Jacobian column norm at the
+  QSS warmstart (`1/‖J[:,j]‖`, static, computed once, column-only —
+  constraint/residual values stay unscaled). See
+  `docs/design/nlp-scaling.md` for the full design and the earlier,
+  disproven physical-range heuristic this replaced.
+- Rationale: fixes a real Gauss-Newton conditioning failure (decision
+  variables spanned several orders of magnitude in the Jacobian against a
+  flat `regularization = 1e-4`), which had broken 5 previously-passing
+  optimizer tests. Jacobi scaling restores all 5 to green and drives every
+  variable block's scaled Jacobian column norm to exactly `1.0`.
+- Lap-time delta: **neutral**. `qss_lap_sim` and the QSS golden
+  (`golden_oval_qss`) are completely untouched by this change — this only
+  affects `CollocationOptimizer::optimize_gn`, a separate code path. As a
+  correctness check, the `circle_track` optimize case (which already
+  converged before this change) was re-run: lap time moved by **1.1e-4 s**
+  (`11.495100` → `11.494986`), well within any golden tolerance — expected,
+  since a change of variables cannot move the physical optimum, only the
+  numerical path to it.
+- Speed-RMSE delta: n/a (this change does not touch QSS or the speed trace;
+  no golden was regenerated).
+- Fixtures regenerated: none. The QSS golden is unaffected and stays green.
+- **Explicitly NOT a convergence fix**: `optimize --hermite-simpson` still
+  does not converge on non-trivial tracks (the default oval, or a random
+  spline track) at N=50 — conditioning is fixed, but the solver still
+  doesn't reach `constraint_tol` on these cases. The paused `optimize`
+  golden (see Phase 0.1 slice 3) remains paused pending a follow-up
+  warmstart/mesh-continuation slice; this entry does not unpause it.

@@ -20,7 +20,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apex_optimizer::{CollocationConfig, CollocationMethod, CollocationOptimizer, GaussNewtonConfig};
+use apex_optimizer::{
+    CollocationConfig, CollocationMethod, CollocationOptimizer, GaussNewtonConfig,
+};
 use apex_physics::{qss_lap_sim, CarParams};
 use apex_track::{build_track, oval_track, Track};
 use serde::{Deserialize, Serialize};
@@ -166,7 +168,12 @@ fn git_sha() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn build_metadata(car_id: &str, track_id: &str, mode: &str, flags: serde_json::Value) -> GoldenMetadata {
+fn build_metadata(
+    car_id: &str,
+    track_id: &str,
+    mode: &str,
+    flags: serde_json::Value,
+) -> GoldenMetadata {
     let generated_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock before Unix epoch")
@@ -280,7 +287,11 @@ fn compute_payload(track: &Track, params: &CarParams) -> GoldenPayload {
 /// `--hermite-simpson --calibrated` (see `bins/apex-cli/src/main.rs`'s
 /// `cmd_optimize`), resamples speeds and lateral offsets onto the 10 m grid,
 /// and reports whether the solve converged.
-fn compute_optimize_payload(track: &Track, params: &CarParams, nodes: usize) -> (GoldenPayload, bool) {
+fn compute_optimize_payload(
+    track: &Track,
+    params: &CarParams,
+    nodes: usize,
+) -> (GoldenPayload, bool) {
     let config = CollocationConfig {
         n_nodes: nodes,
         method: CollocationMethod::HermiteSimpson,
@@ -374,7 +385,10 @@ fn regen_golden_oval() {
         }),
     );
 
-    write_fixture(&fixture_path(QSS_FIXTURE_PATH), &GoldenFixture { metadata, payload });
+    write_fixture(
+        &fixture_path(QSS_FIXTURE_PATH),
+        &GoldenFixture { metadata, payload },
+    );
 }
 
 #[test]
