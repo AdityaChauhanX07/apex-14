@@ -109,3 +109,36 @@ change, not chased as a bug.
   doesn't reach `constraint_tol` on these cases. The paused `optimize`
   golden (see Phase 0.1 slice 3) remains paused pending a follow-up
   warmstart/mesh-continuation slice; this entry does not unpause it.
+
+### 2026-07-04 — DEFERRAL RECORD: optimize non-convergence root-caused, fix deferred to Phase 3 (no code change)
+- This is a deferral record, not a code change — nothing in the solver or
+  tests was touched by this entry.
+- Symptom: `optimize --hermite-simpson` converges on constant-curvature
+  tracks (`circle_track`, `eq_violation → 7.9e-6`) but not on the oval or a
+  random spline track — both floor at `eq_violation ≈ 0.68` SI, well above
+  `constraint_tol = 1e-4`, regardless of iteration budget.
+- Root cause (precise): the projected Gauss-Newton solver
+  (`gauss_newton.rs`) computes an unconstrained Newton step and enforces
+  variable bounds only by post-hoc projection/clipping — it has no
+  active-set or Lagrange-multiplier mechanism. It deadlocks when the
+  optimum requires a bound to bind: `f_drive` saturates `max_drive_force`
+  across the nodes on the straights (physically correct — a car floors the
+  throttle on a straight), the linear system repeatedly demands more force
+  than exists, and projection clips the step to ~zero every iteration.
+  ~25-28 of 349 variables pinned at bound; net displacement ~7e-13.
+- Ruled out by experiment (do not re-run): variable scaling/conditioning
+  (fixed separately, wasn't the cause); warmstart quality (a 3.2x-better
+  warmstart made it WORSE, not better); line-search tuning (no effect — the
+  line search accepts every iteration, isn't the bottleneck); inner-CG
+  precision (no effect — the direction is solved correctly, it correctly
+  points infeasible); mesh coarsening (no coarse N from 10-40 converges
+  either).
+- Two known fix paths: (a) add active-set/bound-multiplier logic to the
+  current GN solver (pin bound-active variables, solve the reduced
+  free-variable system), or (b) the Phase-3 interior-point solver, which
+  handles active bounds natively via the log-barrier. **Decision: deferred
+  to Phase 3 (option b)**, to avoid building bound-handling solver
+  infrastructure twice.
+- Status: `golden_oval_optimize` remains `#[ignore]`d; the `optimize` golden
+  fixture is intentionally not generated.
+- Full mechanism write-up: `docs/design/gn-solver-bound-deadlock.md`.
