@@ -50,3 +50,46 @@ jobs:
 
       - name: Release build
         run: cargo build --release --workspace
+
+  msrv:
+    name: MSRV (1.88.0)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # This checkout's rust-toolchain.toml pins 1.94.1 repo-wide, so a bare
+      # `rustup default 1.88.0` (or relying on this action to change the
+      # default) would NOT win — the directory override always beats a
+      # default toolchain. Every command in this job therefore explicitly
+      # selects `+1.88.0` so the repo-wide pin can never silently take over
+      # and turn this into a no-op job that actually runs on 1.94.1.
+      - name: Install MSRV toolchain (1.88.0)
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      # Proves the override before any build step runs — if this ever prints
+      # anything other than 1.88.0, the job is not testing what it claims to.
+      - name: Prove the MSRV toolchain is actually selected
+        run: rustc +1.88.0 --version
+
+      - name: Cache cargo registry and target (MSRV, separate from the pinned-toolchain cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-1.88.0-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-1.88.0-
+
+      # MSRV is a promise about compilation + behavior, not lint parity —
+      # rustfmt/clippy output differs across toolchain versions, so no
+      # fmt/clippy here. The pinned-1.94.1 `check` job above is the sole
+      # authority for style. This job only proves the support floor builds
+      # and passes tests.
+      - name: Build on MSRV
+        run: cargo +1.88.0 build --workspace
+
+      - name: Test on MSRV
+        run: cargo +1.88.0 test --workspace
