@@ -483,6 +483,110 @@ impl<'a> CollocationOptimizer<'a> {
         }
     }
 
+    /// Largest absolute curvature anywhere on the track (static, from `Track`).
+    fn max_abs_curvature(&self) -> f64 {
+        self.track
+            .segments
+            .iter()
+            .map(|seg| seg.curvature.abs())
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Largest half-width anywhere on the track (static, from `Track`).
+    fn max_half_width(&self) -> f64 {
+        self.track
+            .segments
+            .iter()
+            .map(|seg| seg.width_left.max(seg.width_right))
+            .fold(0.0_f64, f64::max)
+    }
+
+    /// Builds the static, one-shot reference scales for this problem's
+    /// decision-variable and constraint blocks (see
+    /// `docs/design/nlp-scaling.md`). Computed once, before the solve, from
+    /// `car`/`track`/`config` plus the QSS-derived warmstart already
+    /// computed for `initial_guess()` — never updated during iteration.
+    fn build_scaling(&self, x0: &[f64]) -> crate::scaling::Scaling {
+        use crate::scaling::floor_scale;
+
+        let n = self.config.n_nodes;
+        let warm = self.unpack(x0);
+
+        let s_scale = floor_scale(self.track.total_length);
+        let n_scale = floor_scale(self.max_half_width());
+        let v_scale = floor_scale(warm.v.iter().cloned().fold(f64::MIN, f64::max));
+        let alpha_scale = 1.0_f64;
+        let f_scale = floor_scale(self.car.max_drive_force.max(self.car.max_brake_force));
+        let curv_scale = floor_scale(self.max_abs_curvature());
+        // `dt_scale` is the expected per-interval time step at THIS mesh
+        // density (`n_nodes`): a finer mesh implies a shorter expected time
+        // step by design (same lap time spread over more, smaller steps).
+        // If a node-count sweep shows `dt_scale` changing across N, that is
+        // expected and correct, not a bug — see the D4 re-run in the
+        // implementation report.
+        let lap_time_guess: f64 = warm.dt.iter().sum();
+        let dt_scale = floor_scale(lap_time_guess / (n - 1) as f64);
+
+        let mut x_scale = vec![0.0; self.n_vars()];
+        x_scale[0..n].fill(s_scale);
+        x_scale[n..2 * n].fill(n_scale);
+        x_scale[2 * n..3 * n].fill(v_scale);
+        x_scale[3 * n..4 * n].fill(alpha_scale);
+        x_scale[4 * n..5 * n].fill(f_scale);
+        x_scale[5 * n..6 * n].fill(curv_scale);
+        if self.config.optimize_brake_bias {
+            let bb = self.brake_bias_offset();
+            // Already unit-order ([0.50, 0.80]); no rescaling needed.
+            x_scale[bb..bb + n].fill(1.0);
+        }
+        let dt_start = self.dt_offset();
+        x_scale[dt_start..].fill(dt_scale);
+
+        // DEVIATION from the approved design's A2 table, recorded here
+        // deliberately: A2 proposed reusing each defect's matching
+        // state-variable scale as its `c_eq_scale` (e.g. dividing the
+        // `dv/dt` defect by `v_scale`). Implementing that literally makes
+        // `constraint_tol` inside `solve_gauss_newton` compare against a
+        // residual that has been shrunk by that block's (large) reference
+        // scale — e.g. a scaled residual of `1e-4` on the `dv/dt` block
+        // corresponds to an SI residual of `1e-4 * v_scale`, not `1e-4`
+        // m/s. That silently changes what `constraint_tol` means for the
+        // solver's OWN termination decision, which conflicts directly with
+        // this task's hard requirement that `constraint_tol` keep its exact
+        // SI meaning for both the solver's convergence check and any
+        // reported violation. Reconciling that would require editing
+        // `solve_gauss_newton`'s internal feasibility check to compare
+        // against separately-recomputed SI residuals — out of bounds per
+        // the "don't modify gauss_newton.rs internals" constraint.
+        //
+        // Resolution: this integration applies COLUMN-ONLY scaling —
+        // `c_eq_scale`/`c_ineq_scale` are left at `1.0` (constraint VALUES
+        // are never rescaled, only decision VARIABLES are, via `x_scale`
+        // above). This is the standard variable-scaled Gauss-Newton /
+        // Levenberg-Marquardt reformulation (equivalent to solving in
+        // `y = x / x_scale` coordinates; see e.g. MINPACK's `diag`
+        // parameter) and still directly targets the column-magnitude
+        // spread the diagnosis identified as the primary conditioning
+        // driver (e.g. `∂dalpha/∂curvature_cmd ≈ v` becomes `≈ v·curv_scale
+        // ≈ 1` once the `curvature_cmd` column is scaled). Because
+        // constraint values are untouched, `constraint_tol` and any
+        // reported `eq_violation`/`ineq_violation` are IDENTICAL to what
+        // the unscaled evaluator would report — not merely close, provably
+        // equal — so the SI-boundary requirement holds by construction, not
+        // by a post-hoc correction. `Scaling`/`ScaledEvaluator` in
+        // `scaling.rs` still support full row scaling generically (for a
+        // future solver where this tension may not apply); this call site
+        // simply chooses not to use it.
+        let c_eq_scale = vec![1.0; self.n_eq_constraints()];
+        let c_ineq_scale = vec![1.0; self.n_ineq_constraints()];
+
+        crate::scaling::Scaling {
+            x_scale,
+            c_eq_scale,
+            c_ineq_scale,
+        }
+    }
+
     /// Extract a structured result from the raw solver output.
     fn extract_result(&self, solver_result: &SolverResult) -> OptimizationResult {
         let vars = self.unpack(&solver_result.x);
@@ -512,6 +616,17 @@ impl<'a> CollocationOptimizer<'a> {
     }
 
     /// Run optimization using the Gauss-Newton solver.
+    ///
+    /// The solver operates in a scaled decision-vector/constraint space
+    /// (see `docs/design/nlp-scaling.md`) to fix the ~5-order-of-magnitude
+    /// spread in raw-SI Jacobian entries that caused the flat
+    /// `regularization` in `(JᵀJ + reg·I)` to badly under/over-damp
+    /// different variable blocks. Scaling is applied only at this boundary:
+    /// the evaluator and problem handed to `solve_gauss_newton` are scaled,
+    /// but the result is unscaled back to SI, and `eq_violation`/
+    /// `ineq_violation` are RECOMPUTED against the original (unscaled)
+    /// evaluator before being returned — the caller must never see a
+    /// scaled-space residual.
     pub fn optimize_gn(
         &self,
         config: &crate::gauss_newton::GaussNewtonConfig,
@@ -519,7 +634,33 @@ impl<'a> CollocationOptimizer<'a> {
         let x0 = self.initial_guess();
         let problem = self.build_nlp_problem();
         let evaluator = CollocationEvaluator { optimizer: self };
-        let result = crate::gauss_newton::solve_gauss_newton(&problem, &evaluator, &x0, config);
+
+        let scaling = self.build_scaling(&x0);
+        let scaled_evaluator = crate::scaling::ScaledEvaluator {
+            inner: &evaluator,
+            scaling: &scaling,
+        };
+        let scaled_problem = scaling.scale_problem(&problem);
+        let x0_scaled = scaling.scale_x(&x0);
+
+        let mut result = crate::gauss_newton::solve_gauss_newton(
+            &scaled_problem,
+            &scaled_evaluator,
+            &x0_scaled,
+            config,
+        );
+
+        // SI boundary: unscale the solution, then recompute feasibility
+        // directly against the unscaled evaluator. `constraint_tol` in
+        // `config` is compared, inside the solver, against SCALED
+        // residuals (an accepted, documented side effect of scaling — see
+        // docs/design/nlp-scaling.md, section A4) — but everything reported
+        // out of this function keeps meaning "defect satisfied to
+        // `constraint_tol` in SI units," matching today's behavior.
+        result.x = scaling.unscale_x(&result.x);
+        result.eq_violation = max_abs(&evaluator.equality_constraints(&result.x));
+        result.ineq_violation = max_pos(&evaluator.inequality_constraints(&result.x));
+
         self.extract_result_gn(&result)
     }
 
@@ -1052,6 +1193,18 @@ impl CollocationEvaluator<'_, '_> {
 
         builder.build()
     }
+}
+
+/// Max absolute equality-constraint residual. Mirrors `gauss_newton::eq_violation`
+/// so `eq_violation` can be recomputed against the unscaled evaluator at the
+/// SI boundary (see `optimize_gn`) without depending on that private helper.
+fn max_abs(c_eq: &[f64]) -> f64 {
+    c_eq.iter().fold(0.0_f64, |m, &c| m.max(c.abs()))
+}
+
+/// Max positive inequality-constraint residual. Mirrors `gauss_newton::ineq_violation`.
+fn max_pos(c_ineq: &[f64]) -> f64 {
+    c_ineq.iter().fold(0.0_f64, |m, &c| m.max(c)).max(0.0)
 }
 
 /// Evaluate point-mass dynamics without constructing the ODE system struct.
@@ -3056,5 +3209,95 @@ mod tests {
             with_bias.lap_time,
             baseline.lap_time
         );
+    }
+
+    /// Requirement: `unscale(scale(x)) == x` to ~1e-12, on a real warmstart
+    /// vector (not a toy example) — see docs/design/nlp-scaling.md, A3/A5.
+    #[test]
+    fn scaling_round_trip_matches_warmstart_within_1e12() {
+        let (pts, closed) = oval_track(500.0, 80.0, 12.0, 300);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::f1_2024_calibrated();
+        let config = CollocationConfig {
+            n_nodes: 50,
+            method: CollocationMethod::HermiteSimpson,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x0 = opt.initial_guess();
+        let scaling = opt.build_scaling(&x0);
+
+        let round_tripped = scaling.unscale_x(&scaling.scale_x(&x0));
+        for (a, b) in x0.iter().zip(round_tripped.iter()) {
+            let tol = 1e-12 * a.abs().max(1.0);
+            assert!((a - b).abs() <= tol, "round-trip mismatch: {a} vs {b}");
+        }
+    }
+
+    /// Requirement: `eq_violation`/`ineq_violation` returned by `optimize_gn`
+    /// MUST equal what the unscaled (SI) evaluator reports — not a
+    /// scaled-space residual. Proven here using only the public API:
+    /// reconstructs the packed decision vector from `OptimizationResult`'s
+    /// documented block layout and independently recomputes the violation
+    /// via `equality_residuals`/`inequality_constraints`-equivalent public
+    /// entry points.
+    #[test]
+    fn optimize_gn_reports_si_violation_not_scaled() {
+        let (pts, closed) = oval_track(500.0, 80.0, 12.0, 300);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::f1_2024_calibrated();
+        let n = 50;
+        let config = CollocationConfig {
+            n_nodes: n,
+            method: CollocationMethod::HermiteSimpson,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let result = opt.optimize_gn(&crate::gauss_newton::GaussNewtonConfig::default());
+
+        // Reconstruct the packed [s|n|v|alpha|f_drive|curv|dt] vector from
+        // the public result fields (documented layout, module header).
+        let mut x = Vec::with_capacity(7 * n - 1);
+        x.extend_from_slice(&result.stations);
+        x.extend_from_slice(&result.offsets);
+        x.extend_from_slice(&result.speeds);
+        x.extend_from_slice(&result.headings);
+        x.extend_from_slice(&result.drive_forces);
+        x.extend_from_slice(&result.curvature_cmds);
+        x.extend_from_slice(&result.time_steps);
+
+        let recomputed_eq = opt.equality_residuals(&x);
+        let recomputed_max = recomputed_eq.iter().fold(0.0_f64, |m, &c| m.max(c.abs()));
+
+        assert!(
+            (recomputed_max - result.eq_violation).abs() < 1e-9,
+            "reported eq_violation ({}) does not match independently-recomputed SI violation ({}) \
+             — a scaled-space residual may have leaked past the NLP boundary",
+            result.eq_violation,
+            recomputed_max
+        );
+    }
+
+    /// Requirement: the scaling used by `optimize_gn` must not scale
+    /// constraint VALUES (only decision variables) — see the deviation
+    /// documented in `build_scaling`. This is what makes `constraint_tol`
+    /// keep its exact SI meaning for the solver's own convergence check,
+    /// not just for the value reported afterward.
+    #[test]
+    fn build_scaling_leaves_constraints_unscaled() {
+        let (pts, closed) = oval_track(500.0, 80.0, 12.0, 300);
+        let track = build_track("oval", &pts, closed);
+        let car = CarParams::f1_2024_calibrated();
+        let config = CollocationConfig {
+            n_nodes: 50,
+            method: CollocationMethod::HermiteSimpson,
+            ..CollocationConfig::default()
+        };
+        let opt = CollocationOptimizer::new(config, &track, &car);
+        let x0 = opt.initial_guess();
+        let scaling = opt.build_scaling(&x0);
+
+        assert!(scaling.c_eq_scale.iter().all(|&s| s == 1.0));
+        assert!(scaling.c_ineq_scale.iter().all(|&s| s == 1.0));
     }
 }

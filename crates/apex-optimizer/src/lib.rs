@@ -12,6 +12,7 @@ pub mod mesh_refinement;
 pub mod nlp;
 pub mod overtaking;
 pub mod racing_quality;
+pub mod scaling;
 pub mod setup;
 pub mod setup_eval;
 pub mod solver;
@@ -33,6 +34,7 @@ pub use mesh_refinement::{
 pub use nlp::{NlpEvaluator, NlpProblem};
 pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
 pub use racing_quality::{compute_racing_quality, RacingQuality};
+pub use scaling::{Scaling, ScaledEvaluator};
 pub use setup::{SetupParam, SetupSpace};
 pub use setup_eval::{
     evaluate_batch, evaluate_setup, export_setup_toml, optimize_setup, GenerationRecord,
