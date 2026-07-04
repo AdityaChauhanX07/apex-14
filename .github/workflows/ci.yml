@@ -12,10 +12,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # `rust-toolchain.toml` at the repo root is authoritative: it pins the
+      # exact channel and lists the required components (rustfmt, clippy).
+      # `rustup show` reads that file and installs/activates exactly what it
+      # specifies — no version is hardcoded here, so the pin can't be
+      # silently overridden by this workflow.
+      - name: Install pinned Rust toolchain (from rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache cargo registry and target
         uses: actions/cache@v4
