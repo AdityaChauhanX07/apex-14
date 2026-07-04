@@ -75,9 +75,18 @@ change, not chased as a bug.
 - Change: `CollocationOptimizer::optimize_gn` now scales decision variables
   by the reciprocal of their measured equality-Jacobian column norm at the
   QSS warmstart (`1/‖J[:,j]‖`, static, computed once, column-only —
-  constraint/residual values stay unscaled). See
-  `docs/design/nlp-scaling.md` for the full design and the earlier,
-  disproven physical-range heuristic this replaced.
+  constraint/residual values stay unscaled). This **supersedes commit
+  `44e52e5`** ("scale collocation NLP variables to fix convergence"), which
+  introduced a per-block physical-reference-value heuristic (`s` scaled by
+  track length, `n` by half-width, etc.). That heuristic was implemented,
+  measured, and disproven: it over-scaled the `s` column, whose raw Jacobian
+  column norm is a small, purely structural `√2` (from the ±1
+  state-difference coefficients, unrelated to physical track length), up to
+  a scaled column norm of `2114` — a ~1500× over-correction — and broke 5
+  previously-passing tests. This change deletes that heuristic entirely (not
+  commented out) and replaces it with the warmstart Jacobian-diagonal
+  scaling described above. See `docs/design/nlp-scaling.md` for the full
+  history and design.
 - Rationale: fixes a real Gauss-Newton conditioning failure (decision
   variables spanned several orders of magnitude in the Jacobian against a
   flat `regularization = 1e-4`), which had broken 5 previously-passing
