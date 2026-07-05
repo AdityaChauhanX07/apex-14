@@ -19,7 +19,7 @@ pub mod tire;
 pub mod wake;
 pub mod weather;
 
-pub use aero::{AeroForces, AeroModel};
+pub use aero::{aero_hash, AeroForces, AeroModel};
 pub use bicycle::BicycleModel;
 pub use car_config::{
     export_car_toml, load_car_toml, parse_car_toml, AeroSection, CarConfig, CarSection,
@@ -40,8 +40,8 @@ pub use seven_dof::SevenDofModel;
 pub use strategy::{
     FuelModel, RaceStrategy, Stint, StrategyEvaluator, StrategyResult, TireCompound, UndercutResult,
 };
-pub use suspension::{AntiRollBar, SuspensionParams, SuspensionSystem};
-pub use tire::{smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
+pub use suspension::{suspension_hash, AntiRollBar, SuspensionParams, SuspensionSystem};
+pub use tire::{pacejka_tire_hash, smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
 pub use wake::{MultiCarState, OnTrackCar, WakeModel};
 pub use weather::{
     analyze_tire_change, effective_grip, TireChangeAnalysis, TireType, WeatherState,

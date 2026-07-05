@@ -1,16 +1,18 @@
-//! Seed resolution and logging for stochastic CLI subcommands.
+//! Shared RNG-seed resolution + logging for the CLI/training binaries.
 //!
 //! Every command with a stochastic component resolves its RNG seed through
 //! [`resolve_seed`] so the value that will be used is always printed — the
 //! roadmap requires the default seed to be logged, never silent, and to be
-//! distinguishable from a user-supplied one.
+//! distinguishable from a user-supplied one. Lives in `apex-math` (the zero-dep
+//! workspace leaf) so `apex-cli`, `train-driver`, and `train-raceline` share one
+//! implementation instead of three drifting copies. Uses only `println!` — no
+//! clap/log dependency is pulled in.
 
 /// Resolve the RNG seed for a stochastic command and log the choice.
 ///
-/// Returns `user_seed` when the user passed `--seed`, otherwise `default`.
-/// Either way the resolved value is printed (with `context` as a prefix) so a
-/// run is never silently seeded and a supplied seed is clearly distinguished
-/// from the fallback default.
+/// Returns `user_seed` when the user passed `--seed`, otherwise `default`. The
+/// chosen value is always printed, tagged by `context`, and marked as either
+/// user-supplied or the default.
 pub fn resolve_seed(user_seed: Option<u64>, default: u64, context: &str) -> u64 {
     match user_seed {
         Some(seed) => {

@@ -6,6 +6,7 @@ pub mod dual;
 pub mod float;
 pub mod hash;
 pub mod mat3;
+pub mod seed;
 pub mod sparse;
 pub mod vec3;
 
@@ -13,5 +14,6 @@ pub use dual::Dual;
 pub use float::Float;
 pub use hash::{content_hash, ContentHash, Hash, HashWriter, HASH_VERSION};
 pub use mat3::Mat3;
+pub use seed::resolve_seed;
 pub use sparse::{CsrBuilder, CsrMatrix};
 pub use vec3::Vec3;

@@ -348,11 +348,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: true,
         ..CollocationConfig::default()
     };
-    // Provenance built before the config is moved into the optimizer.
+    // Provenance built before the config is moved into the optimizer. Uses the
+    // 14-DOF settings hash so the tire/suspension/aero models this forward-sim
+    // reads are captured in `config_hash` (the point-mass GN hash omits them).
     let fd_meta = RunMetadata::new(
         apex_physics::car_params_hash(&car),
         apex_track::processed_track_hash(&fd_circle_track),
-        apex_optimizer::optimize_gn_settings_hash(&fd_circle_cfg, &fd_solver),
+        apex_optimizer::optimize_fourteen_dof_settings_hash(
+            &fd_circle_cfg,
+            &fd_solver,
+            &tire,
+            &suspension,
+            &aero,
+        ),
         None,
     );
     let fd_circle = CollocationOptimizer::new(fd_circle_cfg, &fd_circle_track, &car);

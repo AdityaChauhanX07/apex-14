@@ -8,6 +8,7 @@
 //! the individual `hash_into` impls.
 
 use apex_math::{content_hash, ContentHash, Hash, HashWriter, HASH_VERSION};
+use apex_physics::{AeroModel, PacejkaTire, SuspensionSystem};
 
 use crate::cmaes::CmaEsConfig;
 use crate::collocation::CollocationConfig;
@@ -50,9 +51,75 @@ pub fn optimize_gn_settings_hash(collocation: &CollocationConfig, gn: &GaussNewt
     w.finish()
 }
 
+/// Composite content hash of the settings that determine a **7-DOF / 14-DOF**
+/// trajectory-optimization (or forward-sim) result, under domain
+/// `"optimize.14dof"`.
+///
+/// Composition rule (fixed order): `HASH_VERSION ‖ "optimize.14dof" ‖
+/// collocation ‖ gn ‖ tire ‖ suspension ‖ aero`. This EXTENDS
+/// [`optimize_gn_settings_hash`] with the tire, suspension, and aero models,
+/// which the 7-/14-DOF paths read but the point-mass Gauss-Newton hash does not
+/// cover — so a change to any of those models now moves the emitted
+/// `config_hash` for 14-DOF telemetry. Distinct domain tag from `"optimize.gn"`,
+/// so the two composites never collide.
+pub fn optimize_fourteen_dof_settings_hash(
+    collocation: &CollocationConfig,
+    gn: &GaussNewtonConfig,
+    tire: &PacejkaTire,
+    suspension: &SuspensionSystem,
+    aero: &AeroModel,
+) -> Hash {
+    let mut w = HashWriter::new();
+    w.str(HASH_VERSION);
+    w.str("optimize.14dof");
+    collocation.hash_into(&mut w);
+    gn.hash_into(&mut w);
+    tire.hash_into(&mut w);
+    suspension.hash_into(&mut w);
+    aero.hash_into(&mut w);
+    w.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fourteen_dof_hash_extends_gn_and_is_model_sensitive() {
+        let coll = CollocationConfig::default();
+        let gn = GaussNewtonConfig::default();
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+
+        let base = optimize_fourteen_dof_settings_hash(&coll, &gn, &tire, &susp, &aero);
+        // Reproducible.
+        assert_eq!(
+            base,
+            optimize_fourteen_dof_settings_hash(&coll, &gn, &tire, &susp, &aero)
+        );
+        // Distinct from the point-mass GN composite (different domain + inputs).
+        assert_ne!(base, optimize_gn_settings_hash(&coll, &gn));
+        // Sensitive to each newly-folded model.
+        let mut tire2 = tire;
+        tire2.lateral.mu += 0.05;
+        assert_ne!(
+            base,
+            optimize_fourteen_dof_settings_hash(&coll, &gn, &tire2, &susp, &aero)
+        );
+        let mut susp2 = susp.clone();
+        susp2.arb_front.stiffness += 100.0;
+        assert_ne!(
+            base,
+            optimize_fourteen_dof_settings_hash(&coll, &gn, &tire, &susp2, &aero)
+        );
+        let mut aero2 = aero;
+        aero2.cd_base += 0.01;
+        assert_ne!(
+            base,
+            optimize_fourteen_dof_settings_hash(&coll, &gn, &tire, &susp, &aero2)
+        );
+    }
 
     #[test]
     fn cmaes_seed_independent() {

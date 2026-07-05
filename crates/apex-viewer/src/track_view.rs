@@ -1,6 +1,7 @@
 //! Track-map rendering: world-to-screen transform, speed-coloured racing line,
 //! boundaries, and a speed legend, drawn with an `egui::Painter`.
 
+use apex_telemetry::ChannelId;
 use eframe::egui;
 
 impl super::app::ApexApp {
@@ -130,7 +131,11 @@ impl super::app::ApexApp {
                         painter.text(
                             pos + egui::vec2(12.0, -8.0),
                             egui::Align2::LEFT_CENTER,
-                            format!("{:.0} km/h", speeds[idx] * 3.6),
+                            format!(
+                                "{:.0} {}",
+                                speeds[idx] * 3.6,
+                                ChannelId::SpeedKph.unit().symbol()
+                            ),
                             egui::FontId::proportional(13.0),
                             egui::Color32::WHITE,
                         );
@@ -243,14 +248,22 @@ fn draw_legend(painter: &egui::Painter, rect: egui::Rect, min_speed: f64, max_sp
     painter.text(
         egui::pos2(x_start, y + legend_height + 2.0),
         egui::Align2::LEFT_TOP,
-        format!("{:.0} km/h", min_speed * 3.6),
+        format!(
+            "{:.0} {}",
+            min_speed * 3.6,
+            ChannelId::SpeedKph.unit().symbol()
+        ),
         font.clone(),
         text_color,
     );
     painter.text(
         egui::pos2(x_start + legend_width, y + legend_height + 2.0),
         egui::Align2::RIGHT_TOP,
-        format!("{:.0} km/h", max_speed * 3.6),
+        format!(
+            "{:.0} {}",
+            max_speed * 3.6,
+            ChannelId::SpeedKph.unit().symbol()
+        ),
         font,
         text_color,
     );

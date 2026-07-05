@@ -239,6 +239,7 @@ dependencies = [
 name = "apex-14"
 version = "0.1.0"
 dependencies = [
+ "apex-math",
  "apex-optimizer",
  "apex-physics",
  "apex-race",
@@ -4433,6 +4434,7 @@ dependencies = [
 name = "train-driver"
 version = "0.1.0"
 dependencies = [
+ "apex-math",
  "apex-physics",
  "apex-rl",
  "apex-track",
@@ -4447,6 +4449,7 @@ dependencies = [
 name = "train-raceline"
 version = "0.1.0"
 dependencies = [
+ "apex-math",
  "apex-ml",
  "apex-track",
  "candle-core",

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+apex-math = { path = "../../crates/apex-math" }
 clap = { version = "4", features = ["derive"] }
 apex-physics = { path = "../../crates/apex-physics" }
 apex-track = { path = "../../crates/apex-track" }

@@ -11,8 +11,7 @@ use apex_track::{
     Track,
 };
 
-mod seed;
-use seed::resolve_seed;
+use apex_math::resolve_seed;
 
 /// CLI arguments for the driver-training binary.
 #[derive(Parser, Debug)]

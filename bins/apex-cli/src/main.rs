@@ -9,8 +9,7 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-mod seed;
-use seed::resolve_seed;
+use apex_math::resolve_seed;
 
 #[derive(Parser)]
 #[command(name = "apex-14")]

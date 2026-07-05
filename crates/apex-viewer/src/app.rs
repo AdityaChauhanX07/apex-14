@@ -1,5 +1,6 @@
 //! The main viewer application: a left control panel plus a central track map.
 
+use apex_telemetry::ChannelId;
 use eframe::egui;
 
 /// Top-level viewer application state.
@@ -107,9 +108,10 @@ impl eframe::App for ApexApp {
                     let max_speed = speeds.iter().cloned().fold(f64::MIN, f64::max);
                     let min_speed = speeds.iter().cloned().fold(f64::MAX, f64::min);
                     ui.label(format!(
-                        "Speed: {:.0} - {:.0} km/h",
+                        "Speed: {:.0} - {:.0} {}",
                         min_speed * 3.6,
-                        max_speed * 3.6
+                        max_speed * 3.6,
+                        ChannelId::SpeedKph.unit().symbol()
                     ));
                 }
 

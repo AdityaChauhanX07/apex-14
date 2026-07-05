@@ -6,6 +6,7 @@ rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+apex-math = { path = "../../crates/apex-math" }
 apex-ml = { path = "../../crates/apex-ml" }
 apex-track = { path = "../../crates/apex-track" }
 candle-core = "0.10"

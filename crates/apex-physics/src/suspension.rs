@@ -212,6 +212,62 @@ impl SuspensionSystem {
     }
 }
 
+impl apex_math::ContentHash for SuspensionParams {
+    /// Encode the seven per-corner spring/damper parameters in declaration order.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let SuspensionParams {
+            spring_rate,
+            spring_rate_progressive,
+            damping_bump,
+            damping_rebound,
+            max_compression,
+            max_extension,
+            static_ride_height,
+        } = self;
+        w.f64(*spring_rate);
+        w.f64(*spring_rate_progressive);
+        w.f64(*damping_bump);
+        w.f64(*damping_rebound);
+        w.f64(*max_compression);
+        w.f64(*max_extension);
+        w.f64(*static_ride_height);
+    }
+}
+
+impl apex_math::ContentHash for AntiRollBar {
+    /// Encode the single anti-roll-bar stiffness.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let AntiRollBar { stiffness } = self;
+        w.f64(*stiffness);
+    }
+}
+
+impl apex_math::ContentHash for SuspensionSystem {
+    /// Encode the four corners then the two anti-roll bars, in declaration order
+    /// (nested [`SuspensionParams`]/[`AntiRollBar`] hashes).
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let SuspensionSystem {
+            front_left,
+            front_right,
+            rear_left,
+            rear_right,
+            arb_front,
+            arb_rear,
+        } = self;
+        front_left.hash_into(w);
+        front_right.hash_into(w);
+        rear_left.hash_into(w);
+        rear_right.hash_into(w);
+        arb_front.hash_into(w);
+        arb_rear.hash_into(w);
+    }
+}
+
+/// Content hash of a [`SuspensionSystem`], under domain `"suspension"`.
+pub fn suspension_hash(s: &SuspensionSystem) -> apex_math::Hash {
+    apex_math::content_hash("suspension", s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,4 +405,33 @@ mod tests {
             ride_height
         );
     }
+
+    #[test]
+    fn suspension_hash_frozen_and_field_sensitive() {
+        assert_eq!(
+            suspension_hash(&SuspensionSystem::f1_default()).to_hex(),
+            FROZEN_SUSPENSION_F1_DEFAULT
+        );
+        // A change in any corner or ARB must move the hash.
+        let mut s = SuspensionSystem::f1_default();
+        s.front_left.spring_rate += 1.0;
+        assert_ne!(
+            suspension_hash(&s),
+            suspension_hash(&SuspensionSystem::f1_default())
+        );
+        let mut s2 = SuspensionSystem::f1_default();
+        s2.arb_rear.stiffness += 1.0;
+        assert_ne!(
+            suspension_hash(&s2),
+            suspension_hash(&SuspensionSystem::f1_default())
+        );
+        // Sanity: a corner's own hash reflects a field change.
+        let mut c = SuspensionParams::f1_front();
+        let base = apex_math::content_hash("t", &c);
+        c.damping_rebound += 1.0;
+        assert_ne!(apex_math::content_hash("t", &c), base);
+    }
+
+    const FROZEN_SUSPENSION_F1_DEFAULT: &str =
+        "b384aa087c0894dbe728d525a9e3fc6efee44ae189761444368a6ea8808368ca";
 }

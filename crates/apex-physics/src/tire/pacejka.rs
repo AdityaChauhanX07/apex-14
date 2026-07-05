@@ -202,6 +202,41 @@ impl PacejkaTire {
     }
 }
 
+impl apex_math::ContentHash for PacejkaCoeffs {
+    /// Encode the four Magic-Formula coefficients in declaration order. The
+    /// destructure forces any new field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let PacejkaCoeffs { b, c, mu, e } = self;
+        w.f64(*b);
+        w.f64(*c);
+        w.f64(*mu);
+        w.f64(*e);
+    }
+}
+
+impl apex_math::ContentHash for PacejkaTire {
+    /// Encode the lateral and longitudinal coefficient blocks (nested
+    /// [`PacejkaCoeffs`] hashes) plus the load-sensitivity parameters, in
+    /// declaration order.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let PacejkaTire {
+            lateral,
+            longitudinal,
+            load_sensitivity,
+            fz_nominal,
+        } = self;
+        lateral.hash_into(w);
+        longitudinal.hash_into(w);
+        w.f64(*load_sensitivity);
+        w.f64(*fz_nominal);
+    }
+}
+
+/// Content hash of a [`PacejkaTire`], under domain `"tire.pacejka"`.
+pub fn pacejka_tire_hash(tire: &PacejkaTire) -> apex_math::Hash {
+    apex_math::content_hash("tire.pacejka", tire)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,4 +518,30 @@ mod tests {
             pure.dual
         );
     }
+
+    #[test]
+    fn tire_hash_frozen_and_field_sensitive() {
+        // FROZEN known-answer vector — any accidental encoding/order/policy
+        // change flips this. Update only as a deliberate change (bump HASH_VERSION).
+        assert_eq!(
+            pacejka_tire_hash(&PacejkaTire::f1_default()).to_hex(),
+            FROZEN_TIRE_F1_DEFAULT
+        );
+        // A change in any hashed field (here a coefficient) must move the hash.
+        let mut t = PacejkaTire::f1_default();
+        t.lateral.b += 1.0;
+        assert_ne!(
+            pacejka_tire_hash(&t),
+            pacejka_tire_hash(&PacejkaTire::f1_default())
+        );
+        let mut t2 = PacejkaTire::f1_default();
+        t2.load_sensitivity += 0.01;
+        assert_ne!(
+            pacejka_tire_hash(&t2),
+            pacejka_tire_hash(&PacejkaTire::f1_default())
+        );
+    }
+
+    const FROZEN_TIRE_F1_DEFAULT: &str =
+        "ae89c0c050648c0efcfb2f0c0f18505a3d64e1f03828f25a385c40f5f219599f";
 }

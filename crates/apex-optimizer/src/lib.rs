@@ -38,7 +38,7 @@ pub use racing_quality::{compute_racing_quality, RacingQuality};
 pub use scaling::{ScaledEvaluator, Scaling};
 pub use settings_hash::{
     al_solver_settings_hash, cmaes_settings_hash, direct_solver_settings_hash,
-    gauss_newton_settings_hash, optimize_gn_settings_hash,
+    gauss_newton_settings_hash, optimize_fourteen_dof_settings_hash, optimize_gn_settings_hash,
 };
 pub use setup::{SetupParam, SetupSpace};
 pub use setup_eval::{

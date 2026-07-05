@@ -160,6 +160,38 @@ pub struct AeroForces {
     pub downforce_total: f64,
 }
 
+impl apex_math::ContentHash for AeroModel {
+    /// Encode the nine aero-map parameters in declaration order. The destructure
+    /// forces any new field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let AeroModel {
+            cd_base,
+            frontal_area,
+            air_density,
+            cl_front_base,
+            cl_rear_base,
+            design_ride_height,
+            stall_ride_height,
+            high_ride_height,
+            drag_pitch_sensitivity,
+        } = self;
+        w.f64(*cd_base);
+        w.f64(*frontal_area);
+        w.f64(*air_density);
+        w.f64(*cl_front_base);
+        w.f64(*cl_rear_base);
+        w.f64(*design_ride_height);
+        w.f64(*stall_ride_height);
+        w.f64(*high_ride_height);
+        w.f64(*drag_pitch_sensitivity);
+    }
+}
+
+/// Content hash of an [`AeroModel`], under domain `"aero"`.
+pub fn aero_hash(a: &AeroModel) -> apex_math::Hash {
+    apex_math::content_hash("aero", a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,4 +355,18 @@ mod tests {
             cp
         );
     }
+
+    #[test]
+    fn aero_hash_frozen_and_field_sensitive() {
+        assert_eq!(
+            aero_hash(&AeroModel::f1_default()).to_hex(),
+            FROZEN_AERO_F1_DEFAULT
+        );
+        let mut a = AeroModel::f1_default();
+        a.cl_rear_base += 0.01;
+        assert_ne!(aero_hash(&a), aero_hash(&AeroModel::f1_default()));
+    }
+
+    const FROZEN_AERO_F1_DEFAULT: &str =
+        "93bfd77aaa103ce00325d03d543b04c58acbe1bd1342ff0cdb228b4026d3d0df";
 }

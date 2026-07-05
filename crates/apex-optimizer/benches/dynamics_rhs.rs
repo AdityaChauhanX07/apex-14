@@ -92,7 +92,14 @@ fn bench_dynamics_rhs(c: &mut Criterion) {
         let model = FourteenDofModel::new(&car, &tire, &suspension, &aero, V);
         let z_eq = model.equilibrium_travel();
         let mut state = [0.0f64; 24];
-        state[2] = aero.design_ride_height + car.cog_height; // chassis CoG height
+        // Sit the chassis at the model's OWN static-trim height: the vertical
+        // tire-load formula is f_z = f_z_eq + k_tire·(-(z_s - z_s_eq) -
+        // (z_chassis - cog_height)), so setting z_chassis = cog_height with
+        // z_s = z_s_eq (and roll/pitch = 0) makes every corner load exactly
+        // f_z_eq > 0. (The old `design_ride_height + cog_height` added a 30 mm
+        // offset that drove all four loads negative → clamped to 0 → the tire
+        // model early-outed, so the "14-DOF RHS" measured a tireless car.)
+        state[2] = car.cog_height; // chassis at static-trim height
         state[6] = V; // vx
         state[11] = 0.3; // yaw rate (cornering)
         for w in state.iter_mut().skip(12).take(4) {
@@ -100,6 +107,15 @@ fn bench_dynamics_rhs(c: &mut Criterion) {
         }
         state[16..20].copy_from_slice(&z_eq);
         let control = [0.04, 1500.0, 0.0]; // steer, drive torque, brake
+
+        // Guard: all four tires must be loaded, or the bench silently measures
+        // a tireless RHS (combined_forces_smooth early-outs at f_z <= 0).
+        let loads = model.tire_loads(&state);
+        assert!(
+            loads.iter().all(|&fz| fz > 0.0),
+            "14-DOF bench state has an unloaded tire (f_z = {loads:?}); the RHS would skip tire forces"
+        );
+
         group.bench_function("fourteen_dof_24", |b| {
             b.iter(|| model.derivatives(black_box(&state), black_box(&control), black_box(0.0)))
         });

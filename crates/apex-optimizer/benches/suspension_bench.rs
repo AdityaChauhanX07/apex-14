@@ -37,7 +37,11 @@ fn bench_suspension(c: &mut Criterion) {
     // A representative cornering state near the static trim at 50 m/s.
     let z_eq = model.equilibrium_travel();
     let mut state = [0.0f64; 24];
-    state[2] = aero.design_ride_height + car.cog_height; // chassis CoG height
+    // Chassis at the model's own static-trim height (z_chassis = cog_height,
+    // z_s = z_s_eq) so every corner load is exactly f_z_eq > 0. The previous
+    // `design_ride_height + cog_height` unloaded all four tires to 0, making
+    // the tire model early-out — the RHS was measured tireless.
+    state[2] = car.cog_height; // chassis at static-trim height
     state[6] = 50.0; // vx
     state[11] = 0.3; // yaw rate (cornering)
     let wheel_omega = 50.0 / car.wheel_radius;
@@ -46,6 +50,13 @@ fn bench_suspension(c: &mut Criterion) {
     }
     state[16..20].copy_from_slice(&z_eq);
     let control = [0.04, 1500.0, 0.0]; // steer, drive torque, brake
+
+    // Guard: all four tires must be loaded (see dynamics_rhs.rs).
+    let loads = model.tire_loads(&state);
+    assert!(
+        loads.iter().all(|&fz| fz > 0.0),
+        "14-DOF bench state has an unloaded tire (f_z = {loads:?})"
+    );
 
     let mut group = c.benchmark_group("fourteen_dof");
     group.bench_function("derivatives", |b| {

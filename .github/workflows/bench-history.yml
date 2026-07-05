@@ -42,7 +42,14 @@ jobs:
             ${{ runner.os }}-bench-
 
       - name: Install cargo-criterion
-        run: cargo install cargo-criterion --locked
+        # Idempotent: the cache restores ~/.cargo/bin, so a plain
+        # `cargo install` would fail with "binary already exists" on any cached
+        # run. Skip when the binary is already present (faster than --force,
+        # which recompiles every run).
+        run: |
+          if ! command -v cargo-criterion >/dev/null 2>&1; then
+            cargo install cargo-criterion --locked
+          fi
 
       # cargo-criterion emits one JSON object per line; keep the raw stream.
       - name: Run benches (JSON messages)
