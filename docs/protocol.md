@@ -201,3 +201,31 @@ while True:
         break
 pos_x, pos_y, pos_z = struct.unpack_from('<3d', output_bytes, 0)
 ```
+
+## Channel registry mapping (OutputPacket)
+
+Each `OutputPacket` field maps to a channel in the workspace channel registry
+(`apex_telemetry::channels`, `ChannelId`). **The wire format above is fixed and
+independent of the registry** — this table is documentation for consumers
+(viewer/HUD, future MoTeC `.ld` export, correlation, Python bindings). Two
+fields carry registry names that differ from the wire field name (the registry
+name is canonical):
+
+| Wire field | Registry channel |
+|------------|------------------|
+| `pos_x`, `pos_y`, `pos_z` | `pos_x`, `pos_y`, `pos_z` |
+| `roll`, `pitch`, `yaw` | `roll`, `pitch`, `yaw` (radians) |
+| `speed` | `speed` (m/s) |
+| `lateral_v`, `vertical_v` | `lateral_v`, `vertical_v` |
+| `yaw_rate` | `yaw_rate` |
+| `wheel_fl`…`wheel_rr` | `wheel_fl`…`wheel_rr` |
+| `susp_fl`…`susp_rr` | `susp_fl`…`susp_rr` |
+| `accel_long` | **`longitudinal_g`** |
+| `accel_lat` | **`lateral_g`** |
+| `gear`, `lap` | `gear`, `lap` |
+| `lap_time`, `sim_time` | `lap_time`, `sim_time` |
+| `sequence` | `sequence` |
+| `track_distance`, `track_offset` | `track_distance`, `track_offset` |
+| `_pad` | (padding — not a channel) |
+
+See `docs/channels.md` for the full registry and its extension policy.

@@ -106,11 +106,20 @@ impl RunMetadata {
     /// header row. Every line begins with `#` so a comment-aware reader skips
     /// the whole block.
     pub fn csv_comment_block(&self) -> String {
+        let mut s = self.csv_comment_lines();
+        s.push_str("#\n");
+        s
+    }
+
+    /// The `# key: value` provenance lines only (no trailing blank `#` line), so
+    /// a caller can append extra provenance comments — e.g. the CSV
+    /// `# columns:` units line — before the blank separator that precedes the
+    /// column header.
+    pub fn csv_comment_lines(&self) -> String {
         let mut s = String::new();
         for (k, v) in self.fields() {
             let _ = writeln!(s, "# {k}: {v}");
         }
-        s.push_str("#\n");
         s
     }
 

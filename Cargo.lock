@@ -359,6 +359,7 @@ dependencies = [
  "apex-track",
  "csv",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

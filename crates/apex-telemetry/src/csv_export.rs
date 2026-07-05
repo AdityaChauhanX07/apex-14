@@ -1,9 +1,13 @@
 //! CSV export helpers for QSS simulation output and arbitrary columnar data.
 //!
 //! Every file opens with a [`RunMetadata`] provenance block: `# key: value`
-//! comment lines followed by one blank `#` line, then the column header. A
-//! comment-aware CSV reader (`ReaderBuilder::comment(Some(b'#'))`) skips the
-//! whole block transparently.
+//! comment lines, then a `# columns: name[unit], ...` line naming each column
+//! and its unit (from the [channel registry](crate::channels)), then one blank
+//! `#` line, then the column header row. A comment-aware CSV reader
+//! (`ReaderBuilder::comment(Some(b'#'))`) skips the whole block transparently.
+//!
+//! Column headers are the registry [`ChannelId::name`](crate::ChannelId::name)s
+//! — not ad-hoc string literals — so the CSV can never drift from the registry.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -11,46 +15,56 @@ use std::path::Path;
 use apex_physics::QssResult;
 use apex_track::Track;
 
-use crate::RunMetadata;
+use crate::channels::csv_columns_comment;
+use crate::{ChannelId, RunMetadata};
+
+/// The QSS CSV columns, in order, as registry channels. Headers and the units
+/// line both derive from this single list.
+const QSS_COLUMNS: [ChannelId; 8] = [
+    ChannelId::S,
+    ChannelId::X,
+    ChannelId::Y,
+    ChannelId::Speed,
+    ChannelId::SpeedKph,
+    ChannelId::LateralG,
+    ChannelId::LongitudinalG,
+    ChannelId::Curvature,
+];
 
 /// Format a float to 4 decimal places.
 fn fmt(v: f64) -> String {
     format!("{:.4}", v)
 }
 
-/// Open `path` and write the provenance comment block, returning a CSV writer
-/// positioned to emit the column header next.
+/// Open `path`, write the provenance block (metadata lines + `# columns:` units
+/// line + blank `#` separator), and return a CSV writer positioned to emit the
+/// column header next. `column_names` is the ordered list of column headers.
 fn writer_with_metadata(
     path: &Path,
     meta: &RunMetadata,
+    column_names: &[&str],
 ) -> Result<csv::Writer<std::fs::File>, Box<dyn std::error::Error>> {
     let mut file = std::fs::File::create(path)?;
-    file.write_all(meta.csv_comment_block().as_bytes())?;
+    file.write_all(meta.csv_comment_lines().as_bytes())?;
+    file.write_all(csv_columns_comment(column_names).as_bytes())?;
+    file.write_all(b"\n#\n")?;
     Ok(csv::Writer::from_writer(file))
 }
 
 /// Export QSS simulation results to a CSV file.
 ///
-/// Columns: `s` (m), `x` (m), `y` (m), `speed` (m/s), `speed_kph` (km/h),
-/// `lateral_g`, `longitudinal_g`, `curvature` (1/m). Preceded by the
-/// [`RunMetadata`] provenance comment block.
+/// Columns (from the registry): `s` (m), `x` (m), `y` (m), `speed` (m/s),
+/// `speed_kph` (km/h), `lateral_g` (g), `longitudinal_g` (g), `curvature`
+/// (1/m). Preceded by the [`RunMetadata`] provenance block.
 pub fn export_qss_csv(
     path: &Path,
     meta: &RunMetadata,
     track: &Track,
     result: &QssResult,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = writer_with_metadata(path, meta)?;
-    wtr.write_record([
-        "s",
-        "x",
-        "y",
-        "speed",
-        "speed_kph",
-        "lateral_g",
-        "longitudinal_g",
-        "curvature",
-    ])?;
+    let names: Vec<&str> = QSS_COLUMNS.iter().map(|c| c.name()).collect();
+    let mut wtr = writer_with_metadata(path, meta, &names)?;
+    wtr.write_record(&names)?;
 
     for i in 0..track.segments.len() {
         let seg = &track.segments[i];
@@ -73,15 +87,16 @@ pub fn export_qss_csv(
 /// Export arbitrary named columns to CSV.
 ///
 /// `columns` is a slice of `(column_name, data_slice)` pairs. All data slices
-/// must have the same length.
+/// must have the same length. Column names should be registry
+/// [`ChannelId::name`](crate::ChannelId::name)s so the `# columns:` line carries
+/// their units; an unregistered name renders `name[?]`.
 pub fn export_columns_csv(
     path: &Path,
     meta: &RunMetadata,
     columns: &[(&str, &[f64])],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut wtr = writer_with_metadata(path, meta)?;
-
     let header: Vec<&str> = columns.iter().map(|(name, _)| *name).collect();
+    let mut wtr = writer_with_metadata(path, meta, &header)?;
     wtr.write_record(&header)?;
 
     let rows = columns.first().map(|(_, data)| data.len()).unwrap_or(0);
@@ -187,6 +202,15 @@ mod tests {
             );
         }
         assert!(contents.contains("# seed: 99"));
+        // The provenance block carries the registry-derived units line, and the
+        // header row matches the same registry names.
+        assert!(
+            contents.contains(
+                "# columns: s[m], x[m], y[m], speed[m/s], speed_kph[km/h], \
+                 lateral_g[g], longitudinal_g[g], curvature[1/m]"
+            ),
+            "CSV missing/incorrect units line; got:\n{contents}"
+        );
         // The provenance block must precede the column header.
         let hdr = contents.find("s,x,y,speed").expect("header present");
         let first_data = contents.find("\n#\n").expect("blank comment line");

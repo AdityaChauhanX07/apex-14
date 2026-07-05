@@ -1,7 +1,22 @@
 //! Telemetry time-series plots (speed, lateral g, longitudinal g, curvature)
 //! drawn with `egui_plot`, sharing a cursor position with the track map.
+//!
+//! Plot/axis labels and unit strings come from the channel registry
+//! (`apex_telemetry::ChannelId`) rather than ad-hoc literals.
 
+use apex_telemetry::ChannelId;
 use eframe::egui;
+
+/// `"Display (unit)"` for a channel — e.g. `Speed (km/h)` — or just the display
+/// name when the channel is unitless.
+fn axis_label(id: ChannelId) -> String {
+    let sym = id.unit().symbol();
+    if sym.is_empty() {
+        id.display_name().to_string()
+    } else {
+        format!("{} ({})", id.display_name(), sym)
+    }
+}
 
 impl super::app::ApexApp {
     /// Draw the stacked telemetry plots below the track map. Hovering the speed
@@ -38,7 +53,7 @@ impl super::app::ApexApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Plot 1: Speed vs Distance (this plot drives the cursor on hover).
             if let Some(ref speeds) = speeds {
-                ui.label("Speed (km/h)");
+                ui.label(axis_label(ChannelId::SpeedKph));
                 let speed_points: egui_plot::PlotPoints = distances
                     .iter()
                     .zip(speeds.iter())
@@ -46,12 +61,12 @@ impl super::app::ApexApp {
                     .collect();
                 let speed_line = egui_plot::Line::new(speed_points)
                     .color(egui::Color32::from_rgb(0, 200, 255))
-                    .name("Speed");
+                    .name(ChannelId::SpeedKph.display_name());
 
                 egui_plot::Plot::new("speed_plot")
                     .height(plot_height)
                     .width(available_width)
-                    .x_axis_label("Distance (m)")
+                    .x_axis_label(axis_label(ChannelId::S))
                     .show_axes(true)
                     .allow_drag(false)
                     .allow_zoom(false)
@@ -81,7 +96,7 @@ impl super::app::ApexApp {
 
             // Plot 2: Lateral G vs Distance
             if let Some(ref lat_gs) = lateral_gs {
-                ui.label("Lateral G");
+                ui.label(axis_label(ChannelId::LateralG));
                 let lat_points: egui_plot::PlotPoints = distances
                     .iter()
                     .zip(lat_gs.iter())
@@ -89,7 +104,7 @@ impl super::app::ApexApp {
                     .collect();
                 let lat_line = egui_plot::Line::new(lat_points)
                     .color(egui::Color32::from_rgb(255, 100, 100))
-                    .name("Lat G");
+                    .name(ChannelId::LateralG.display_name());
 
                 egui_plot::Plot::new("lat_g_plot")
                     .height(plot_height)
@@ -107,7 +122,7 @@ impl super::app::ApexApp {
 
             // Plot 3: Longitudinal G vs Distance
             if let Some(ref lon_gs) = longitudinal_gs {
-                ui.label("Longitudinal G");
+                ui.label(axis_label(ChannelId::LongitudinalG));
                 let lon_points: egui_plot::PlotPoints = distances
                     .iter()
                     .zip(lon_gs.iter())
@@ -115,7 +130,7 @@ impl super::app::ApexApp {
                     .collect();
                 let lon_line = egui_plot::Line::new(lon_points)
                     .color(egui::Color32::from_rgb(100, 255, 100))
-                    .name("Lon G");
+                    .name(ChannelId::LongitudinalG.display_name());
 
                 egui_plot::Plot::new("lon_g_plot")
                     .height(plot_height)
@@ -133,7 +148,7 @@ impl super::app::ApexApp {
 
             // Plot 4: Curvature vs Distance
             if let Some(ref curvs) = curvatures {
-                ui.label("Curvature (1/m)");
+                ui.label(axis_label(ChannelId::Curvature));
                 let curv_points: egui_plot::PlotPoints = distances
                     .iter()
                     .zip(curvs.iter())
@@ -141,7 +156,7 @@ impl super::app::ApexApp {
                     .collect();
                 let curv_line = egui_plot::Line::new(curv_points)
                     .color(egui::Color32::from_rgb(255, 200, 50))
-                    .name("Curvature");
+                    .name(ChannelId::Curvature.display_name());
 
                 egui_plot::Plot::new("curvature_plot")
                     .height(plot_height)

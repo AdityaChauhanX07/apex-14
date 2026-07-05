@@ -13,7 +13,7 @@ use apex_optimizer::{
 use apex_physics::{
     qss_lap_sim, qss_lap_sim_tire, AeroModel, CarParams, PacejkaTire, SuspensionSystem,
 };
-use apex_telemetry::{export_columns_csv, render_track_svg, RunMetadata};
+use apex_telemetry::{export_columns_csv, render_track_svg, ChannelId, RunMetadata};
 use apex_track::Track;
 
 /// Per-track outcome: the QSS baseline and the three solvers' results.
@@ -189,24 +189,24 @@ fn export_detailed(
         Path::new(path),
         meta,
         &[
-            ("t", &tele.time),
-            ("s", &tele.s),
-            ("speed_kph", &speed_kph),
-            ("lateral_offset", &tele.lateral_offset),
-            ("roll_deg", &roll_deg),
-            ("pitch_deg", &pitch_deg),
-            ("susp_fl", &tele.suspension_fl),
-            ("susp_fr", &tele.suspension_fr),
-            ("susp_rl", &tele.suspension_rl),
-            ("susp_rr", &tele.suspension_rr),
-            ("fz_fl", &tele.fz_fl),
-            ("fz_fr", &tele.fz_fr),
-            ("fz_rl", &tele.fz_rl),
-            ("fz_rr", &tele.fz_rr),
-            ("lateral_g", &tele.lateral_g),
-            ("longitudinal_g", &tele.longitudinal_g),
-            ("ride_height_front", &tele.ride_height_front),
-            ("ride_height_rear", &tele.ride_height_rear),
+            (ChannelId::Time.name(), &tele.time),
+            (ChannelId::S.name(), &tele.s),
+            (ChannelId::SpeedKph.name(), &speed_kph),
+            (ChannelId::LateralOffset.name(), &tele.lateral_offset),
+            (ChannelId::RollDeg.name(), &roll_deg),
+            (ChannelId::PitchDeg.name(), &pitch_deg),
+            (ChannelId::SuspFl.name(), &tele.suspension_fl),
+            (ChannelId::SuspFr.name(), &tele.suspension_fr),
+            (ChannelId::SuspRl.name(), &tele.suspension_rl),
+            (ChannelId::SuspRr.name(), &tele.suspension_rr),
+            (ChannelId::FzFl.name(), &tele.fz_fl),
+            (ChannelId::FzFr.name(), &tele.fz_fr),
+            (ChannelId::FzRl.name(), &tele.fz_rl),
+            (ChannelId::FzRr.name(), &tele.fz_rr),
+            (ChannelId::LateralG.name(), &tele.lateral_g),
+            (ChannelId::LongitudinalG.name(), &tele.longitudinal_g),
+            (ChannelId::RideHeightFront.name(), &tele.ride_height_front),
+            (ChannelId::RideHeightRear.name(), &tele.ride_height_rear),
         ],
     )
 }
@@ -222,11 +222,13 @@ fn export_optimized(
         Path::new(path),
         meta,
         &[
-            ("s", &result.stations),
-            ("n", &result.offsets),
-            ("v_kph", &v_kph),
-            ("f_drive", &result.drive_forces),
-            ("curvature_cmd", &result.curvature_cmds),
+            // `n` -> `lateral_offset` and `v_kph` -> `speed_kph`: the registry
+            // names win over these older ad-hoc column names (see channels.rs).
+            (ChannelId::S.name(), &result.stations),
+            (ChannelId::LateralOffset.name(), &result.offsets),
+            (ChannelId::SpeedKph.name(), &v_kph),
+            (ChannelId::FDrive.name(), &result.drive_forces),
+            (ChannelId::CurvatureCmd.name(), &result.curvature_cmds),
         ],
     )
 }

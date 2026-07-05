@@ -80,6 +80,30 @@ impl InputPacket {
 ///
 /// Contains the full vehicle state and derived telemetry.
 /// Sent at the configured telemetry rate (default: 60Hz).
+///
+/// # Channel registry mapping
+///
+/// Each field maps to a channel in `apex_telemetry::channels` (the workspace
+/// channel registry). The wire format is fixed and independent of the registry;
+/// this mapping is documentation only. Two fields use registry names that
+/// differ from the wire field name (the registry name is canonical):
+///
+/// | Field(s) | Registry channel |
+/// |----------|------------------|
+/// | `pos_x` / `pos_y` / `pos_z` | `pos_x` / `pos_y` / `pos_z` |
+/// | `roll` / `pitch` / `yaw` | `roll` / `pitch` / `yaw` |
+/// | `speed` | `speed` |
+/// | `lateral_v` / `vertical_v` | `lateral_v` / `vertical_v` |
+/// | `yaw_rate` | `yaw_rate` |
+/// | `wheel_fl`..`wheel_rr` | `wheel_fl`..`wheel_rr` |
+/// | `susp_fl`..`susp_rr` | `susp_fl`..`susp_rr` |
+/// | `accel_long` | **`longitudinal_g`** |
+/// | `accel_lat` | **`lateral_g`** |
+/// | `gear` / `lap` | `gear` / `lap` |
+/// | `lap_time` / `sim_time` | `lap_time` / `sim_time` |
+/// | `sequence` | `sequence` |
+/// | `track_distance` / `track_offset` | `track_distance` / `track_offset` |
+/// | `_pad` | (padding — not a channel) |
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct OutputPacket {
     // Position and orientation

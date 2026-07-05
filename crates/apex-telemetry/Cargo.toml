@@ -11,3 +11,6 @@ apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
 serde = { version = "1", features = ["derive"] }
 csv = "1"
+
+[dev-dependencies]
+serde_json = "1"

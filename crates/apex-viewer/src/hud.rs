@@ -10,6 +10,7 @@ use std::thread;
 use eframe::egui;
 
 use apex_sim::protocol::OutputPacket;
+use apex_telemetry::ChannelId;
 
 /// Shared state between the UDP receiver thread and the UI.
 #[derive(Default)]
@@ -124,7 +125,7 @@ fn render_speedometer(ui: &mut egui::Ui, packet: &OutputPacket) {
                 .size(64.0)
                 .strong(),
         );
-        ui.label(egui::RichText::new("km/h").size(20.0));
+        ui.label(egui::RichText::new(ChannelId::SpeedKph.unit().symbol()).size(20.0));
     });
 }
 
@@ -175,8 +176,16 @@ fn render_gforce(ui: &mut egui::Ui, packet: &OutputPacket) {
 
     // Labels.
     ui.horizontal(|ui| {
-        ui.label(format!("Lat: {:.1}g", packet.accel_lat));
-        ui.label(format!("Long: {:.1}g", packet.accel_long));
+        ui.label(format!(
+            "Lat: {:.1}{}",
+            packet.accel_lat,
+            ChannelId::LateralG.unit().symbol()
+        ));
+        ui.label(format!(
+            "Long: {:.1}{}",
+            packet.accel_long,
+            ChannelId::LongitudinalG.unit().symbol()
+        ));
     });
 }
 
@@ -195,7 +204,13 @@ fn render_gear_indicator(ui: &mut egui::Ui, packet: &OutputPacket) {
 
 /// Wheel speed display (four-corner layout).
 fn render_wheel_speeds(ui: &mut egui::Ui, packet: &OutputPacket) {
-    ui.label(egui::RichText::new("Wheel Speed (rad/s)").size(14.0));
+    ui.label(
+        egui::RichText::new(format!(
+            "Wheel Speed ({})",
+            ChannelId::WheelFl.unit().symbol()
+        ))
+        .size(14.0),
+    );
     egui::Grid::new("wheel_speeds").show(ui, |ui| {
         ui.label(format!("FL: {:.0}", packet.wheel_fl));
         ui.label(format!("FR: {:.0}", packet.wheel_fr));
@@ -218,7 +233,11 @@ fn render_timing(ui: &mut egui::Ui, packet: &OutputPacket) {
                 .strong(),
         );
     });
-    ui.label(format!("Sim time: {:.1}s", packet.sim_time));
+    ui.label(format!(
+        "Sim time: {:.1}{}",
+        packet.sim_time,
+        ChannelId::SimTime.unit().symbol()
+    ));
 }
 
 #[cfg(test)]
