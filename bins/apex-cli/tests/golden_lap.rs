@@ -24,7 +24,7 @@ use apex_optimizer::{
     CollocationConfig, CollocationMethod, CollocationOptimizer, GaussNewtonConfig,
 };
 use apex_physics::{qss_lap_sim, CarParams};
-use apex_track::{build_track, oval_track, Track};
+use apex_track::{build_track, oval_track, silverstone_circuit, Track};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -77,6 +77,8 @@ struct OffsetSample {
 }
 
 const QSS_FIXTURE_PATH: &str = "tests/fixtures/golden/f1_2024_calibrated__oval_default__qss.json";
+const SILVERSTONE_QSS_FIXTURE_PATH: &str =
+    "tests/fixtures/golden/f1_2024_calibrated__silverstone_synthetic__qss.json";
 const OPTIMIZE_FIXTURE_PATH: &str =
     "tests/fixtures/golden/f1_2024_calibrated__oval_default__optimize_hermite_simpson.json";
 
@@ -98,6 +100,14 @@ const OPTIMIZE_NODES: usize = 50;
 fn oval_default_track() -> Track {
     let (points, closed) = oval_track(500.0, 80.0, 12.0, 300);
     build_track("Oval", &points, closed)
+}
+
+/// The hand-crafted synthetic Silverstone from `apex_track::circuits`, NOT
+/// TUMFTM survey data (tracks/README.md forbids committing TUMFTM-derived
+/// files; this layout is original code with no such restriction).
+fn silverstone_synthetic_track() -> Track {
+    let (points, closed) = silverstone_circuit();
+    build_track("Silverstone", &points, closed)
 }
 
 fn calibrated_car() -> CarParams {
@@ -334,6 +344,17 @@ fn golden_oval_qss() {
 }
 
 #[test]
+fn golden_silverstone_qss() {
+    let fixture = load_fixture(&fixture_path(SILVERSTONE_QSS_FIXTURE_PATH));
+
+    let track = silverstone_synthetic_track();
+    let params = calibrated_car();
+    let now = compute_payload(&track, &params);
+
+    assert_payload_matches(&now, &fixture.payload);
+}
+
+#[test]
 #[ignore = "paused: the optimize collocation path does not yet converge on non-trivial \
             tracks (see PHYSICS_CHANGE.md), so its golden fixture was never generated; \
             remove this once the convergence fix lands and the fixture is regenerated"]
@@ -390,6 +411,37 @@ fn regen_golden_oval() {
 
     write_fixture(
         &fixture_path(QSS_FIXTURE_PATH),
+        &GoldenFixture { metadata, payload },
+    );
+}
+
+#[test]
+#[ignore]
+fn regen_golden_silverstone() {
+    if std::env::var("REGEN_GOLDEN").is_err() {
+        eprintln!("skipping: set REGEN_GOLDEN=1 to regenerate the golden fixture");
+        return;
+    }
+
+    let track = silverstone_synthetic_track();
+    let params = calibrated_car();
+    let payload = compute_payload(&track, &params);
+
+    let metadata = build_metadata(
+        "f1_2024_calibrated",
+        // "silverstone_synthetic", not "silverstone": this is the hand-crafted
+        // approximation from apex_track::circuits, not TUMFTM survey data.
+        "silverstone_synthetic",
+        "qss",
+        serde_json::json!({
+            "calibrated": true,
+            "fidelity": "grip-circle-constant-mu",
+            "track_source": "silverstone_circuit() synthetic, not TUMFTM data"
+        }),
+    );
+
+    write_fixture(
+        &fixture_path(SILVERSTONE_QSS_FIXTURE_PATH),
         &GoldenFixture { metadata, payload },
     );
 }
