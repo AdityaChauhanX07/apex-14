@@ -40,6 +40,9 @@ pub struct CmaEsConfig {
     pub stagnation_threshold: f64,
     /// Stop if the step size drops below this value. Default: 1e-8.
     pub min_sigma: f64,
+    /// Seed for the internal RNG used to sample candidates. Default: 42.
+    /// A fixed seed makes an optimization run reproducible.
+    pub seed: u64,
 }
 
 impl Default for CmaEsConfig {
@@ -50,6 +53,7 @@ impl Default for CmaEsConfig {
             max_generations: 100,
             stagnation_threshold: 1e-4,
             min_sigma: 1e-8,
+            seed: 42,
         }
     }
 }
@@ -176,8 +180,8 @@ impl CmaEs {
             fitness_history: Vec::new(),
             candidates: Vec::new(),
             bounds,
+            rng: StdRng::seed_from_u64(config.seed),
             config,
-            rng: StdRng::seed_from_u64(42),
         }
     }
 
@@ -451,6 +455,58 @@ mod tests {
             assert!(gens <= 200, "optimizer failed to terminate");
         }
         assert!(es.should_stop(), "should_stop must hold after the loop");
+    }
+
+    #[test]
+    fn test_cmaes_same_seed_reproducible() {
+        // Two optimizers built with the same seed must emit byte-identical
+        // candidate sequences across successive asks.
+        let make = || {
+            CmaEs::new(
+                vec![0.0; 4],
+                vec![(-1.0, 1.0); 4],
+                CmaEsConfig {
+                    seed: 7,
+                    ..Default::default()
+                },
+            )
+        };
+        let mut a = make();
+        let mut b = make();
+        for gen in 0..5 {
+            assert_eq!(
+                a.ask(),
+                b.ask(),
+                "same seed must yield identical candidates (generation {gen})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cmaes_different_seed_differs() {
+        // A different seed must actually reach the RNG: the first generation of
+        // candidates should differ, proving the seed is wired through.
+        let mut a = CmaEs::new(
+            vec![0.0; 4],
+            vec![(-1.0, 1.0); 4],
+            CmaEsConfig {
+                seed: 1,
+                ..Default::default()
+            },
+        );
+        let mut b = CmaEs::new(
+            vec![0.0; 4],
+            vec![(-1.0, 1.0); 4],
+            CmaEsConfig {
+                seed: 2,
+                ..Default::default()
+            },
+        );
+        assert_ne!(
+            a.ask(),
+            b.ask(),
+            "different seeds must yield different candidates"
+        );
     }
 
     #[test]

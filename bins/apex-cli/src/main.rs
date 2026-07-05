@@ -9,6 +9,9 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod seed;
+use seed::resolve_seed;
+
 #[derive(Parser)]
 #[command(name = "apex-14")]
 #[command(about = "Minimum-time lap simulation and racing line optimization")]
@@ -149,6 +152,10 @@ enum Commands {
         #[arg(long)]
         calibrated: bool,
 
+        /// Random seed for CMA-ES reproducibility. Defaults to 42 when omitted.
+        #[arg(long)]
+        seed: Option<u64>,
+
         /// Output TOML file for the optimized setup.
         #[arg(long)]
         output: Option<String>,
@@ -168,9 +175,9 @@ enum Commands {
         #[arg(long, default_value_t = 1000)]
         sims: usize,
 
-        /// Random seed for reproducibility.
-        #[arg(long, default_value_t = 42)]
-        seed: u64,
+        /// Random seed for reproducibility. Defaults to 42 when omitted.
+        #[arg(long)]
+        seed: Option<u64>,
 
         /// Optimize strategy for car at this grid position (1-indexed).
         /// If provided, runs strategy optimization for this car.
@@ -204,9 +211,9 @@ enum Commands {
         #[arg(long, default_value_t = 1000)]
         mc_samples: usize,
 
-        /// Random seed for reproducibility
-        #[arg(long, default_value_t = 42)]
-        seed: u64,
+        /// Random seed for reproducibility. Defaults to 42 when omitted.
+        #[arg(long)]
+        seed: Option<u64>,
 
         /// Export tornado chart SVG to this path
         #[arg(long)]
@@ -264,8 +271,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             generations,
             sigma,
             calibrated,
+            seed,
             output,
-        } => cmd_setup_optimize(track, generations, sigma, calibrated, output),
+        } => cmd_setup_optimize(track, generations, sigma, calibrated, seed, output),
         Commands::RaceSim {
             track,
             laps,
@@ -648,9 +656,10 @@ fn cmd_sensitivity(
     calibrated: bool,
     oat_samples: usize,
     mc_samples: usize,
-    seed: u64,
+    seed: Option<u64>,
     svg: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let seed = resolve_seed(seed, 42, "sensitivity");
     let track_data = match track {
         Some(ref path) => load_track_from_path(path)?,
         None => default_track(),
@@ -735,10 +744,11 @@ fn cmd_race_sim(
     track: String,
     laps: usize,
     sims: usize,
-    seed: u64,
+    seed: Option<u64>,
     optimize_car: Option<usize>,
     calibrated: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let seed = resolve_seed(seed, 42, "race-sim");
     let track_data = resolve_track(&track)?;
     let params = if calibrated {
         apex_physics::CarParams::f1_2024_calibrated()
@@ -855,8 +865,10 @@ fn cmd_setup_optimize(
     generations: usize,
     sigma: f64,
     calibrated: bool,
+    seed: Option<u64>,
     output: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let seed = resolve_seed(seed, 42, "setup-optimize");
     let track_data = resolve_track(&track)?;
     let base_car = if calibrated {
         apex_physics::CarParams::f1_2024_calibrated()
@@ -883,6 +895,7 @@ fn cmd_setup_optimize(
     let cmaes_config = apex_optimizer::CmaEsConfig {
         max_generations: generations,
         initial_sigma: sigma,
+        seed,
         ..Default::default()
     };
 
