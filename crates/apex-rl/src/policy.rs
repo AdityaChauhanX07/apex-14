@@ -6,6 +6,8 @@
 
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{linear, Linear, Module, VarBuilder, VarMap};
+use rand::rngs::StdRng;
+use rand_distr::{Distribution, StandardNormal};
 
 use crate::observation::{ACT_DIM, OBS_DIM};
 
@@ -99,12 +101,21 @@ impl PolicyNet {
     /// of shape `[batch]` are their Gaussian log-densities summed over the action
     /// dimensions. Map the raw actions to valid control ranges with
     /// [`postprocess_actions`].
-    pub fn sample_action(&self, obs: &Tensor) -> Result<(Tensor, Tensor)> {
+    pub fn sample_action(&self, obs: &Tensor, rng: &mut StdRng) -> Result<(Tensor, Tensor)> {
         let (means, log_stds) = self.get_distribution(obs)?;
         let stds = log_stds.exp()?;
 
-        // z = mean + std * epsilon, epsilon ~ N(0, 1).
-        let epsilon = means.randn_like(0.0, 1.0)?;
+        // z = mean + std * epsilon, epsilon ~ N(0, 1). Candle's CPU `randn_like`
+        // draws from an unseedable RNG, so we sample from an explicit seeded
+        // `rng` instead to keep training reproducible.
+        let n = means.elem_count();
+        let noise: Vec<f32> = (0..n)
+            .map(|_| {
+                let z: f32 = StandardNormal.sample(rng);
+                z
+            })
+            .collect();
+        let epsilon = Tensor::from_vec(noise, means.shape(), means.device())?;
         let raw_actions = (&means + (stds * epsilon)?)?;
 
         let log_probs = gaussian_log_prob(&raw_actions, &means, &log_stds)?;
@@ -215,6 +226,52 @@ pub fn postprocess_actions(raw: &Tensor) -> Result<Tensor> {
     Tensor::cat(&[&steering, &throttle, &brake], last)
 }
 
+/// Overwrite every variable in `var_map` with values from a small
+/// deterministic xorshift64 PRNG seeded by `seed`, producing reproducible
+/// initial weights.
+///
+/// candle-core 0.10's CPU backend cannot be seeded (`Device::set_seed` bails
+/// with "cannot seed the CPU rng with set_seed") because weight init draws
+/// from `rand::rng()`, seeded from OS entropy. Re-initializing the weights
+/// ourselves after `VarBuilder` construction sidesteps that by never touching
+/// candle's unseedable RNG.
+///
+/// Variables are sorted by name before the PRNG stream is consumed:
+/// [`VarMap`] stores them in a `HashMap` whose iteration order is randomized
+/// per process, so consuming the stream in that order would assign different
+/// values to different-shaped variables on every run, silently reintroducing
+/// nondeterminism. Sorting by name first gives a stable, reproducible
+/// assignment.
+///
+/// This mirrors `apex_ml::train::seed_var_map`; it is duplicated here rather
+/// than shared because `apex-rl` does not (and should not) depend on
+/// `apex-ml`, and the helper is too small to justify a new crate.
+pub fn seed_var_map(var_map: &VarMap, seed: u64) {
+    let mut state = seed | 1;
+    let mut next_u64 = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let map = var_map.data().lock().unwrap();
+    let mut named_vars: Vec<(&String, &candle_core::Var)> = map.iter().collect();
+    named_vars.sort_by(|a, b| a.0.cmp(b.0));
+    for (_, var) in named_vars {
+        let dims = var.dims().to_vec();
+        let n: usize = dims.iter().product();
+        let data: Vec<f32> = (0..n)
+            .map(|_| {
+                let bits = next_u64();
+                let unit = (bits >> 11) as f64 / (1u64 << 53) as f64; // [0, 1)
+                ((unit * 2.0 - 1.0) * 0.1) as f32 // [-0.1, 0.1)
+            })
+            .collect();
+        let t = Tensor::from_vec(data, dims, var.device()).expect("reinit tensor");
+        var.set(&t).expect("set var");
+    }
+}
+
 /// Save policy and value network weights to a safetensors file.
 pub fn save_agent(var_map: &VarMap, path: &std::path::Path) -> Result<()> {
     var_map.save(path)
@@ -286,8 +343,12 @@ mod tests {
 
     #[test]
     fn test_policy_sample_action() {
+        use rand::SeedableRng;
         let (policy, _vm) = make_policy();
-        let (actions, log_probs) = policy.sample_action(&obs_batch(1)).expect("sample");
+        let mut rng = StdRng::seed_from_u64(0);
+        let (actions, log_probs) = policy
+            .sample_action(&obs_batch(1), &mut rng)
+            .expect("sample");
         assert_eq!(actions.dims(), &[1, ACT_DIM]);
         assert_eq!(log_probs.dims(), &[1]);
         let lp: Vec<f32> = log_probs.to_vec1().expect("to_vec1");

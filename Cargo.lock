@@ -328,6 +328,8 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "log",
+ "rand 0.9.4",
+ "rand_distr",
  "safetensors",
 ]
 

@@ -7,12 +7,14 @@ use std::path::Path;
 
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{VarBuilder, VarMap};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 use apex_track::Track;
 
 use crate::env::{EnvConfig, RaceEnv};
 use crate::observation::{ACT_DIM, OBS_DIM};
-use crate::policy::{postprocess_actions, save_agent, PolicyNet, ValueNet};
+use crate::policy::{postprocess_actions, save_agent, seed_var_map, PolicyNet, ValueNet};
 use crate::ppo::{compute_gae, ppo_update, PpoConfig, PpoUpdateResult, RolloutBuffer};
 use crate::reward::RewardConfig;
 
@@ -33,6 +35,9 @@ pub struct TrainConfig {
     pub log_interval: usize,
     /// Output path for the final weights.
     pub output_path: String,
+    /// Base RNG seed. Drives deterministic weight init and per-env action
+    /// sampling, making a training run reproducible. Default: 42.
+    pub seed: u64,
 }
 
 impl Default for TrainConfig {
@@ -45,6 +50,7 @@ impl Default for TrainConfig {
             save_interval: 10,
             log_interval: 1,
             output_path: "driver_policy.safetensors".to_string(),
+            seed: 42,
         }
     }
 }
@@ -123,11 +129,16 @@ fn collect_rollout(
     value_net: &ValueNet,
     buffer: &mut RolloutBuffer,
     n_steps: usize,
+    rngs: &mut [StdRng],
 ) -> Result<RolloutStats> {
     let device = Device::Cpu;
     let mut stats = RolloutStats::default();
 
-    for env in envs.iter_mut() {
+    for (env_idx, env) in envs.iter_mut().enumerate() {
+        // Each env draws its action noise from its own persistent RNG stream, so
+        // consumption order is fixed regardless of scheduling (safe if this loop
+        // is ever parallelized over envs).
+        let rng = &mut rngs[env_idx];
         // Each environment starts a fresh episode segment at lap 1.
         let mut ep_reward = 0.0;
         let mut ep_len = 0usize;
@@ -137,7 +148,7 @@ fn collect_rollout(
             let obs = env.observe();
             let obs_t = obs_to_tensor(&obs, &device)?;
 
-            let (raw_action, log_prob) = policy.sample_action(&obs_t)?;
+            let (raw_action, log_prob) = policy.sample_action(&obs_t, rng)?;
             let value = value_net.value(&obs_t)?;
             let processed = postprocess_actions(&raw_action)?;
 
@@ -181,6 +192,10 @@ fn collect_rollout(
 
 /// Run one full training iteration: collect a rollout, compute advantages, and
 /// apply the PPO update. Returns the iteration statistics.
+// The rollout needs the envs, both networks, the shared VarMap, the PPO config,
+// and the per-env RNGs; bundling them into a struct would obscure more than it
+// helps for a single internal call site.
+#[allow(clippy::too_many_arguments)]
 fn run_iteration(
     iteration: usize,
     prev_total_steps: usize,
@@ -189,13 +204,14 @@ fn run_iteration(
     value_net: &ValueNet,
     var_map: &VarMap,
     ppo: &PpoConfig,
+    rngs: &mut [StdRng],
 ) -> Result<IterStats> {
     let device = Device::Cpu;
     let n_envs = envs.len();
     let n_steps = ppo.n_steps.max(1);
 
     let mut buffer = RolloutBuffer::with_capacity(n_steps * n_envs);
-    let rollout = collect_rollout(envs, policy, value_net, &mut buffer, n_steps)?;
+    let rollout = collect_rollout(envs, policy, value_net, &mut buffer, n_steps, rngs)?;
 
     // Bootstrap value V(s_T) for each environment's final state.
     let mut last_values = Vec::with_capacity(n_envs);
@@ -248,6 +264,10 @@ pub fn train(tracks: Vec<Track>, config: TrainConfig) -> Result<()> {
     let policy = PolicyNet::new(vb.pp("policy"))?;
     let value_net = ValueNet::new(vb.pp("value"))?;
 
+    // candle's CPU backend seeds weight init from OS entropy and cannot be
+    // seeded via `Device::set_seed`; reinitialize deterministically instead.
+    seed_var_map(&var_map, config.seed);
+
     let n_envs = config.ppo.n_envs.max(1);
     let mut envs: Vec<RaceEnv> = Vec::with_capacity(n_envs);
     for i in 0..n_envs {
@@ -256,6 +276,13 @@ pub fn train(tracks: Vec<Track>, config: TrainConfig) -> Result<()> {
         env_config.reward = config.reward.clone();
         envs.push(RaceEnv::new(track, env_config));
     }
+
+    // One persistent RNG per env, seeded from (base, env_index). Built ONCE
+    // here and only borrowed into the iteration loop so each env's action-noise
+    // stream advances across all iterations rather than replaying per iteration.
+    let mut rngs: Vec<StdRng> = (0..n_envs)
+        .map(|i| StdRng::seed_from_u64(config.seed.wrapping_add(1 + i as u64)))
+        .collect();
 
     let n_steps = config.ppo.n_steps.max(1);
     let transitions_per_iter = (n_steps * n_envs).max(1);
@@ -279,6 +306,7 @@ pub fn train(tracks: Vec<Track>, config: TrainConfig) -> Result<()> {
             &value_net,
             &var_map,
             &config.ppo,
+            &mut rngs,
         )?;
         total_steps = stats.total_steps;
 
@@ -339,7 +367,9 @@ mod tests {
         let (policy, value, _vm) = make_agent();
         let mut envs = make_envs(2);
         let mut buffer = RolloutBuffer::new();
-        let _stats = collect_rollout(&mut envs, &policy, &value, &mut buffer, 10).expect("rollout");
+        let mut rngs: Vec<StdRng> = (0..2).map(StdRng::seed_from_u64).collect();
+        let _stats = collect_rollout(&mut envs, &policy, &value, &mut buffer, 10, &mut rngs)
+            .expect("rollout");
 
         assert_eq!(buffer.len(), 20, "2 envs x 10 steps = 20 transitions");
         assert_eq!(buffer.observations.len(), 20);
@@ -377,8 +407,9 @@ mod tests {
             batch_size: 32,
             ..PpoConfig::default()
         };
-        let stats =
-            run_iteration(0, 0, &mut envs, &policy, &value, &var_map, &ppo).expect("iteration");
+        let mut rngs: Vec<StdRng> = (0..2).map(StdRng::seed_from_u64).collect();
+        let stats = run_iteration(0, 0, &mut envs, &policy, &value, &var_map, &ppo, &mut rngs)
+            .expect("iteration");
 
         assert_eq!(stats.total_steps, 128, "2 envs x 64 steps");
         assert!(stats.mean_speed.is_finite());

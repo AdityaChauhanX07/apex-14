@@ -11,6 +11,9 @@ use apex_track::{
     Track,
 };
 
+mod seed;
+use seed::resolve_seed;
+
 /// CLI arguments for the driver-training binary.
 #[derive(Parser, Debug)]
 #[command(
@@ -46,6 +49,11 @@ struct Args {
     /// Output path for trained weights.
     #[arg(long, default_value = "driver_policy.safetensors")]
     output: String,
+
+    /// Base RNG seed for reproducible training (weight init + action sampling).
+    /// Defaults to 42 when omitted.
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 /// Number of random spline tracks to generate for "--track random".
@@ -113,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tracks = build_tracks(&args.track)?;
     let reward = reward_preset(&args.reward)?;
+    let seed = resolve_seed(args.seed, 42, "train-driver");
 
     let config = TrainConfig {
         ppo: PpoConfig {
@@ -124,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reward,
         total_steps: args.total_steps,
         output_path: args.output.clone(),
+        seed,
         ..TrainConfig::default()
     };
 

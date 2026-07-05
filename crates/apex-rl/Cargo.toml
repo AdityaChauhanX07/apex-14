@@ -14,3 +14,7 @@ candle-core = "0.10"
 candle-nn = "0.10"
 safetensors = "0.7"
 log = "0.4"
+# Default features off to avoid `getrandom`/`os_rng`, which break
+# wasm32-unknown-unknown; we only ever seed explicitly.
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+rand_distr = "0.5"
