@@ -6,6 +6,7 @@ rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+apex-math = { path = "../apex-math" }
 apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
 apex-optimizer = { path = "../apex-optimizer" }

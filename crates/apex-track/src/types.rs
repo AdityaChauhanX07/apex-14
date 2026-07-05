@@ -47,6 +47,84 @@ pub struct Track {
     pub is_closed: bool,
 }
 
+impl apex_math::ContentHash for TrackSegment {
+    /// Encode all seven geometric fields in declaration order. The destructure
+    /// forces any new field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let TrackSegment {
+            s,
+            x,
+            y,
+            heading,
+            curvature,
+            width_left,
+            width_right,
+        } = self;
+        w.f64(*s);
+        w.f64(*x);
+        w.f64(*y);
+        w.f64(*heading);
+        w.f64(*curvature);
+        w.f64(*width_left);
+        w.f64(*width_right);
+    }
+}
+
+impl apex_math::ContentHash for TrackPoint {
+    /// Encode all four raw fields in declaration order.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let TrackPoint {
+            x,
+            y,
+            width_left,
+            width_right,
+        } = self;
+        w.f64(*x);
+        w.f64(*y);
+        w.f64(*width_left);
+        w.f64(*width_right);
+    }
+}
+
+/// Processed-geometry content hash of a [`Track`], under domain
+/// `"track.processed"`.
+///
+/// Hashes the segments (the exact geometry the solvers/QSS consume) plus
+/// `is_closed`, and deliberately EXCLUDES `name` (a human label) and
+/// `total_length` (derived from the segments). A renamed-but-identical track
+/// therefore hashes the same. The segment count is length-prefixed so tracks
+/// of different lengths cannot collide.
+pub fn processed_track_hash(track: &Track) -> apex_math::Hash {
+    use apex_math::ContentHash;
+    let mut w = apex_math::HashWriter::new();
+    w.str(apex_math::HASH_VERSION);
+    w.str("track.processed");
+    // name and total_length are intentionally not hashed (see doc comment).
+    w.bool(track.is_closed);
+    w.u64(track.segments.len() as u64);
+    for seg in &track.segments {
+        seg.hash_into(&mut w);
+    }
+    w.finish()
+}
+
+/// Raw-input content hash of a track's centerline, under domain `"track.raw"`.
+///
+/// Hashes the raw [`TrackPoint`] sequence (the source geometry, before
+/// processing into segments). This is distinct from and not comparable to
+/// [`processed_track_hash`]; the two domains never collide.
+pub fn raw_track_hash(points: &[TrackPoint]) -> apex_math::Hash {
+    use apex_math::ContentHash;
+    let mut w = apex_math::HashWriter::new();
+    w.str(apex_math::HASH_VERSION);
+    w.str("track.raw");
+    w.u64(points.len() as u64);
+    for p in points {
+        p.hash_into(&mut w);
+    }
+    w.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,8 +1,8 @@
 {
   "metadata": {
     "apex_version": "0.1.0",
-    "git_sha": "7cd8bcd",
-    "generated_at": 1783142124,
+    "git_sha": "9532b5f",
+    "generated_at": 1783236644,
     "car_id": "f1_2024_calibrated",
     "track_id": "oval_default",
     "mode": "qss",
@@ -619,6 +619,10 @@
         "v": 44.797539750459926
       }
     ],
-    "sector_times": null
+    "sector_times": [
+      7.147836234994805,
+      9.497247410927969,
+      8.819707037487227
+    ]
   }
 }

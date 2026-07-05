@@ -23,8 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use apex_optimizer::{
     CollocationConfig, CollocationMethod, CollocationOptimizer, GaussNewtonConfig,
 };
-use apex_physics::{qss_lap_sim, CarParams};
-use apex_track::{build_track, oval_track, silverstone_circuit, Track};
+use apex_physics::{qss_lap_sim, sector_times, CarParams, DEFAULT_SECTOR_COUNT};
+use apex_track::{build_track, circle_track, oval_track, silverstone_circuit, Track};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -79,19 +79,23 @@ struct OffsetSample {
 const QSS_FIXTURE_PATH: &str = "tests/fixtures/golden/f1_2024_calibrated__oval_default__qss.json";
 const SILVERSTONE_QSS_FIXTURE_PATH: &str =
     "tests/fixtures/golden/f1_2024_calibrated__silverstone_synthetic__qss.json";
-const OPTIMIZE_FIXTURE_PATH: &str =
-    "tests/fixtures/golden/f1_2024_calibrated__oval_default__optimize_hermite_simpson.json";
+const CIRCLE_OPTIMIZE_FIXTURE_PATH: &str =
+    "tests/fixtures/golden/f1_2024_calibrated__circle__optimize_hermite_simpson.json";
 
 // Tolerances (not bitwise) are used deliberately because FP results aren't
 // portable across compiler/OS/opt-level, and multi-OS CI is coming in Phase 0.4.
 const LAP_TIME_TOL_S: f64 = 0.010;
 const SPEED_RMSE_TOL_MS: f64 = 0.1;
 
-/// `optimize --hermite-simpson --calibrated`'s node count is CLI default
-/// `50` (`#[arg(short, long, default_value_t = 50)]` on `Commands::Optimize`
-/// in `bins/apex-cli/src/main.rs`). Hard-coded here rather than imported so a
-/// future change to the CLI default can't silently repoint this golden.
-const OPTIMIZE_NODES: usize = 50;
+/// Node count for the circle optimize golden. Chosen because the Hermite-
+/// Simpson collocation solve converges cleanly on the constant-curvature
+/// circle at this size (`eq_violation ≈ 7.8e-7`, well under
+/// `GaussNewtonConfig::default().constraint_tol = 1e-4`, in far fewer than the
+/// 100-iteration budget) and matches the in-crate `hs_optimization_circle_converges`
+/// baseline. The bound-binding oval/Silverstone optimize goldens are deferred
+/// to the Phase-3 interior-point solver — see PHYSICS_CHANGE.md and
+/// docs/design/gn-solver-bound-deadlock.md.
+const CIRCLE_OPTIMIZE_NODES: usize = 30;
 
 // ---------------------------------------------------------------------------
 // Baseline scenario
@@ -108,6 +112,16 @@ fn oval_default_track() -> Track {
 fn silverstone_synthetic_track() -> Track {
     let (points, closed) = silverstone_circuit();
     build_track("Silverstone", &points, closed)
+}
+
+/// Constant-curvature circle (R=100 m). This is the one non-trivial track the
+/// Gauss-Newton collocation solver converges cleanly on (no bound-binding
+/// deadlock — see docs/design/gn-solver-bound-deadlock.md), so it is the
+/// converging optimize-mode golden. Built from the generator, matching the
+/// other goldens' built-in-generator pattern (not a JSON file).
+fn circle_optimize_track() -> Track {
+    let (points, closed) = circle_track(100.0, 12.0, 200);
+    build_track("circle", &points, closed)
 }
 
 fn calibrated_car() -> CarParams {
@@ -268,6 +282,31 @@ fn assert_payload_matches(now: &GoldenPayload, fixed: &GoldenPayload) {
         rmse < SPEED_RMSE_TOL_MS,
         "speed trace RMSE regression: {rmse:.6} m/s (tol={SPEED_RMSE_TOL_MS:.3} m/s)"
     );
+
+    // Sector times: same ±10 ms tolerance as the lap time, applied per sector.
+    // Both-None is allowed for producers that don't emit sectors yet (the
+    // paused optimize golden); a presence mismatch is a fixture-schema drift.
+    match (&now.sector_times, &fixed.sector_times) {
+        (Some(now_s), Some(fixed_s)) => {
+            assert_eq!(
+                now_s.len(),
+                fixed_s.len(),
+                "sector count differs from fixture ({} vs {})",
+                now_s.len(),
+                fixed_s.len()
+            );
+            for (k, (a, b)) in now_s.iter().zip(fixed_s.iter()).enumerate() {
+                assert!(
+                    (a - b).abs() <= LAP_TIME_TOL_S,
+                    "sector {k} time regression: now={a:.6}s fixture={b:.6}s (tol={LAP_TIME_TOL_S:.3}s)"
+                );
+            }
+        }
+        (None, None) => {}
+        (now_s, fixed_s) => panic!(
+            "sector_times presence mismatch: now={now_s:?} fixture={fixed_s:?} — fixture-schema drift"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +324,10 @@ fn compute_payload(track: &Track, params: &CarParams) -> GoldenPayload {
         lap_time: result.lap_time,
         speed_trace_10m,
         offset_trace_10m: None,
-        sector_times: None,
+        // Computed in the library (apex_physics::QssResult), not here, so
+        // viewer/telemetry consume the same split. Equal-arc-length 3-sector
+        // split; sums to lap_time (see sector_times_sum_to_lap_time).
+        sector_times: Some(result.sector_times.clone()),
     }
 }
 
@@ -319,11 +361,23 @@ fn compute_optimize_payload(
         .map(|(s, n)| OffsetSample { s, n })
         .collect();
 
+    // Sector times via the same library definition the QSS goldens use
+    // (apex_physics::sector_times), fed the optimizer's own node stations and
+    // per-interval times. `lap_time == Σ time_steps`, so the sectors sum to
+    // lap_time by construction. `track.total_length` sets the equal-arc-length
+    // sector boundaries (thirds of the physical circuit).
+    let sector_times = sector_times(
+        &result.stations,
+        &result.time_steps,
+        track.total_length,
+        DEFAULT_SECTOR_COUNT,
+    );
+
     let payload = GoldenPayload {
         lap_time: result.lap_time,
         speed_trace_10m,
         offset_trace_10m: Some(offset_trace_10m),
-        sector_times: None,
+        sector_times: Some(sector_times),
     };
     (payload, result.converged)
 }
@@ -354,29 +408,77 @@ fn golden_silverstone_qss() {
     assert_payload_matches(&now, &fixture.payload);
 }
 
-#[test]
-#[ignore = "paused: the optimize collocation path does not yet converge on non-trivial \
-            tracks (see PHYSICS_CHANGE.md), so its golden fixture was never generated; \
-            remove this once the convergence fix lands and the fixture is regenerated"]
-fn golden_oval_optimize() {
-    let fixture = load_fixture(&fixture_path(OPTIMIZE_FIXTURE_PATH));
+// The oval/Silverstone optimize goldens are intentionally absent: the
+// Gauss-Newton collocation solver deadlocks on those bound-binding problems
+// (`f_drive` saturates `max_drive_force` on the straights, projected-Newton
+// clips the step to ~zero forever). Root-caused and formally deferred to the
+// Phase-3 interior-point solver — see the deferral entry in PHYSICS_CHANGE.md
+// and docs/design/gn-solver-bound-deadlock.md. Until Phase 3, the converging
+// `golden_circle_optimize` below stands in as the optimize-mode golden.
 
-    let track = oval_default_track();
+/// Converging optimize-mode golden. Fails (does not skip) if the optimizer
+/// stops short of convergence — non-convergence on the circle would be a
+/// regression, so the golden comparison asserts `converged` first.
+#[test]
+fn golden_circle_optimize() {
+    let fixture = load_fixture(&fixture_path(CIRCLE_OPTIMIZE_FIXTURE_PATH));
+
+    let track = circle_optimize_track();
     let params = calibrated_car();
-    let (now, converged) = compute_optimize_payload(&track, &params, OPTIMIZE_NODES);
+    let (now, converged) = compute_optimize_payload(&track, &params, CIRCLE_OPTIMIZE_NODES);
 
     assert!(
         converged,
-        "optimizer did not converge — golden comparison is meaningless"
+        "optimizer did not converge on the circle — this is a regression, not a skip"
     );
 
     assert_payload_matches(&now, &fixture.payload);
 
-    // offset_trace_10m is captured for forward-compat but not asserted on
-    // yet — the default oval is a near-symmetric loop with little lateral
-    // freedom, so a meaningful offset tolerance needs a track with a real
-    // varied racing line (e.g. Silverstone) to calibrate against. Deferred
-    // to the tolerance-hardening slice.
+    // offset_trace_10m is captured for forward-compat but not asserted on: the
+    // circle's optimal line is the centerline by symmetry, so it carries no
+    // information for a lateral-offset tolerance. Deferred to a track with a
+    // varied racing line, alongside the Phase-3 solver work.
+}
+
+/// The optimize path must be bitwise-deterministic for the golden to mean
+/// anything: two in-process solves of the identical config must agree to the
+/// last bit on lap time and the full speed trace. Verified before the fixture
+/// was generated; kept permanently as a guard. (Not a tolerance — a mismatch
+/// here is a determinism regression and must not be papered over.)
+#[test]
+fn circle_optimize_is_deterministic() {
+    let track = circle_optimize_track();
+    let params = calibrated_car();
+
+    let (a, _) = compute_optimize_payload(&track, &params, CIRCLE_OPTIMIZE_NODES);
+    let (b, _) = compute_optimize_payload(&track, &params, CIRCLE_OPTIMIZE_NODES);
+
+    assert_eq!(
+        a.lap_time.to_bits(),
+        b.lap_time.to_bits(),
+        "lap time not bitwise-identical across runs: {} vs {}",
+        a.lap_time,
+        b.lap_time
+    );
+    assert_eq!(
+        a.speed_trace_10m.len(),
+        b.speed_trace_10m.len(),
+        "speed trace length differs across runs"
+    );
+    for (i, (x, y)) in a
+        .speed_trace_10m
+        .iter()
+        .zip(b.speed_trace_10m.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            x.v.to_bits(),
+            y.v.to_bits(),
+            "speed sample {i} not bitwise-identical: {} vs {}",
+            x.v,
+            y.v
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,34 +550,34 @@ fn regen_golden_silverstone() {
 
 #[test]
 #[ignore]
-fn regen_golden_optimize() {
+fn regen_golden_circle_optimize() {
     if std::env::var("REGEN_GOLDEN").is_err() {
         eprintln!("skipping: set REGEN_GOLDEN=1 to regenerate the golden fixture");
         return;
     }
 
-    let track = oval_default_track();
+    let track = circle_optimize_track();
     let params = calibrated_car();
-    let (payload, converged) = compute_optimize_payload(&track, &params, OPTIMIZE_NODES);
+    let (payload, converged) = compute_optimize_payload(&track, &params, CIRCLE_OPTIMIZE_NODES);
 
     assert!(
         converged,
-        "refusing to write golden fixture: optimizer did not converge"
+        "refusing to write golden fixture: optimizer did not converge on the circle"
     );
 
     let metadata = build_metadata(
         "f1_2024_calibrated",
-        "oval_default",
+        "circle",
         "optimize_hermite_simpson",
         serde_json::json!({
             "calibrated": true,
             "hermite_simpson": true,
-            "nodes": OPTIMIZE_NODES
+            "nodes": CIRCLE_OPTIMIZE_NODES
         }),
     );
 
     write_fixture(
-        &fixture_path(OPTIMIZE_FIXTURE_PATH),
+        &fixture_path(CIRCLE_OPTIMIZE_FIXTURE_PATH),
         &GoldenFixture { metadata, payload },
     );
 }

@@ -58,6 +58,36 @@ impl Default for CmaEsConfig {
     }
 }
 
+impl apex_math::ContentHash for CmaEsConfig {
+    /// Encode the result-determining fields. `seed` is deliberately EXCLUDED
+    /// (bound to `_`) so two configs differing only in seed hash identically —
+    /// the content hash is seed-independent, and the seed is tracked
+    /// separately from config identity. The destructure forces any new field
+    /// to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let CmaEsConfig {
+            population_size,
+            initial_sigma,
+            max_generations,
+            stagnation_threshold,
+            min_sigma,
+            seed: _, // excluded from content identity by design
+        } = self;
+        // Option<usize>: tag 0 = None, tag 1 = Some(v).
+        match population_size {
+            None => w.tag(0),
+            Some(v) => {
+                w.tag(1);
+                w.usize(*v);
+            }
+        }
+        w.f64(*initial_sigma);
+        w.usize(*max_generations);
+        w.f64(*stagnation_threshold);
+        w.f64(*min_sigma);
+    }
+}
+
 /// CMA-ES optimizer state (separable / diagonal covariance).
 pub struct CmaEs {
     /// Problem dimension.

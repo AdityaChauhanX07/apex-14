@@ -71,6 +71,39 @@ impl Default for CollocationConfig {
     }
 }
 
+impl apex_math::ContentHash for CollocationMethod {
+    /// Fixed discriminant tag per variant.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        w.tag(match self {
+            CollocationMethod::Trapezoidal => 0,
+            CollocationMethod::HermiteSimpson => 1,
+        });
+    }
+}
+
+impl apex_math::ContentHash for CollocationConfig {
+    /// Encode all result-determining fields in declaration order. The
+    /// destructure forces any new field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let CollocationConfig {
+            n_nodes,
+            closed,
+            dt_min,
+            dt_max,
+            v_min,
+            method,
+            optimize_brake_bias,
+        } = self;
+        w.usize(*n_nodes);
+        w.bool(*closed);
+        w.f64(*dt_min);
+        w.f64(*dt_max);
+        w.f64(*v_min);
+        method.hash_into(w);
+        w.bool(*optimize_brake_bias);
+    }
+}
+
 /// The collocation lap-time optimizer.
 ///
 /// Encapsulates the NLP formulation for minimum-time trajectory optimization

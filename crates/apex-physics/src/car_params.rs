@@ -222,6 +222,76 @@ impl CarParams {
     }
 }
 
+impl apex_math::ContentHash for CarParams {
+    /// Canonically encode all 25 physical parameters in struct-declaration
+    /// order. The leading `let CarParams { .. } = self` destructure is
+    /// deliberate: adding a field to `CarParams` will fail to compile here
+    /// until it is explicitly hashed (or explicitly ignored), so a new field
+    /// can never be silently left out of the content hash.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let CarParams {
+            mass,
+            frontal_area,
+            drag_coeff,
+            lift_coeff,
+            air_density,
+            tire_mu,
+            rolling_resistance,
+            max_drive_force,
+            max_brake_force,
+            wheelbase,
+            cog_to_front,
+            cog_to_rear,
+            cog_height,
+            yaw_inertia,
+            aero_balance_front,
+            wheel_radius,
+            wheel_inertia,
+            track_width_front,
+            track_width_rear,
+            brake_bias_front,
+            drive_distribution,
+            unsprung_mass,
+            tire_radial_stiffness,
+            inertia_xx,
+            inertia_yy,
+        } = self;
+        w.f64(*mass);
+        w.f64(*frontal_area);
+        w.f64(*drag_coeff);
+        w.f64(*lift_coeff);
+        w.f64(*air_density);
+        w.f64(*tire_mu);
+        w.f64(*rolling_resistance);
+        w.f64(*max_drive_force);
+        w.f64(*max_brake_force);
+        w.f64(*wheelbase);
+        w.f64(*cog_to_front);
+        w.f64(*cog_to_rear);
+        w.f64(*cog_height);
+        w.f64(*yaw_inertia);
+        w.f64(*aero_balance_front);
+        w.f64(*wheel_radius);
+        w.f64(*wheel_inertia);
+        w.f64(*track_width_front);
+        w.f64(*track_width_rear);
+        w.f64(*brake_bias_front);
+        w.f64(*drive_distribution);
+        w.f64(*unsprung_mass);
+        w.f64(*tire_radial_stiffness);
+        w.f64(*inertia_xx);
+        w.f64(*inertia_yy);
+    }
+}
+
+/// Content hash of the resolved car parameters, under domain `"car"`.
+///
+/// Hashes the fully-resolved [`CarParams`] (not the lossy TOML overlay), so two
+/// configs that resolve to the same physical parameters hash identically.
+pub fn car_params_hash(car: &CarParams) -> apex_math::Hash {
+    apex_math::content_hash("car", car)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

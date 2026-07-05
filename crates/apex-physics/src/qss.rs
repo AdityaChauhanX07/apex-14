@@ -17,6 +17,13 @@ const V_CAP: f64 = 200.0;
 /// Lower bound applied to any computed speed to avoid singularities (m/s).
 const V_FLOOR: f64 = 0.1;
 
+/// Number of sectors a lap is split into when the track carries no explicit
+/// sector markers — the classic three-sector split used on real circuits.
+/// `Track` has no sector-marker field today, so this is always the split used;
+/// [`integrate_lap_and_sectors`] already takes `n_sectors` so honoring
+/// per-track markers later is a call-site change, not a rewrite.
+pub const DEFAULT_SECTOR_COUNT: usize = 3;
+
 /// Result of a QSS lap simulation.
 pub struct QssResult {
     /// Speed at each track segment (m/s).
@@ -29,6 +36,82 @@ pub struct QssResult {
     pub lateral_gs: Vec<f64>,
     /// Longitudinal acceleration at each segment (m/s²).
     pub longitudinal_gs: Vec<f64>,
+    /// Per-sector times (seconds). With no explicit sector markers the lap is
+    /// split into [`DEFAULT_SECTOR_COUNT`] equal-arc-length sectors. Sums to
+    /// [`lap_time`](Self::lap_time) up to floating-point reassociation (well
+    /// within 1e-9 s), so telemetry/the viewer can display sector splits
+    /// without recomputing the lap integral.
+    pub sector_times: Vec<f64>,
+}
+
+/// Splits per-interval traversal times into equal-arc-length sector totals —
+/// the single definition of "how a lap is divided into sectors" for the whole
+/// workspace (QSS here, and the collocation-optimize golden, both consume it).
+///
+/// `stations[i]` is the arc length at node `i`; `interval_times[i]` is the time
+/// spent on the interval that *starts* at node `i` (so there are
+/// `interval_times.len()` intervals — `stations.len()` for a closed loop whose
+/// final interval wraps to the start, or `stations.len() - 1` otherwise). Each
+/// interval's time is attributed in full to the sector containing that
+/// interval's midpoint station. Because every interval lands in exactly one
+/// bucket, the returned times sum to `interval_times.iter().sum()` up to
+/// floating-point reassociation, regardless of how many nodes straddle a
+/// boundary — attributing whole intervals (rather than splitting the one that
+/// crosses a boundary) is what keeps that identity exact, at the cost of
+/// placing each boundary at the nearest interval edge.
+pub fn sector_times(
+    stations: &[f64],
+    interval_times: &[f64],
+    total_length: f64,
+    n_sectors: usize,
+) -> Vec<f64> {
+    let n = stations.len();
+    let sector_len = total_length / n_sectors as f64;
+    let mut sectors = vec![0.0; n_sectors];
+    for (i, &dt) in interval_times.iter().enumerate() {
+        let ds = if i + 1 < n {
+            stations[i + 1] - stations[i]
+        } else {
+            total_length - stations[n - 1]
+        };
+        let s_mid = stations[i] + 0.5 * ds;
+        let idx = ((s_mid / sector_len).floor() as usize).min(n_sectors - 1);
+        sectors[idx] += dt;
+    }
+    sectors
+}
+
+/// Integrates lap time and per-sector times from a completed speed profile.
+///
+/// Builds the same `ds / v_avg` per-interval times as the lap-time integral,
+/// then buckets them via [`sector_times`]. `lap_time` is `Σ dt` in interval
+/// order (byte-identical to the previous direct accumulation), and the sector
+/// split reuses the shared definition — so `sector_times.iter().sum()` equals
+/// `lap_time` up to floating-point reassociation, asserted within 1e-9 s by
+/// the unit test `sector_times_sum_to_lap_time`.
+fn integrate_lap_and_sectors(
+    s: &[f64],
+    speeds: &[f64],
+    total_length: f64,
+    closed: bool,
+    n_sectors: usize,
+) -> (f64, Vec<f64>) {
+    let n = s.len();
+    let intervals = if closed { n } else { n - 1 };
+    let mut dt = Vec::with_capacity(intervals);
+    for i in 0..intervals {
+        let j = if i + 1 < n { i + 1 } else { 0 };
+        let ds = if i + 1 < n {
+            s[i + 1] - s[i]
+        } else {
+            total_length - s[n - 1]
+        };
+        let v_avg = 0.5 * (speeds[i] + speeds[j]);
+        dt.push(if v_avg > 0.0 { ds / v_avg } else { 0.0 });
+    }
+    let lap_time = dt.iter().sum();
+    let sectors = sector_times(s, &dt, total_length, n_sectors);
+    (lap_time, sectors)
 }
 
 /// Cornering-limited speed at a segment with absolute curvature `kappa`.
@@ -157,17 +240,9 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
         }
     }
 
-    // Step 4: lap time and accelerations.
-    let intervals = if closed { n } else { n - 1 };
-    let mut lap_time = 0.0;
-    for i in 0..intervals {
-        let j = if i + 1 < n { i + 1 } else { 0 };
-        let ds = ds_next(i);
-        let v_avg = 0.5 * (speeds[i] + speeds[j]);
-        if v_avg > 0.0 {
-            lap_time += ds / v_avg;
-        }
-    }
+    // Step 4: lap time, per-sector times, and accelerations.
+    let (lap_time, sector_times) =
+        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
 
     let lateral_gs: Vec<f64> = (0..n)
         .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
@@ -188,6 +263,7 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
         distances: s,
         lateral_gs,
         longitudinal_gs,
+        sector_times,
     }
 }
 
@@ -356,17 +432,9 @@ pub fn qss_lap_sim_tire(
         }
     }
 
-    // Step 4: lap time and accelerations (unchanged).
-    let intervals = if closed { n } else { n - 1 };
-    let mut lap_time = 0.0;
-    for i in 0..intervals {
-        let j = if i + 1 < n { i + 1 } else { 0 };
-        let ds = ds_next(i);
-        let v_avg = 0.5 * (speeds[i] + speeds[j]);
-        if v_avg > 0.0 {
-            lap_time += ds / v_avg;
-        }
-    }
+    // Step 4: lap time, per-sector times, and accelerations (unchanged integral).
+    let (lap_time, sector_times) =
+        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
 
     let lateral_gs: Vec<f64> = (0..n)
         .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
@@ -387,6 +455,7 @@ pub fn qss_lap_sim_tire(
         distances: s,
         lateral_gs,
         longitudinal_gs,
+        sector_times,
     }
 }
 
@@ -540,6 +609,54 @@ mod tests {
             "Silverstone lap time {} out of range",
             result.lap_time
         );
+    }
+
+    #[test]
+    fn sector_times_sum_to_lap_time() {
+        let params = CarParams::default();
+
+        // Exercise every producer/topology combination: closed oval, closed
+        // synthetic circuit, open straight, and the tire-aware path.
+        let (op, oc) = oval_track(1000.0, 100.0, 12.0, 400);
+        let oval = build_track("oval", &op, oc);
+        let (sp, sc) = apex_track::silverstone_circuit();
+        let silverstone = build_track("Silverstone", &sp, sc);
+        let straight_pts: Vec<TrackPoint> = (0..300)
+            .map(|i| TrackPoint {
+                x: 1000.0 * (i as f64) / 299.0,
+                y: 0.0,
+                width_left: 5.0,
+                width_right: 5.0,
+            })
+            .collect();
+        let straight = build_track("straight", &straight_pts, false);
+        let tire = PacejkaTire::f1_default();
+
+        let results = [
+            qss_lap_sim(&oval, &params),
+            qss_lap_sim(&silverstone, &params),
+            qss_lap_sim(&straight, &params),
+            qss_lap_sim_tire(&oval, &params, &tire, RSF),
+        ];
+
+        for r in &results {
+            assert_eq!(
+                r.sector_times.len(),
+                DEFAULT_SECTOR_COUNT,
+                "expected {DEFAULT_SECTOR_COUNT} sectors, got {}",
+                r.sector_times.len()
+            );
+            let sum: f64 = r.sector_times.iter().sum();
+            assert!(
+                (sum - r.lap_time).abs() < 1e-9,
+                "sector times {:?} sum to {sum}, lap_time {}",
+                r.sector_times,
+                r.lap_time
+            );
+            for (k, &t) in r.sector_times.iter().enumerate() {
+                assert!(t > 0.0, "sector {k} time {t} not positive");
+            }
+        }
     }
 
     #[test]

@@ -25,4 +25,4 @@ pub use parser::{
     parse_tumftm_csv, TrackFileJson, TrackPointJson,
 };
 pub use track_gen::{extract_features, generate_track_batch, random_spline_track, TrackFeatures};
-pub use types::{Track, TrackPoint, TrackSegment};
+pub use types::{processed_track_hash, raw_track_hash, Track, TrackPoint, TrackSegment};

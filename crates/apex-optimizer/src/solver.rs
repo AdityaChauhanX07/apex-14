@@ -47,6 +47,37 @@ impl Default for SolverConfig {
     }
 }
 
+impl apex_math::ContentHash for SolverConfig {
+    /// Encode the result-determining fields. `print_interval` is EXCLUDED
+    /// (cosmetic I/O cadence, bound to `_`). The destructure forces any new
+    /// field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let SolverConfig {
+            max_outer_iter,
+            max_inner_iter,
+            constraint_tol,
+            objective_tol,
+            initial_penalty,
+            penalty_growth,
+            max_penalty,
+            initial_step_size,
+            line_search_beta,
+            line_search_c,
+            print_interval: _, // cosmetic; excluded from content identity
+        } = self;
+        w.usize(*max_outer_iter);
+        w.usize(*max_inner_iter);
+        w.f64(*constraint_tol);
+        w.f64(*objective_tol);
+        w.f64(*initial_penalty);
+        w.f64(*penalty_growth);
+        w.f64(*max_penalty);
+        w.f64(*initial_step_size);
+        w.f64(*line_search_beta);
+        w.f64(*line_search_c);
+    }
+}
+
 /// Result of the NLP solve.
 #[derive(Debug, Clone)]
 pub struct SolverResult {

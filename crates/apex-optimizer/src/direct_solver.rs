@@ -63,6 +63,23 @@ impl Default for DirectSolverConfig {
     }
 }
 
+impl apex_math::ContentHash for DirectSolverConfig {
+    /// Encode the result-determining fields. `print_interval` is EXCLUDED
+    /// (cosmetic, bound to `_`). The destructure forces any new field to be
+    /// handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let DirectSolverConfig {
+            max_iterations,
+            constraint_tol,
+            damping,
+            print_interval: _, // cosmetic; excluded from content identity
+        } = self;
+        w.usize(*max_iterations);
+        w.f64(*constraint_tol);
+        w.f64(*damping);
+    }
+}
+
 /// Result of the direct solve.
 #[derive(Debug, Clone)]
 pub struct DirectSolverResult {

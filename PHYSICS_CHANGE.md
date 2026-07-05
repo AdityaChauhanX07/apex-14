@@ -63,6 +63,92 @@ change, not chased as a bug.
 
 ## Log
 
+### 2026-07-05 — Golden-lap harness closeout (0.1): converging circle optimize golden + formal Phase-3 deferral
+- **(a) New `golden_circle_optimize` fixture.** Added the first converging
+  optimize-mode golden: constant-curvature circle (`circle_track(100.0, 12.0,
+  200)`, R=100 m, L≈628.29 m), `f1_2024_calibrated` car, Hermite-Simpson
+  transcription, `CIRCLE_OPTIMIZE_NODES = 30`, `optimize_gn` with
+  `GaussNewtonConfig::default()`. Verified convergence: `eq_violation ≈ 7.8e-7`,
+  far under `constraint_tol = 1e-4`, in well under the 100-iteration budget.
+  Fixture (`f1_2024_calibrated__circle__optimize_hermite_simpson.json`):
+  `lap_time = 11.494914 s`, `sector_times = [3.963736, 3.567399, 3.963779]`
+  (sum = lap_time to 3e-15 s; the 3-way asymmetry is the deterministic
+  whole-interval bucketing of ~29 intervals into equal-arc-length thirds, not
+  a physics effect), speed trace resampled every 10 m (64 samples). Compared
+  under the existing tolerances: lap ±0.010 s, each sector ±0.010 s, speed
+  RMSE < 0.1 m/s. The test **fails (not skips)** if the solve does not
+  converge — it asserts `converged` before comparing.
+- **Determinism.** Before generating the fixture, the exact config was solved
+  twice in-process and the two results were **bitwise-identical** on lap time
+  and the full speed trace (no RNG, no rayon, no hashmap-order dependence in
+  the point-mass `optimize_gn` path; the warmstart is deterministic QSS). A
+  permanent guard test `circle_optimize_is_deterministic` asserts this bit-for-
+  bit (not a tolerance).
+- **Library reuse.** `apex_physics::sector_times(stations, interval_times,
+  total_length, n_sectors)` was factored out as the single definition of the
+  sector split; QSS's `integrate_lap_and_sectors` now delegates to it, and the
+  optimize golden feeds it the optimizer's own node stations and per-interval
+  `time_steps`. The QSS goldens are byte-unchanged by this refactor (lap-time
+  accumulation order preserved; both QSS fixtures still pass untouched).
+- **(b) Formal deferral of the oval / Barcelona optimize goldens to Phase 3.**
+  The fixtureless `#[ignore]`d `golden_oval_optimize` test is **removed**
+  (replaced by a comment pointing here). Root cause (see
+  `docs/design/gn-solver-bound-deadlock.md`): the Gauss-Newton collocation
+  solver enforces variable bounds only by post-hoc projection and has no
+  active-set / bound-multiplier mechanism, so it deadlocks whenever the optimum
+  needs a bound to bind — on the oval and Silverstone, `f_drive` saturates
+  `max_drive_force` across the straights, the linear system keeps demanding
+  more force than exists, and projection clips the step to ~zero every
+  iteration (floors at `eq_violation ≈ 0.2–0.98`, orders of magnitude above
+  `constraint_tol`). This is a solver-capability gap, not a tuning issue
+  (scaling, warmstart, line-search, and CG precision were all ruled out); the
+  fix is the Phase-3 interior-point solver, which handles active bounds
+  natively via a log-barrier. No solver numerics were touched here.
+- **(c) Roadmap substitution.** The roadmap item "Barcelona optimize
+  Hermite-Simpson golden" is **consciously substituted** by
+  `golden_circle_optimize` until Phase 3. The circle is the one non-trivial
+  track the current solver converges on cleanly, so it is what pins
+  optimize-mode output today; the oval/Silverstone/Barcelona optimize goldens
+  are revisited when the interior-point solver lands (Barcelona additionally
+  needs a TUMFTM import — no `tracks/barcelona.*` exists — and `tracks/`
+  README forbids committing TUMFTM-derived files).
+- Lap-time delta: n/a (new fixture; QSS goldens unchanged). Speed-RMSE delta:
+  n/a. Fixtures regenerated:
+  `f1_2024_calibrated__circle__optimize_hermite_simpson.json` (created via
+  `REGEN_GOLDEN=1 cargo test -p apex-14 --test golden_lap -- --ignored
+  regen_golden_circle_optimize`).
+
+### 2026-07-05 — Fixture-schema change: `sector_times` null → computed (NOT a physics change)
+- Change: `apex_physics::QssResult` gained a `sector_times: Vec<f64>` field,
+  computed by `qss::integrate_lap_and_sectors` for both `qss_lap_sim` and
+  `qss_lap_sim_tire`. The lap is split into `DEFAULT_SECTOR_COUNT = 3`
+  equal-arc-length sectors (`s ∈ [0, L/3), [L/3, 2L/3), [2L/3, L]`); each
+  lap-time interval is attributed in full to the sector containing its
+  midpoint station, so the sector times sum to `lap_time` to within
+  floating-point reassociation (unit test `sector_times_sum_to_lap_time`
+  asserts < 1e-9 s). `Track` has no sector-marker field today, so the equal
+  split is always used; the helper already takes `n_sectors` so honoring
+  per-track markers later is a call-site change. The golden fixture
+  `sector_times` field went from `null` (never computed) to populated, and
+  `golden_lap.rs`'s shared comparison now checks each sector within the same
+  ±0.010 s tolerance as lap time.
+- **Why this is a schema change, not a physics change:** `lap_time` and the
+  resampled speed trace are byte-for-byte the intended values as before — the
+  lap-time integral accumulates the identical `dt` terms in the identical
+  order; sector bucketing is a pure re-attribution of those same terms. No
+  simulation output moved. The two QSS goldens still pass their existing
+  lap-time/speed-RMSE gates unchanged; only the previously-`null`
+  `sector_times` field was populated.
+- Lap-time delta: **none** (0.0 s; identical integral, only re-bucketed).
+- Speed-RMSE delta: **none** (speed trace untouched).
+- Fixtures regenerated (this same commit, via
+  `REGEN_GOLDEN=1 cargo test -p apex-14 --test golden_lap -- --ignored`):
+  `f1_2024_calibrated__oval_default__qss.json` (sector_times
+  `[7.147836, 9.497247, 8.819707]`) and
+  `f1_2024_calibrated__silverstone_synthetic__qss.json` (sector_times
+  `[22.748393, 26.317347, 35.618236]`). The paused optimize golden is
+  unaffected (still `#[ignore]`d, still emits `sector_times: None`).
+
 ### 2026-07-03 — Golden-lap harness established
 - Change: Added the golden-lap regression harness itself
   (`bins/apex-cli/tests/golden_lap.rs`) and the first pinned baseline.

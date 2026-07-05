@@ -13,6 +13,7 @@ pub mod nlp;
 pub mod overtaking;
 pub mod racing_quality;
 pub mod scaling;
+pub mod settings_hash;
 pub mod setup;
 pub mod setup_eval;
 pub mod solver;
@@ -35,6 +36,10 @@ pub use nlp::{NlpEvaluator, NlpProblem};
 pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
 pub use racing_quality::{compute_racing_quality, RacingQuality};
 pub use scaling::{ScaledEvaluator, Scaling};
+pub use settings_hash::{
+    al_solver_settings_hash, cmaes_settings_hash, direct_solver_settings_hash,
+    gauss_newton_settings_hash, optimize_gn_settings_hash,
+};
 pub use setup::{SetupParam, SetupSpace};
 pub use setup_eval::{
     evaluate_batch, evaluate_setup, export_setup_toml, optimize_setup, GenerationRecord,

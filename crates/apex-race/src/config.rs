@@ -82,6 +82,54 @@ impl RaceConfig {
     }
 }
 
+impl apex_math::ContentHash for RaceConfig {
+    /// Encode all 17 result-determining fields in declaration order. The
+    /// destructure forces any new field to be handled here before it compiles.
+    fn hash_into(&self, w: &mut apex_math::HashWriter) {
+        let RaceConfig {
+            n_laps,
+            pit_loss_time,
+            pit_stop_time,
+            track_length,
+            start_fuel_kg,
+            fuel_per_lap,
+            fuel_time_factor,
+            safety_car_prob,
+            vsc_prob,
+            dnf_prob,
+            rain_prob,
+            driver_error_prob,
+            safety_car_laps,
+            vsc_laps,
+            safety_car_pace,
+            overtake_gap_threshold,
+            overtake_base_prob,
+        } = self;
+        w.usize(*n_laps);
+        w.f64(*pit_loss_time);
+        w.f64(*pit_stop_time);
+        w.f64(*track_length);
+        w.f64(*start_fuel_kg);
+        w.f64(*fuel_per_lap);
+        w.f64(*fuel_time_factor);
+        w.f64(*safety_car_prob);
+        w.f64(*vsc_prob);
+        w.f64(*dnf_prob);
+        w.f64(*rain_prob);
+        w.f64(*driver_error_prob);
+        w.usize(*safety_car_laps);
+        w.usize(*vsc_laps);
+        w.f64(*safety_car_pace);
+        w.f64(*overtake_gap_threshold);
+        w.f64(*overtake_base_prob);
+    }
+}
+
+/// Content hash of the race configuration, under domain `"race"`.
+pub fn race_config_hash(cfg: &RaceConfig) -> apex_math::Hash {
+    apex_math::content_hash("race", cfg)
+}
+
 /// A single planned pit stop.
 #[derive(Debug, Clone)]
 pub struct PlannedStop {
