@@ -8,7 +8,7 @@ use apex_physics::{
     qss_lap_sim, AeroModel, CarParams, FourteenDofModel, LqrController, PacejkaTire, QssResult,
     SpeedController, SuspensionSystem,
 };
-use apex_telemetry::{export_qss_csv, render_track_svg};
+use apex_telemetry::{export_qss_csv, render_track_svg, RunMetadata};
 use apex_track::{
     build_track, circle_track, load_tumftm_csv, monza_circuit, normalize_angle, oval_track,
     silverstone_circuit, Track,
@@ -16,6 +16,17 @@ use apex_track::{
 
 /// Standard gravity (m/s²) for reporting lateral acceleration in g.
 const GRAVITY: f64 = 9.81;
+
+/// Provenance for a QSS export: hashes the car + processed track, mode-tagged
+/// settings, no seed (QSS is deterministic and RNG-free).
+fn qss_meta(track: &Track, car: &CarParams) -> RunMetadata {
+    RunMetadata::new(
+        apex_physics::car_params_hash(car),
+        apex_track::processed_track_hash(track),
+        apex_telemetry::settings_hash_for_mode("qss.grip-circle"),
+        None,
+    )
+}
 
 /// Summary statistics for a single QSS run.
 struct LapStats {
@@ -548,10 +559,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oval_stats = summarize(&oval_result);
     println!("Oval results:");
     print_results(&oval_stats);
-    export_qss_csv(Path::new("qss_oval_telemetry.csv"), &oval, &oval_result)?;
+    let oval_meta = qss_meta(&oval, &params);
+    export_qss_csv(
+        Path::new("qss_oval_telemetry.csv"),
+        &oval_meta,
+        &oval,
+        &oval_result,
+    )?;
     println!("Telemetry exported to qss_oval_telemetry.csv");
     render_track_svg(
         Path::new("qss_oval_track.svg"),
+        &oval_meta,
         &oval,
         &oval_result.speeds,
         "Apex-14 — Oval (R=100m)",
@@ -612,14 +630,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let circle_stats = summarize(&circle_result);
     println!("Circle results:");
     print_results(&circle_stats);
+    let circle_meta = qss_meta(&circle, &params);
     export_qss_csv(
         Path::new("qss_circle_telemetry.csv"),
+        &circle_meta,
         &circle,
         &circle_result,
     )?;
     println!("Telemetry exported to qss_circle_telemetry.csv");
     render_track_svg(
         Path::new("qss_circle_track.svg"),
+        &circle_meta,
         &circle,
         &circle_result.speeds,
         "Apex-14 — Circle (R=100m)",
@@ -709,9 +730,10 @@ fn run_circuit(
     let stats = summarize(&result);
     println!("{} results:", title);
     print_results(&stats);
-    export_qss_csv(Path::new(csv_path), track, &result)?;
+    let meta = qss_meta(track, params);
+    export_qss_csv(Path::new(csv_path), &meta, track, &result)?;
     println!("Telemetry exported to {}", csv_path);
-    render_track_svg(Path::new(svg_path), track, &result.speeds, svg_title)?;
+    render_track_svg(Path::new(svg_path), &meta, track, &result.speeds, svg_title)?;
     println!("Track SVG exported to {}", svg_path);
     println!();
 

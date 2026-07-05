@@ -5,6 +5,8 @@ use std::path::Path;
 
 use apex_track::Track;
 
+use crate::RunMetadata;
+
 /// Output image dimensions (pixels).
 const IMG_W: f64 = 1200.0;
 const IMG_H: f64 = 900.0;
@@ -51,9 +53,12 @@ fn hex(c: (u8, u8, u8)) -> String {
 /// Renders a track map to a standalone SVG file with a color-coded speed
 /// overlay.
 ///
-/// `speeds` must have the same length as `track.segments`.
+/// `speeds` must have the same length as `track.segments`. A [`RunMetadata`]
+/// `<metadata>` provenance element is embedded immediately after the root
+/// `<svg>` open tag.
 pub fn render_track_svg(
     path: &Path,
+    meta: &RunMetadata,
     track: &Track,
     speeds: &[f64],
     title: &str,
@@ -115,6 +120,9 @@ pub fn render_track_svg(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">",
         IMG_W as i32, IMG_H as i32, IMG_W as i32, IMG_H as i32
     )?;
+
+    // provenance metadata (valid XML <metadata> element)
+    svg.push_str(&meta.svg_metadata_element());
 
     // background
     writeln!(
@@ -232,11 +240,21 @@ pub fn render_track_svg(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings_hash_for_mode;
     use apex_physics::{qss_lap_sim, CarParams};
     use apex_track::{build_track, circle_track, oval_track};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(name)
+    }
+
+    fn test_meta() -> RunMetadata {
+        RunMetadata::new(
+            settings_hash_for_mode("test-car"),
+            settings_hash_for_mode("test-track"),
+            settings_hash_for_mode("test-settings"),
+            None,
+        )
     }
 
     #[test]
@@ -260,12 +278,17 @@ mod tests {
         let result = qss_lap_sim(&track, &params);
 
         let path = temp_path("apex_test_oval.svg");
-        render_track_svg(&path, &track, &result.speeds, "Apex-14 Oval").expect("render");
+        render_track_svg(&path, &test_meta(), &track, &result.speeds, "Apex-14 Oval")
+            .expect("render");
 
         let contents = std::fs::read_to_string(&path).expect("read");
         assert!(contents.starts_with("<?xml") || contents.starts_with("<svg"));
         assert!(contents.contains("</svg>"));
         assert!(contents.contains("Apex-14 Oval"));
+        // provenance element present and well-formed
+        assert!(contents.contains("<metadata>"));
+        assert!(contents.contains("</metadata>"));
+        assert!(contents.contains("<apex:config_hash>"));
         assert!(contents.len() > 1000, "svg only {} bytes", contents.len());
 
         std::fs::remove_file(&path).ok();
@@ -279,12 +302,14 @@ mod tests {
         let result = qss_lap_sim(&track, &params);
 
         let path = temp_path("apex_test_circle.svg");
-        render_track_svg(&path, &track, &result.speeds, "Apex-14 Circle").expect("render");
+        render_track_svg(&path, &test_meta(), &track, &result.speeds, "Apex-14 Circle")
+            .expect("render");
 
         let contents = std::fs::read_to_string(&path).expect("read");
         assert!(contents.starts_with("<?xml") || contents.starts_with("<svg"));
         assert!(contents.contains("</svg>"));
         assert!(contents.contains("Apex-14 Circle"));
+        assert!(contents.contains("<metadata>"));
         assert!(contents.len() > 1000, "svg only {} bytes", contents.len());
 
         std::fs::remove_file(&path).ok();

@@ -25,7 +25,7 @@ pub use car_config::{
     export_car_toml, load_car_toml, parse_car_toml, AeroSection, CarConfig, CarSection,
     GeometrySection, PowertrainSection, SuspensionSection, TireSection,
 };
-pub use car_params::CarParams;
+pub use car_params::{car_params_hash, CarParams};
 pub use controller::{solve_care_4x4, LqrController, SpeedController};
 pub use drivetrain::{Engine, Gearbox, Powertrain};
 pub use fourteen_dof::FourteenDofModel;

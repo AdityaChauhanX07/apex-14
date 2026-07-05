@@ -13,7 +13,7 @@ use apex_optimizer::{
 use apex_physics::{
     qss_lap_sim, qss_lap_sim_tire, AeroModel, CarParams, PacejkaTire, SuspensionSystem,
 };
-use apex_telemetry::{export_columns_csv, render_track_svg};
+use apex_telemetry::{export_columns_csv, render_track_svg, RunMetadata};
 use apex_track::Track;
 
 /// Per-track outcome: the QSS baseline and the three solvers' results.
@@ -42,6 +42,15 @@ fn run_track(
 
     let qss_lap = qss_lap_sim(track, car).lap_time;
 
+    // Provenance for the exported GN result. settings_hash covers the
+    // collocation discretization + GN solver; no RNG, so seed is None.
+    let meta = RunMetadata::new(
+        apex_physics::car_params_hash(car),
+        apex_track::processed_track_hash(track),
+        apex_optimizer::optimize_gn_settings_hash(&collocation, gn_solver),
+        None,
+    );
+
     println!("Optimizing: {} (N={} nodes)...", label, collocation.n_nodes);
     let optimizer = CollocationOptimizer::new(collocation, track, car);
 
@@ -64,9 +73,9 @@ fn run_track(
     );
 
     // Export the GN result (the best-conditioned solution overall).
-    export_optimized(&gn, &csv_path)?;
+    export_optimized(&gn, &csv_path, &meta)?;
     println!("  Telemetry exported to {}", csv_path);
-    render_track_svg(Path::new(&svg_path), track, &gn.speeds, &svg_title)?;
+    render_track_svg(Path::new(&svg_path), &meta, track, &gn.speeds, &svg_title)?;
     println!("  Track SVG exported to {}", svg_path);
     println!();
 
@@ -168,12 +177,17 @@ fn print_forward_sim(tele: &DetailedTelemetry) {
 }
 
 /// Export the detailed 14-DOF forward-simulation telemetry as columnar CSV.
-fn export_detailed(tele: &DetailedTelemetry, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn export_detailed(
+    tele: &DetailedTelemetry,
+    path: &str,
+    meta: &RunMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
     let roll_deg: Vec<f64> = tele.roll.iter().map(|r| r.to_degrees()).collect();
     let pitch_deg: Vec<f64> = tele.pitch.iter().map(|p| p.to_degrees()).collect();
     let speed_kph: Vec<f64> = tele.speed.iter().map(|v| v * 3.6).collect();
     export_columns_csv(
         Path::new(path),
+        meta,
         &[
             ("t", &tele.time),
             ("s", &tele.s),
@@ -201,10 +215,12 @@ fn export_detailed(tele: &DetailedTelemetry, path: &str) -> Result<(), Box<dyn s
 fn export_optimized(
     result: &OptimizationResult,
     path: &str,
+    meta: &RunMetadata,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let v_kph: Vec<f64> = result.speeds.iter().map(|v| v * 3.6).collect();
     export_columns_csv(
         Path::new(path),
+        meta,
         &[
             ("s", &result.stations),
             ("n", &result.offsets),
@@ -330,6 +346,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         closed: true,
         ..CollocationConfig::default()
     };
+    // Provenance built before the config is moved into the optimizer.
+    let fd_meta = RunMetadata::new(
+        apex_physics::car_params_hash(&car),
+        apex_track::processed_track_hash(&fd_circle_track),
+        apex_optimizer::optimize_gn_settings_hash(&fd_circle_cfg, &fd_solver),
+        None,
+    );
     let fd_circle = CollocationOptimizer::new(fd_circle_cfg, &fd_circle_track, &car);
     let (fd_opt, fd_tele) =
         fd_circle.optimize_fourteen_dof_full(&tire, &suspension, &aero, &fd_solver);
@@ -340,7 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fd_opt.lap_time, fd_opt.eq_violation, fd_opt.converged
     );
     print_forward_sim(&fd_tele);
-    export_detailed(&fd_tele, "opt_circle_14dof_telemetry.csv")?;
+    export_detailed(&fd_tele, "opt_circle_14dof_telemetry.csv", &fd_meta)?;
     println!("  Detailed telemetry exported to opt_circle_14dof_telemetry.csv");
     println!();
 

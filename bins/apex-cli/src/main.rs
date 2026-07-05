@@ -405,14 +405,25 @@ fn cmd_qss(
         result.lateral_gs.iter().cloned().fold(f64::MIN, f64::max)
     );
 
-    if let Some(csv_path) = csv {
-        apex_telemetry::export_qss_csv(&csv_path, &track, &result)?;
-        println!("\nCSV exported to {}", csv_path.display());
-    }
+    if csv.is_some() || svg.is_some() {
+        // QSS has no tunable solver settings and no RNG: settings_hash is the
+        // mode label, seed is None.
+        let meta = apex_telemetry::RunMetadata::new(
+            apex_physics::car_params_hash(&params),
+            apex_track::processed_track_hash(&track),
+            apex_telemetry::settings_hash_for_mode("qss.grip-circle"),
+            None,
+        );
 
-    if let Some(svg_path) = svg {
-        apex_telemetry::render_track_svg(&svg_path, &track, &result.speeds, &track.name)?;
-        println!("SVG exported to {}", svg_path.display());
+        if let Some(csv_path) = csv {
+            apex_telemetry::export_qss_csv(&csv_path, &meta, &track, &result)?;
+            println!("\nCSV exported to {}", csv_path.display());
+        }
+
+        if let Some(svg_path) = svg {
+            apex_telemetry::render_track_svg(&svg_path, &meta, &track, &result.speeds, &track.name)?;
+            println!("SVG exported to {}", svg_path.display());
+        }
     }
 
     Ok(())
@@ -732,7 +743,14 @@ fn cmd_sensitivity(
 
     // Export tornado chart
     if let Some(svg_path) = svg {
-        apex_physics::tornado_chart_svg(&oat_results, &svg_path)?;
+        // Sensitivity is seeded (Monte Carlo); settings_hash is the mode label.
+        let meta = apex_telemetry::RunMetadata::new(
+            apex_physics::car_params_hash(&params),
+            apex_track::processed_track_hash(&track_data),
+            apex_telemetry::settings_hash_for_mode("sensitivity.oat+mc"),
+            Some(seed),
+        );
+        apex_physics::tornado_chart_svg(&oat_results, &svg_path, &meta.svg_metadata_element())?;
         println!();
         println!("Tornado chart exported to {}", svg_path.display());
     }

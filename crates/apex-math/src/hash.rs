@@ -148,6 +148,14 @@ impl HashWriter {
         self.hasher.update(s.as_bytes());
     }
 
+    /// Encode a raw byte slice as a length prefix (`u64` byte length) followed
+    /// by the bytes, so concatenation is unambiguous. Use this to fold an
+    /// already-computed [`Hash`]'s bytes into a composite hash.
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.u64(b.len() as u64);
+        self.hasher.update(b);
+    }
+
     /// Finalize into a [`Hash`].
     pub fn finish(self) -> Hash {
         Hash(*self.hasher.finalize().as_bytes())

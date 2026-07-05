@@ -356,9 +356,17 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
 }
 
 /// Generate a tornado chart SVG showing parameter sensitivities.
+///
+/// `metadata_element` is a pre-rendered, well-formed XML `<metadata>` provenance
+/// fragment (from `apex_telemetry::RunMetadata::svg_metadata_element`), embedded
+/// right after the root `<svg>` tag. It is passed as a string rather than a
+/// `RunMetadata` because `apex-physics` sits below `apex-telemetry` in the crate
+/// graph (orphan-rule layering); the caller, which depends on both, supplies it,
+/// so provenance is still forced at every call site.
 pub fn tornado_chart_svg(
     results: &[OatResult],
     path: &std::path::Path,
+    metadata_element: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
@@ -391,6 +399,8 @@ pub fn tornado_chart_svg(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}">"##,
         total_width, total_height, total_width, total_height
     ));
+    // provenance metadata (valid XML <metadata> element, supplied by the caller)
+    svg.push_str(metadata_element);
     svg.push_str(&format!(
         r##"<rect width="{}" height="{}" fill="#1a1a2e"/>"##,
         total_width, total_height
@@ -609,11 +619,15 @@ mod tests {
         let results = oat_sensitivity(&track, &car, &params, 5);
 
         let path = std::env::temp_dir().join(format!("apex_tornado_{}.svg", std::process::id()));
-        tornado_chart_svg(&results, &path).unwrap();
+        // apex-physics is below apex-telemetry in the crate graph, so the test
+        // passes a plain valid-XML metadata fragment rather than a RunMetadata.
+        let meta = "<metadata><apex:run>provenance</apex:run></metadata>";
+        tornado_chart_svg(&results, &path, meta).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("<svg"), "should start with <svg");
         assert!(content.contains("</svg>"), "should contain closing tag");
+        assert!(content.contains(meta), "provenance metadata must be embedded");
         assert!(
             content.len() > 500,
             "svg {} bytes, expected > 500",
