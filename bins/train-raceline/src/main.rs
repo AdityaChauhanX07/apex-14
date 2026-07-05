@@ -15,9 +15,12 @@ use apex_ml::{
     io::{load_dataset, meta_path, save_dataset, save_norm_constants},
     net::{save_weights, RacelineNet},
     pipeline::{generate_batch, PipelineConfig},
-    train::{train, TrainConfig},
+    train::{seed_var_map, train, TrainConfig},
 };
 use apex_track::{build_track, random_spline_track};
+
+mod seed;
+use seed::resolve_seed;
 
 /// CLI arguments for the training binary.
 #[derive(Parser, Debug)]
@@ -26,6 +29,16 @@ struct Args {
     /// Number of random tracks to generate for the training set.
     #[arg(long, default_value_t = 50)]
     n_tracks: usize,
+
+    /// Seed for network weight initialization (reproducible training).
+    /// Defaults to 42 when omitted.
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Base seed for random track generation; track `i` uses `track_seed + i`.
+    /// Defaults to 0 when omitted.
+    #[arg(long)]
+    track_seed: Option<u64>,
 
     /// Number of training epochs.
     #[arg(long, default_value_t = 200)]
@@ -45,12 +58,16 @@ struct Args {
     dataset: Option<PathBuf>,
 }
 
-fn generate_dataset(n_tracks: usize) -> Result<TrainingDataset, Box<dyn std::error::Error>> {
+fn generate_dataset(
+    n_tracks: usize,
+    track_seed: u64,
+) -> Result<TrainingDataset, Box<dyn std::error::Error>> {
     log::info!("generating {} random tracks...", n_tracks);
 
     let mut tracks = Vec::with_capacity(n_tracks);
-    for seed in 0..n_tracks {
-        match random_spline_track(8, 200.0, 0.3, 0.15, 12.0, seed as u64, 300) {
+    for i in 0..n_tracks {
+        let seed = track_seed + i as u64;
+        match random_spline_track(8, 200.0, 0.3, 0.15, 12.0, seed, 300) {
             Ok((pts, closed)) => {
                 let track_id = format!("spline_{seed}");
                 let track = build_track(&track_id, &pts, closed);
@@ -83,12 +100,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
+    let weight_seed = resolve_seed(args.seed, 42, "weight-init");
+
     let dataset = match &args.dataset {
         Some(path) => {
             log::info!("loading dataset from {}...", path.display());
             load_dataset(path)?
         }
-        None => generate_dataset(args.n_tracks)?,
+        None => {
+            let track_seed = resolve_seed(args.track_seed, 0, "track-gen");
+            generate_dataset(args.n_tracks, track_seed)?
+        }
     };
 
     log::info!(
@@ -106,6 +128,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let var_map = VarMap::new();
     let vb = VarBuilder::from_varmap(&var_map, DType::F32, &device);
     let net = RacelineNet::new(vb)?;
+
+    // candle's CPU backend seeds weight init from OS entropy and cannot be
+    // seeded via `Device::set_seed`. Reinitialize deterministically from
+    // `weight_seed` so training runs are reproducible.
+    seed_var_map(&var_map, weight_seed);
 
     println!("network parameters: {}", net.param_count());
 
