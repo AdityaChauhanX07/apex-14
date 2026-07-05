@@ -303,6 +303,47 @@ mod tests {
         (net, var_map)
     }
 
+    /// Overwrite every variable in `var_map` with values from a small
+    /// deterministic xorshift64 PRNG seeded by `seed`.
+    ///
+    /// candle-core 0.10's CPU backend cannot be seeded (`Device::set_seed`
+    /// bails with "cannot seed the CPU rng with set_seed") because weight
+    /// init draws from `rand::rng()`, a thread-local RNG seeded from OS
+    /// entropy. That makes tests that depend on the specific trajectory of
+    /// training (e.g. exactly when divergence occurs) flaky. Re-initializing
+    /// the weights ourselves after VarBuilder construction sidesteps that by
+    /// never touching candle's unseedable RNG.
+    fn seed_var_map_deterministically(var_map: &VarMap, seed: u64) {
+        let mut state = seed | 1;
+        let mut next_u64 = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // `VarMap::all_vars()` returns `HashMap::values()`, whose iteration
+        // order is randomized per-process by Rust's default hasher. Consuming
+        // the PRNG stream in that order would assign different values to
+        // different-shaped variables on every run, silently reintroducing
+        // nondeterminism. Sort by name first for a stable, reproducible order.
+        let map = var_map.data().lock().unwrap();
+        let mut named_vars: Vec<(&String, &candle_core::Var)> = map.iter().collect();
+        named_vars.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, var) in named_vars {
+            let dims = var.dims().to_vec();
+            let n: usize = dims.iter().product();
+            let data: Vec<f32> = (0..n)
+                .map(|_| {
+                    let bits = next_u64();
+                    let unit = (bits >> 11) as f64 / (1u64 << 53) as f64; // [0, 1)
+                    ((unit * 2.0 - 1.0) * 0.1) as f32 // [-0.1, 0.1)
+                })
+                .collect();
+            let t = Tensor::from_vec(data, dims, var.device()).expect("reinit tensor");
+            var.set(&t).expect("set var");
+        }
+    }
+
     #[test]
     fn test_samples_to_tensors() {
         let device = Device::Cpu;
@@ -389,6 +430,9 @@ mod tests {
     #[test]
     fn test_best_weights_restored_after_divergence() {
         let (net, var_map) = make_net_and_map();
+        // Weight init otherwise draws from candle's unseedable CPU RNG, making
+        // this test's divergence trajectory nondeterministic (~1/5 flaky).
+        seed_var_map_deterministically(&var_map, 0xACE1_5EED);
 
         // Enough identical converged samples to give a multi-sample val split.
         let dataset = TrainingDataset {
