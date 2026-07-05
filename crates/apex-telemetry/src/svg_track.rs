@@ -302,8 +302,14 @@ mod tests {
         let result = qss_lap_sim(&track, &params);
 
         let path = temp_path("apex_test_circle.svg");
-        render_track_svg(&path, &test_meta(), &track, &result.speeds, "Apex-14 Circle")
-            .expect("render");
+        render_track_svg(
+            &path,
+            &test_meta(),
+            &track,
+            &result.speeds,
+            "Apex-14 Circle",
+        )
+        .expect("render");
 
         let contents = std::fs::read_to_string(&path).expect("read");
         assert!(contents.starts_with("<?xml") || contents.starts_with("<svg"));

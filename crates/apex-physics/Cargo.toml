@@ -19,3 +19,6 @@ apex-track = { path = "../apex-track" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 rayon = { version = "1.10", optional = true }
+
+[dev-dependencies]
+proptest = "1.11"

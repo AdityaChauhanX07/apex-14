@@ -421,7 +421,13 @@ fn cmd_qss(
         }
 
         if let Some(svg_path) = svg {
-            apex_telemetry::render_track_svg(&svg_path, &meta, &track, &result.speeds, &track.name)?;
+            apex_telemetry::render_track_svg(
+                &svg_path,
+                &meta,
+                &track,
+                &result.speeds,
+                &track.name,
+            )?;
             println!("SVG exported to {}", svg_path.display());
         }
     }

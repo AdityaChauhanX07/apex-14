@@ -627,7 +627,10 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("<svg"), "should start with <svg");
         assert!(content.contains("</svg>"), "should contain closing tag");
-        assert!(content.contains(meta), "provenance metadata must be embedded");
+        assert!(
+            content.contains(meta),
+            "provenance metadata must be embedded"
+        );
         assert!(
             content.len() > 500,
             "svg {} bytes, expected > 500",
