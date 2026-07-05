@@ -1,0 +1,107 @@
+name: Bench History
+
+# Post-merge trend collection ONLY — runs on push to main, never on PRs, so it
+# cannot gate merges. It runs the criterion suite via cargo-criterion, captures
+# a single timestamped JSON snapshot, and commits it to an orphan
+# `bench-history` branch. There is NO regression gating: these CI-runner numbers
+# are noisy trend data, not absolute performance guarantees.
+on:
+  push:
+    branches: [main]
+
+# Needed to push the snapshot to the bench-history branch via GITHUB_TOKEN.
+permissions:
+  contents: write
+
+# Never run two history-appends concurrently (they push to the same branch).
+concurrency:
+  group: bench-history
+  cancel-in-progress: false
+
+jobs:
+  bench-history:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build benches with the repo-pinned toolchain (rust-toolchain.toml).
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bench-
+
+      - name: Install cargo-criterion
+        run: cargo install cargo-criterion --locked
+
+      # cargo-criterion emits one JSON object per line; keep the raw stream.
+      - name: Run benches (JSON messages)
+        run: cargo criterion --message-format=json > bench-raw.jsonl
+
+      - name: Aggregate into one snapshot
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse --short HEAD)
+          TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          DATE=$(date -u +%Y-%m-%d)
+          mkdir -p bench-out
+          # {git_sha, timestamp, results:[{id, mean_ns, unit}]}
+          jq -s --arg sha "$SHA" --arg ts "$TS" '{
+            git_sha: $sha,
+            timestamp: $ts,
+            results: [ .[]
+              | select(.reason == "benchmark-complete")
+              | { id: .id, mean_ns: .mean.estimate, unit: .unit } ]
+          }' bench-raw.jsonl > "bench-out/${DATE}-${SHA}.json"
+          {
+            echo "OUTFILE=bench-out/${DATE}-${SHA}.json"
+            echo "SNAP=${DATE}-${SHA}.json"
+            echo "DATE=${DATE}"
+            echo "SHA=${SHA}"
+          } >> "$GITHUB_ENV"
+
+      - name: Commit snapshot to bench-history branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          work="$(mktemp -d)"
+
+          if git clone --branch bench-history --single-branch --depth 1 "$url" "$work" 2>/dev/null; then
+            echo "Appending to existing bench-history branch."
+          else
+            echo "bench-history branch absent — creating it as an orphan."
+            git clone --depth 1 "$url" "$work"
+            git -C "$work" checkout --orphan bench-history
+            git -C "$work" rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          mkdir -p "$work/results"
+          cp "$OUTFILE" "$work/results/${SNAP}"
+
+          # Ensure the explanatory README exists on the branch (template lives on
+          # main at .github/bench-history-README.md).
+          if [ ! -f "$work/README.md" ]; then
+            cp "${GITHUB_WORKSPACE}/.github/bench-history-README.md" "$work/README.md"
+          fi
+
+          git -C "$work" add -A
+          if git -C "$work" diff --cached --quiet; then
+            echo "No change to commit."
+            exit 0
+          fi
+          git -C "$work" commit -m "bench: ${DATE} ${SHA}"
+          git -C "$work" push origin bench-history

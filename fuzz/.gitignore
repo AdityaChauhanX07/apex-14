@@ -1,0 +1,5 @@
+# Build output and libFuzzer crash reproducers are not committed; the seed
+# corpus under corpus/ IS committed (it is the fuzzers' starting inputs).
+/target
+/artifacts
+/coverage

@@ -1,0 +1,49 @@
+# cargo-fuzz crate for apex-14. This is a SELF-CONTAINED workspace (note the
+# empty `[workspace]` table at the bottom): it detaches from the root workspace
+# so the libfuzzer-sys / nightly-only toolchain never affects host
+# `cargo test/clippy/fmt --workspace`. Build with:
+#   cargo +nightly fuzz run <target>
+[package]
+name = "apex-14-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# Only the crates whose public parse surfaces we fuzz.
+apex-track = { path = "../crates/apex-track" }
+apex-sim = { path = "../crates/apex-sim" }
+
+# Fuzz binaries: no test/doc/bench harness, and each is a libfuzzer target.
+[[bin]]
+name = "fuzz_track_csv"
+path = "fuzz_targets/fuzz_track_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_track_json"
+path = "fuzz_targets/fuzz_track_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_udp_packet"
+path = "fuzz_targets/fuzz_udp_packet.rs"
+test = false
+doc = false
+bench = false
+
+# Nested-workspace marker: keeps this crate out of the root workspace so the
+# host toolchain (pinned stable) never tries to build the nightly fuzz deps.
+[workspace]
+
+# libfuzzer needs frame pointers + some debug info for useful crash traces.
+[profile.release]
+debug = 1

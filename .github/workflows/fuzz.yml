@@ -1,0 +1,75 @@
+name: Fuzz
+
+# Separate workflow (not part of ci.yml) so the nightly-only cargo-fuzz build
+# is fully isolated: it can never gate PR merges (branch protection targets the
+# `check`/`msrv` jobs in ci.yml) and a nightly break in a transitive dependency
+# fails only this workflow. The fuzz crate is also its own cargo workspace
+# (fuzz/Cargo.toml carries an empty `[workspace]`), so only apex-track,
+# apex-sim, and their deps are compiled here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly deep run: Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      # One target failing (a found crash) must not cancel the others.
+      fail-fast: false
+      matrix:
+        target: [fuzz_track_csv, fuzz_track_json, fuzz_udp_packet]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # cargo-fuzz requires a recent nightly (libfuzzer sanitizer support).
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo + fuzz target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            fuzz/target
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # 60 s/target on push/PR (a quick smoke); 1800 s/target on the weekly cron.
+      - name: Choose fuzz duration
+        id: dur
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "secs=1800" >> "$GITHUB_OUTPUT"
+          else
+            echo "secs=60" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${{ steps.dur.outputs.secs }} \
+            -rss_limit_mb=4096
+
+      # On a crash/OOM, libFuzzer writes a reproducer under fuzz/artifacts/<target>/.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

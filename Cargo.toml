@@ -4,6 +4,14 @@ members = [
     "crates/*",
     "bins/*",
 ]
+# The cargo-fuzz crate is a self-contained nested workspace (it carries its own
+# `[workspace]` table in fuzz/Cargo.toml) so the libfuzzer-sys / nightly-only
+# build never enters the host workspace. This `exclude` is belt-and-suspenders:
+# `fuzz/` already sits outside the `crates/*` + `bins/*` globs, and the explicit
+# exclusion makes host `cargo test/clippy/fmt --workspace` provably ignore it.
+exclude = [
+    "fuzz",
+]
 
 [workspace.package]
 edition = "2021"

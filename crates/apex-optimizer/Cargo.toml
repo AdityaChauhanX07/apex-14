@@ -45,3 +45,7 @@ harness = false
 [[bench]]
 name = "suspension_bench"
 harness = false
+
+[[bench]]
+name = "dynamics_rhs"
+harness = false
