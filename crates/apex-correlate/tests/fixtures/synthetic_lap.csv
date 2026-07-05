@@ -1,0 +1,11 @@
+# source: hand-written synthetic example (NOT real telemetry)
+# note: measured-style file — no RunMetadata hashes (see docs/telemetry_format.md)
+# grid: s
+# columns: s[m], speed[m/s], throttle[], brake[], gear[], rpm[rpm]
+#
+s,speed,throttle,brake,gear,rpm
+0.0,60.0,1.0,0.0,4,11000
+5.0,62.0,1.0,0.0,4,11200
+10.0,58.0,0.5,0.2,4,10800
+15.0,,,,,
+20.0,55.0,0.0,1.0,3,9000

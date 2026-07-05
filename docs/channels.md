@@ -67,3 +67,22 @@ column and its unit as `name[symbol]` pairs, e.g.:
 It sits between the `# key: value` metadata lines and the blank `#` separator
 that precedes the header row, so a comment-aware reader
 (`ReaderBuilder::comment(Some(b'#'))`) skips it transparently.
+
+## Measured-telemetry channels (Phase 2 correlation)
+
+The telemetry-correlation importer (`apex-correlate`, see
+[`docs/telemetry_format.md`](telemetry_format.md)) consumes *measured* car
+telemetry (e.g. FastF1 exports). It maps every source column through this
+registry, so a handful of driver-input / powertrain channels were appended
+(append-only, per the extension policy):
+
+| Channel | Unit | Quantity | Notes |
+|---------|------|----------|-------|
+| `throttle` | — (dimensionless) | `Dimensionless` | Pedal position, 0…1 (percent sources are converted to a 0–1 fraction on import). |
+| `brake` | — (dimensionless) | `Dimensionless` | 0…1 fraction, or a 0/1 on-off flag (FastF1 exposes a boolean). |
+| `rpm` | `rpm` | `AngularVelocity` | Engine speed. Modelled as an **angular velocity with its own display unit** (`Unit::Rpm`, symbol `rpm`), not a `Count`: it is a genuine physical rotational speed, and keeping `rpm` as the canonical unit avoids a lossy rpm→rad/s round-trip on the raw ECU value. (Grouped under `AngularVelocity` for coarse plot binning; it is not co-plotted with the rad/s wheel-speed channels.) |
+| `steering_angle` | `rad` | `Angle` | Measured steering channel; degree sources convert via `Unit::si_factor()`. |
+
+`x`, `y` (world position) and `gear` already existed and are reused as-is for
+measured telemetry — note the FastF1 `x`/`y` frame is FastF1-local and is **not**
+aligned to the Apex track frame (alignment is a later task).

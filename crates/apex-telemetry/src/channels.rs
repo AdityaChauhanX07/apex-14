@@ -172,7 +172,11 @@ macro_rules! define_channels {
     ($( $variant:ident : $name:literal, $unit:ident, $quantity:ident, $display:literal, $desc:literal ; )+) => {
         /// Stable identifier for a telemetry channel. Serializes as its
         /// snake_case [`name`](ChannelId::name).
-        #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+        ///
+        /// `Ord`/`PartialOrd` follow declaration order in [`define_channels!`],
+        /// which is append-only — so the ordering is stable and usable as a
+        /// `BTreeMap` key (e.g. for deterministic column ordering in consumers).
+        #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
         pub enum ChannelId {
             $( #[doc = $desc] $variant, )+
         }
@@ -242,6 +246,7 @@ define_channels! {
     WheelFr         : "wheel_fr",          RadPerSecond,   AngularVelocity, "Wheel FR",       "Front-right wheel angular velocity";
     WheelRl         : "wheel_rl",          RadPerSecond,   AngularVelocity, "Wheel RL",       "Rear-left wheel angular velocity";
     WheelRr         : "wheel_rr",          RadPerSecond,   AngularVelocity, "Wheel RR",       "Rear-right wheel angular velocity";
+    Rpm             : "rpm",               Rpm,            AngularVelocity, "RPM",            "Engine crankshaft rotational speed";
 
     // --- accelerations ---
     LateralG        : "lateral_g",         G,              Acceleration,    "Lat G",          "Lateral acceleration";
@@ -253,6 +258,7 @@ define_channels! {
     Yaw             : "yaw",               Radian,         Angle,           "Yaw",            "Yaw angle (heading)";
     RollDeg         : "roll_deg",          Degree,         Angle,           "Roll",           "Roll angle, degree display of `roll`";
     PitchDeg        : "pitch_deg",         Degree,         Angle,           "Pitch",          "Pitch angle, degree display of `pitch`";
+    SteeringAngle   : "steering_angle",    Radian,         Angle,           "Steering",       "Steering input angle (measured steering channel)";
 
     // --- curvature ---
     Curvature       : "curvature",         RadPerMeter,    Curvature,       "Curvature",      "Path curvature (kappa = 1/R)";
@@ -269,6 +275,10 @@ define_channels! {
     Time            : "t",                 Second,         Time,            "Time",           "Elapsed time";
     LapTime         : "lap_time",          Second,         Time,            "Lap time",       "Time on the current lap";
     SimTime         : "sim_time",          Second,         Time,            "Sim time",       "Total simulation time";
+
+    // --- driver inputs (measured telemetry) ---
+    Throttle        : "throttle",          None,           Dimensionless,   "Throttle",       "Throttle pedal position (0 = closed, 1 = wide-open)";
+    Brake           : "brake",             None,           Dimensionless,   "Brake",          "Brake application (0 = released, 1 = full; a 0/1 flag or a fraction)";
 
     // --- counts / indices ---
     Gear            : "gear",              None,           Count,           "Gear",           "Current gear (0 = neutral)";
@@ -416,6 +426,44 @@ mod tests {
                 "name {n} is not snake_case"
             );
         }
+    }
+
+    // Measured-telemetry channels added for the correlation importer (Phase 2).
+    // Locks their name/unit/quantity so the interchange format can't drift.
+    #[test]
+    fn measured_telemetry_channels_have_expected_specs() {
+        let cases = [
+            (
+                ChannelId::Throttle,
+                "throttle",
+                Unit::None,
+                Quantity::Dimensionless,
+            ),
+            (
+                ChannelId::Brake,
+                "brake",
+                Unit::None,
+                Quantity::Dimensionless,
+            ),
+            (ChannelId::Rpm, "rpm", Unit::Rpm, Quantity::AngularVelocity),
+            (
+                ChannelId::SteeringAngle,
+                "steering_angle",
+                Unit::Radian,
+                Quantity::Angle,
+            ),
+        ];
+        for (id, name, unit, quantity) in cases {
+            assert_eq!(id.name(), name);
+            assert_eq!(id.unit(), unit);
+            assert_eq!(id.quantity(), quantity);
+            assert_eq!(ChannelId::from_name(name), Some(id));
+        }
+        // throttle/brake are unitless: their `# columns:` symbol is empty.
+        assert_eq!(
+            csv_columns_comment(&["throttle", "brake"]),
+            "# columns: throttle[], brake[]"
+        );
     }
 
     #[test]

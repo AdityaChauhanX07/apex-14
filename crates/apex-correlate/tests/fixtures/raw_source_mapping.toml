@@ -1,0 +1,25 @@
+# Maps raw_source.csv columns onto registry channels, with unit conversion.
+# DriverName is intentionally left unmapped → dropped (unknown_columns = ignore).
+unknown_columns = "ignore"
+required = ["s", "speed", "throttle"]
+auto_identity = false
+
+[columns.Distance]
+channel = "s"
+unit = "m"
+
+[columns.Speed]
+channel = "speed"
+unit = "km/h"
+
+[columns.Throttle]
+channel = "throttle"
+unit = "percent"
+
+[columns.Brake]
+channel = "brake"
+unit = "fraction"
+
+[columns.SteeringDeg]
+channel = "steering_angle"
+unit = "deg"

@@ -1,0 +1,7 @@
+# a hand-written "third-party" export: non-registry column names & non-canonical units
+# grid: s
+Distance,Speed,Throttle,Brake,SteeringDeg,DriverName
+0.0,216.0,100.0,0,-5.0,VER
+5.0,220.0,100.0,0,-3.0,VER
+10.0,210.0,50.0,1,2.0,VER
+15.0,205.0,0.0,1,6.0,VER

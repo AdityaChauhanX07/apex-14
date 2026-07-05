@@ -251,6 +251,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apex-correlate"
+version = "0.1.0"
+dependencies = [
+ "apex-telemetry",
+ "csv",
+ "proptest",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "apex-integrator"
 version = "0.1.0"
 dependencies = [

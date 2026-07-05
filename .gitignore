@@ -6,6 +6,20 @@
 *.csv
 *.svg
 
+# ...but telemetry-import test fixtures ARE checked in (they are tiny,
+# hand-written, and required by the apex-correlate importer tests).
+!crates/apex-correlate/tests/fixtures/*.csv
+
+# --- Measured telemetry (apex-correlate / FastF1 bridge) ---
+# Derived telemetry CSVs and the FastF1 HTTP cache stay LOCAL for now. FastF1
+# serves official F1/FOM timing data whose redistribution terms we are not
+# taking a position on yet, so we do NOT commit derived telemetry. Committing
+# curated/derived summaries is a later, deliberate decision (see
+# telemetry/README.md). `*.csv` already covers the CSVs; these are explicit for
+# clarity and to also ignore the binary cache directory.
+/telemetry/.fastf1_cache/
+/telemetry/*.csv
+
 # OS files
 .DS_Store
 Thumbs.db
