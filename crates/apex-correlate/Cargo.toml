@@ -15,6 +15,7 @@ license = "MIT OR Apache-2.0"
 # `apex-physics` supplies the QSS comparison engine and the shared sector-split
 # definition for the correlation report.
 [dependencies]
+apex-math = { path = "../apex-math" }
 apex-telemetry = { path = "../apex-telemetry" }
 apex-track = { path = "../apex-track" }
 apex-physics = { path = "../apex-physics" }

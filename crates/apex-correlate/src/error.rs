@@ -50,6 +50,8 @@ pub enum CorrelateError {
     BadStep(f64),
     /// Alignment could not be fitted (degenerate input).
     AlignFailed(&'static str),
+    /// A `--free` identification parameter path is not recognized.
+    UnknownFreeParam(String),
 }
 
 impl fmt::Display for CorrelateError {
@@ -99,6 +101,9 @@ impl fmt::Display for CorrelateError {
                 write!(f, "resampling step must be finite and > 0, got {s}")
             }
             CorrelateError::AlignFailed(m) => write!(f, "alignment failed: {m}"),
+            CorrelateError::UnknownFreeParam(p) => {
+                write!(f, "unknown identification parameter path `{p}`")
+            }
         }
     }
 }

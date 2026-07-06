@@ -1,19 +1,27 @@
 # Telemetry correlation — Silverstone 2024 Q (RUS)
 
-**v1 (unsmoothed centerline): lap delta +30.938 s, speed RMSE 20.13 m/s.**
-**v2 (smoothed centerline): +26.355 s, RMSE 18.24 m/s.**
-**v3 (smoothed + measured driven line): +14.544 s, RMSE 13.58 m/s.**
+**Fitted (direct driven line, identified car): lap delta +0.921 s, speed RMSE
+4.12 m/s over 5890 m** — from an unfitted-preset baseline of +30.9 s / 20.1 m/s.
+
+Progression (each step removes one confound):
+
+| ver | line / car | lap delta | RMSE |
+|---|---|---|---|
+| v1 | unsmoothed centerline, preset | +30.938 s | 20.13 |
+| v2 | smoothed centerline, preset | +26.355 s | 18.24 |
+| v3 | driven line (**offset**), preset | +14.544 s | 13.58 |
+| v4 | driven line (**direct**), preset | **+9.716 s** | **11.52** |
+| v5 | driven line (direct), **fitted car** | **+0.921 s** | **4.12** |
 
 This page records the correlation of the Apex-14 QSS simulator against a real
-measured lap, and how two confounds were peeled off in turn: **centerline
-curvature noise** (track import) and the **racing line** (driver vs. centerline).
-It is a **derived summary** (numbers only) — the raw FastF1 telemetry and the
-TUMFTM-derived track are not redistributed and stay local
-(see `telemetry/README.md`, `tracks/README.md`).
-
-> ⚠️ **Unfitted `--calibrated` preset.** No car-parameter identification has been
-> applied. The car was **not** tuned to improve these numbers. The point is to
-> isolate the *car-model* residual that parameter identification (2.4) will fit.
+measured lap, and how the confounds were peeled off in turn — **centerline
+curvature noise** (track import), the **racing line** (driver vs. centerline, via
+two reconstruction modes), and finally **car-parameter error** (identified) — so
+the four sources of disagreement are cleanly separated. It is a **derived
+summary** (numbers only) — the raw FastF1 telemetry and the TUMFTM-derived track
+are not redistributed and stay local (see `telemetry/README.md`,
+`tracks/README.md`). The **fitted car overlay is committed**
+(`cars/silverstone_2024q_fitted.toml`) — our own derived parameters, no raw data.
 
 > **Sector convention:** equal-arc-length **thirds** (`apex_physics::sector_times`),
 > **NOT** official F1 sectors.
@@ -105,35 +113,92 @@ model's **low-speed mechanical grip (μ) is well-calibrated.** The residual is
 concentrated at the **medium/fast** corner s = 4050 (measured 62 m/s ≈ 223 km/h,
 sim −16 m/s) and the fast Abbey approach.
 
-## Where the residual points (for parameter identification, 2.4)
+## Step 3 — Direct driven line (v4, removes the reconstruction floor)
 
-With curvature noise and the racing line removed, the remaining **+14.5 s** is
-now largely **car-model** error, and it has a clear signature:
+The **offset** reconstruction (centerline + `n·normal`) under-opens the fastest
+corners. The **direct** reconstruction builds the driven path straight from the
+aligned measured `(x, y)`: resample to uniform arc length (FastF1 samples are
+time-uniform → dense in corners, sparse on straights, which wrecks the 3-point
+curvature), trim to exactly one lap (else the start/finish overlap folds into a
+seam kink), then smooth with the shared regularized-LS smoother (deviation budget
+**0.75 m**). Abbey radius (s ≈ 400 m), reconstruction vs. the car's own
+wide-baseline trajectory (~128 m):
 
-- **High-speed cornering: sim too slow** (s = 4050: −16 m/s; the Abbey/approach
-  region drives the 39.9 m/s max error). At 60–85 m/s the grip is
-  downforce-dominated ⇒ **the calibrated aero grip (C_l / downforce) is too low.**
-  This is the biggest lever.
-- **Straights: sim slightly *faster*** (+7.4 m/s at s = 4890) ⇒ **drag a touch
-  low or power/traction a touch high** — the sim tops out above the real car.
-- **Low-speed corners: already good** ⇒ leave μ roughly where it is.
+| s (m) | offset R | **direct R** | car trajectory |
+|---|---|---|---|
+| 400 | 92 m | **124 m** | ~128 m |
 
-So parameter ID should **raise downforce first** (recover high-speed cornering),
-then trim **drag/power** on the straights, and treat **μ** as near-final. Fitting
-in the other order (μ first) would over-fit low-speed grip to compensate for the
-aero deficit.
+The direct line reproduces the driver's actual radius, dropping the lap delta
+**+14.5 → +9.7 s** and RMSE **13.6 → 11.5 m/s** (max error moves off Abbey to
+s ≈ 3880 m). This v4 residual is now almost entirely **car-model** error.
+
+## Step 4 — Parameter identification (v5)
+
+The residual signature was: **high-speed corners sim-slow** (downforce low),
+**straights sim-fast** (drag low / power high), **low-speed corners already good**
+(μ fine). A Levenberg-Marquardt fit (shared `apex_math::lm`) of
+`{lift_coeff, drag_coeff, power_scale}` — **μ held fixed** — to `sim − measured`
+speed on the direct driven line, from the calibrated preset:
+
+| parameter | preset | fitted | std error | notes |
+|---|---|---|---|---|
+| `aero.lift_coeff` | 2.80 | **5.374** | ± 0.044 | downforce ~doubled |
+| `aero.drag_coeff` | 1.10 | **1.783** | ± 0.055 | L/D = 3.0 (realistic F1) |
+| `powertrain.power_scale` | 1.00 | **1.110** | ± 0.028 | ×`max_drive_force` |
+| `tires.mu` | 1.55 | *fixed* | — | guardrailed |
+
+Cost dropped **78 327 → 10 027** (87%) in 47 iterations (~3 ms/iter, 0.15 s
+total, 590 grid points). Condition number of `JᵀJ` = **1.5 × 10²** (well
+conditioned). One flagged pair: **`drag_coeff` ↔ `power_scale`, |corr| = 0.98** —
+both set top speed on the straights, so they trade off (expected; not a defect,
+but their *individual* values are less certain than their combined effect).
+
+No parameter hit a bound; the fitted values are physically plausible (L/D ≈ 3.0
+is a real F1 ratio, ~4 t downforce at 324 km/h). The fitted overlay is
+committed.
+
+**v5 acceptance** (fitted car):
+
+| line | lap delta | RMSE |
+|---|---|---|
+| direct driven | **+0.921 s** | **4.12 m/s** |
+| centerline | +14.972 s | 12.82 m/s |
+
+On the driven line the fitted car is within **0.9 s / 4.1 m/s** of reality — a
+QSS point-mass matching a real qualifying lap to <1%. On the *centerline* it is
+still +15 s, because the fitted car was identified for the **driven** line;
+the centerline gap is the racing-line geometry, not the car (as expected — the
+fit does not, and should not, absorb it).
+
+### The μ-fixed guardrail — evidence
+
+Re-running the fit with **μ also free** (diagnostic, not shipped):
+
+| | headline (μ fixed) | μ free |
+|---|---|---|
+| `lift_coeff` | 5.374 | 3.285 |
+| `tires.mu` | 1.55 | **2.144 ± 0.061** |
+| cost | 10 027 | 8 296 |
+| condition number | 1.5 × 10² | **1.4 × 10³** |
+| new weak pair | — | `lift_coeff` ↔ `mu`, |corr| = 0.986 |
+
+Freeing μ drops it into a marginally lower cost but pushes μ to **2.14** (near its
+2.2 physical ceiling), halves `lift_coeff`, degrades the condition number **10×**,
+and makes `lift_coeff` and `mu` jointly non-identifiable (both scale grip). This
+is exactly why μ is fixed: it would otherwise **absorb the aero deficit into an
+implausible tyre grip**. The guardrail is well justified.
 
 ### Honest gaps
 
-- The driven-line reconstruction (centerline + `n·normal`) has a **floor at the
-  very fastest corner**: at Abbey it reconstructs R ≈ 90–95 m vs. the car's own
-  ~128 m trajectory, so a slice of the s ≈ 400 residual is reconstruction error,
-  not car model. Slow/medium corners reconstruct to within ~5% of the car's
-  trajectory. A future improvement is to build the driven line from the smoothed
-  measured `(x, y)` directly rather than via the centerline offset.
+- The remaining **+0.9 s / 4.1 m/s** (max 26.6 m/s at s ≈ 3880 m) is genuine
+  model limitation: the QSS is a point mass with no transient load transfer,
+  tyre thermal, or combined-slip dynamics, and no braking-vs-power asymmetry
+  beyond the friction circle.
+- `drag_coeff` and `power_scale` are individually only ~loosely identified (they
+  co-determine top speed); their *combined* effect on the straights is tight. A
+  dedicated top-speed/coast-down segment would separate them.
 - Corner count is 5 (prominent minima < 70 m/s), **not** the ~18 named corners —
-  Silverstone's fast corners are near-flat on a qualifying lap and form no
-  prominent speed minimum.
+  Silverstone's fast corners are near-flat on a qualifying lap.
 
 ## Reproduce
 
@@ -143,9 +208,16 @@ apex-14 import-track -i <TUMFTM>/Silverstone.csv -o tracks/silverstone.json -n S
 apex-14 telemetry-align --telemetry telemetry/silverstone_2024_Q.csv \
   --track tracks/silverstone.json --out telemetry/silverstone_2024_Q_aligned.csv
 apex-14 correlate --telemetry telemetry/silverstone_2024_Q_aligned.csv \
-  --track tracks/silverstone.json --calibrated --line centerline --out-dir telemetry/correlation_out
+  --track tracks/silverstone.json --calibrated --line measured --driven-line direct \
+  --out-dir telemetry/correlation_out_driven
+# Identify the car (μ fixed) and re-correlate with the fitted overlay:
+apex-14 identify --telemetry telemetry/silverstone_2024_Q_aligned.csv \
+  --track tracks/silverstone.json --calibrated \
+  --free "aero.lift_coeff,aero.drag_coeff,powertrain.power_scale" \
+  --out cars/silverstone_2024q_fitted.toml --driven-line direct
 apex-14 correlate --telemetry telemetry/silverstone_2024_Q_aligned.csv \
-  --track tracks/silverstone.json --calibrated --line measured   --out-dir telemetry/correlation_out_driven
+  --track tracks/silverstone.json --calibrated --car cars/silverstone_2024q_fitted.toml \
+  --line measured --driven-line direct --out-dir telemetry/correlation_out_v5
 ```
 
 Outputs (`report.md` + SVGs) are local / gitignored; `APEX_REPRO_TIMESTAMP`

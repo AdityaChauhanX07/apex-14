@@ -1,8 +1,11 @@
 //! Pacejka coefficient fitting from raw tire test data.
 //!
 //! Takes force-vs-slip measurements at various vertical loads and fits the
-//! Magic Formula coefficients (`B`, `C`, `μ`, `E`) by nonlinear least squares
-//! using the Levenberg-Marquardt algorithm.
+//! Magic Formula coefficients (`B`, `C`, `μ`, `E`) by nonlinear least squares.
+//! The Levenberg-Marquardt solver itself lives in [`apex_math::lm`]; this module
+//! is a consumer, supplying the residuals through [`ResidualProvider`].
+
+use apex_math::lm::{levenberg_marquardt, LmConfig, ResidualProvider};
 
 use super::pacejka::{PacejkaCoeffs, PacejkaTire};
 
@@ -129,90 +132,13 @@ impl<'a> TireFitter<'a> {
             };
         }
 
-        // Levenberg-Marquardt optimization
-        // Decision variables: [B, C, mu, E]
-        // Initial guess from the F1 defaults
-        let mut params = [12.0, 1.5, 1.75, -0.5];
-        let mut lambda = 0.01; // LM damping parameter
-
-        for _iter in 0..200 {
-            // Compute residuals and Jacobian
-            let (residuals, jacobian) =
-                self.compute_lateral_residuals_and_jacobian(&pure_lat, &params);
-
-            let n = residuals.len();
-            let m = 4; // number of parameters
-
-            // Normal equations: (J^T J + lambda * diag(J^T J)) * delta = -J^T r
-            // Compute J^T J (4x4) and J^T r (4x1)
-            let mut jtj = [[0.0f64; 4]; 4];
-            let mut jtr = [0.0f64; 4];
-
-            for i in 0..n {
-                for p in 0..m {
-                    jtr[p] += jacobian[i][p] * residuals[i];
-                    for q in 0..m {
-                        jtj[p][q] += jacobian[i][p] * jacobian[i][q];
-                    }
-                }
-            }
-
-            // Add LM damping to diagonal
-            for (p, row) in jtj.iter_mut().enumerate() {
-                row[p] *= 1.0 + lambda;
-            }
-
-            // Solve 4x4 system using Gaussian elimination
-            let delta = match solve_4x4(&jtj, &jtr) {
-                Some(d) => d,
-                None => break, // singular, stop
-            };
-
-            // Trial step
-            let trial = [
-                params[0] - delta[0],
-                params[1] - delta[1],
-                params[2] - delta[2],
-                params[3] - delta[3],
-            ];
-
-            // Enforce parameter bounds
-            let trial = [
-                trial[0].clamp(1.0, 30.0), // B: positive, reasonable range
-                trial[1].clamp(0.5, 3.0),  // C: positive, shape factor
-                trial[2].clamp(0.5, 3.0),  // mu: positive friction
-                trial[3].clamp(-5.0, 2.0), // E: can be negative
-            ];
-
-            // Compare costs
-            let cost_current: f64 = residuals.iter().map(|r| r * r).sum();
-            let trial_residuals = self.compute_lateral_residuals(&pure_lat, &trial);
-            let cost_trial: f64 = trial_residuals.iter().map(|r| r * r).sum();
-
-            if cost_trial < cost_current {
-                params = trial;
-                lambda *= 0.5; // reduce damping (more Gauss-Newton)
-                lambda = lambda.max(1e-10);
-            } else {
-                lambda *= 2.0; // increase damping (more gradient descent)
-                lambda = lambda.min(1e6);
-            }
-
-            // Convergence check
-            let step_norm: f64 = delta.iter().map(|d| d * d).sum::<f64>().sqrt();
-            if step_norm < 1e-8 {
-                break;
-            }
-        }
-
-        // Compute final fit quality
-        let coeffs = PacejkaCoeffs {
-            b: params[0],
-            c: params[1],
-            mu: params[2],
-            e: params[3],
+        // Levenberg-Marquardt over [B, C, mu, E], initial guess = F1 defaults.
+        let provider = PacejkaResidual {
+            points: pure_lat.clone(),
+            lateral: true,
         };
-
+        let res = levenberg_marquardt(&provider, &[12.0, 1.5, 1.75, -0.5], &fit_config());
+        let coeffs = coeffs_from(&res.params);
         self.compute_fit_report(&pure_lat, &coeffs, true)
     }
 
@@ -237,202 +163,14 @@ impl<'a> TireFitter<'a> {
             };
         }
 
-        // Same LM optimization but for longitudinal forces
-        let mut params = [14.0, 1.65, 1.70, -0.3];
-        let mut lambda = 0.01;
-
-        for _iter in 0..200 {
-            let (residuals, jacobian) =
-                self.compute_longitudinal_residuals_and_jacobian(&pure_lon, &params);
-
-            let n = residuals.len();
-            let m = 4;
-
-            let mut jtj = [[0.0f64; 4]; 4];
-            let mut jtr = [0.0f64; 4];
-
-            for i in 0..n {
-                for p in 0..m {
-                    jtr[p] += jacobian[i][p] * residuals[i];
-                    for q in 0..m {
-                        jtj[p][q] += jacobian[i][p] * jacobian[i][q];
-                    }
-                }
-            }
-
-            for (p, row) in jtj.iter_mut().enumerate() {
-                row[p] *= 1.0 + lambda;
-            }
-
-            let delta = match solve_4x4(&jtj, &jtr) {
-                Some(d) => d,
-                None => break,
-            };
-
-            let trial = [
-                (params[0] - delta[0]).clamp(1.0, 30.0),
-                (params[1] - delta[1]).clamp(0.5, 3.0),
-                (params[2] - delta[2]).clamp(0.5, 3.0),
-                (params[3] - delta[3]).clamp(-5.0, 2.0),
-            ];
-
-            let cost_current: f64 = residuals.iter().map(|r| r * r).sum();
-            let trial_residuals = self.compute_longitudinal_residuals(&pure_lon, &trial);
-            let cost_trial: f64 = trial_residuals.iter().map(|r| r * r).sum();
-
-            if cost_trial < cost_current {
-                params = trial;
-                lambda *= 0.5;
-                lambda = lambda.max(1e-10);
-            } else {
-                lambda *= 2.0;
-                lambda = lambda.min(1e6);
-            }
-
-            let step_norm: f64 = delta.iter().map(|d| d * d).sum::<f64>().sqrt();
-            if step_norm < 1e-8 {
-                break;
-            }
-        }
-
-        let coeffs = PacejkaCoeffs {
-            b: params[0],
-            c: params[1],
-            mu: params[2],
-            e: params[3],
+        // Levenberg-Marquardt over [B, C, mu, E], initial guess = F1 defaults.
+        let provider = PacejkaResidual {
+            points: pure_lon.clone(),
+            lateral: false,
         };
-
+        let res = levenberg_marquardt(&provider, &[14.0, 1.65, 1.70, -0.3], &fit_config());
+        let coeffs = coeffs_from(&res.params);
         self.compute_fit_report(&pure_lon, &coeffs, false)
-    }
-
-    // Helper: compute residuals for lateral fitting
-    fn compute_lateral_residuals(&self, points: &[&TireTestPoint], params: &[f64; 4]) -> Vec<f64> {
-        let tire = self.make_tire(params);
-        points
-            .iter()
-            .map(|p| {
-                let fy_pred = tire.lateral_force(p.slip_angle, p.fz);
-                p.fy - fy_pred
-            })
-            .collect()
-    }
-
-    // Helper: compute residuals AND Jacobian for lateral fitting using auto-diff
-    fn compute_lateral_residuals_and_jacobian(
-        &self,
-        points: &[&TireTestPoint],
-        params: &[f64; 4],
-    ) -> (Vec<f64>, Vec<[f64; 4]>) {
-        let tire = self.make_tire(params);
-        let n = points.len();
-        let mut residuals = Vec::with_capacity(n);
-        let mut jacobian = Vec::with_capacity(n);
-
-        for p in points {
-            let fy_pred = tire.lateral_force(p.slip_angle, p.fz);
-            residuals.push(p.fy - fy_pred);
-
-            // Compute Jacobian by finite differences on the Pacejka parameters
-            // (auto-diff over the coefficients would require making them generic,
-            // which is complex; FD on 4 parameters is cheap and accurate enough)
-            let eps = 1e-6;
-            let mut jac_row = [0.0; 4];
-            for k in 0..4 {
-                let mut p_plus = *params;
-                p_plus[k] += eps;
-                let tire_plus = self.make_tire(&p_plus);
-                let fy_plus = tire_plus.lateral_force(p.slip_angle, p.fz);
-
-                let mut p_minus = *params;
-                p_minus[k] -= eps;
-                let tire_minus = self.make_tire(&p_minus);
-                let fy_minus = tire_minus.lateral_force(p.slip_angle, p.fz);
-
-                // Negative because residual = measured - predicted
-                // d(residual)/d(param) = -d(predicted)/d(param)
-                jac_row[k] = -(fy_plus - fy_minus) / (2.0 * eps);
-            }
-            jacobian.push(jac_row);
-        }
-
-        (residuals, jacobian)
-    }
-
-    // Same helpers for longitudinal
-    fn compute_longitudinal_residuals(
-        &self,
-        points: &[&TireTestPoint],
-        params: &[f64; 4],
-    ) -> Vec<f64> {
-        let tire = self.make_tire_lon(params);
-        points
-            .iter()
-            .map(|p| {
-                let fx_pred = tire.longitudinal_force(p.slip_ratio, p.fz);
-                p.fx - fx_pred
-            })
-            .collect()
-    }
-
-    fn compute_longitudinal_residuals_and_jacobian(
-        &self,
-        points: &[&TireTestPoint],
-        params: &[f64; 4],
-    ) -> (Vec<f64>, Vec<[f64; 4]>) {
-        let tire = self.make_tire_lon(params);
-        let n = points.len();
-        let mut residuals = Vec::with_capacity(n);
-        let mut jacobian = Vec::with_capacity(n);
-
-        for p in points {
-            let fx_pred = tire.longitudinal_force(p.slip_ratio, p.fz);
-            residuals.push(p.fx - fx_pred);
-
-            let eps = 1e-6;
-            let mut jac_row = [0.0; 4];
-            for k in 0..4 {
-                let mut p_plus = *params;
-                p_plus[k] += eps;
-                let tire_plus = self.make_tire_lon(&p_plus);
-                let fx_plus = tire_plus.longitudinal_force(p.slip_ratio, p.fz);
-
-                let mut p_minus = *params;
-                p_minus[k] -= eps;
-                let tire_minus = self.make_tire_lon(&p_minus);
-                let fx_minus = tire_minus.longitudinal_force(p.slip_ratio, p.fz);
-
-                jac_row[k] = -(fx_plus - fx_minus) / (2.0 * eps);
-            }
-            jacobian.push(jac_row);
-        }
-
-        (residuals, jacobian)
-    }
-
-    // Create a PacejkaTire from lateral fit parameters
-    fn make_tire(&self, params: &[f64; 4]) -> PacejkaTire {
-        let mut tire = PacejkaTire::f1_default();
-        tire.lateral = PacejkaCoeffs {
-            b: params[0],
-            c: params[1],
-            mu: params[2],
-            e: params[3],
-        };
-        tire.load_sensitivity = 0.0; // disable during fitting to isolate the MF coefficients
-        tire
-    }
-
-    // Create a PacejkaTire from longitudinal fit parameters
-    fn make_tire_lon(&self, params: &[f64; 4]) -> PacejkaTire {
-        let mut tire = PacejkaTire::f1_default();
-        tire.longitudinal = PacejkaCoeffs {
-            b: params[0],
-            c: params[1],
-            mu: params[2],
-            e: params[3],
-        };
-        tire.load_sensitivity = 0.0;
-        tire
     }
 
     // Compute fit quality metrics
@@ -442,11 +180,8 @@ impl<'a> TireFitter<'a> {
         coeffs: &PacejkaCoeffs,
         is_lateral: bool,
     ) -> FitReport {
-        let tire_for_report = if is_lateral {
-            self.make_tire(&[coeffs.b, coeffs.c, coeffs.mu, coeffs.e])
-        } else {
-            self.make_tire_lon(&[coeffs.b, coeffs.c, coeffs.mu, coeffs.e])
-        };
+        let params = [coeffs.b, coeffs.c, coeffs.mu, coeffs.e];
+        let tire_for_report = make_fit_tire(&params, is_lateral);
 
         let n = points.len();
         let mut sse = 0.0;
@@ -490,59 +225,67 @@ impl<'a> TireFitter<'a> {
     }
 }
 
-/// Solve a 4x4 linear system Ax = b using Gaussian elimination with partial pivoting.
-//
-// The forward-elimination and back-substitution sweeps are inherently
-// index-based (pivoting, triangular access), so the range loops are clearer than
-// iterator equivalents here.
-#[allow(clippy::needless_range_loop)]
-fn solve_4x4(a: &[[f64; 4]; 4], b: &[f64; 4]) -> Option<[f64; 4]> {
-    let mut aug = [[0.0; 5]; 4];
-    for i in 0..4 {
-        aug[i][..4].copy_from_slice(&a[i][..4]);
-        aug[i][4] = b[i];
+/// Build a fitting tire (load sensitivity disabled to isolate the MF
+/// coefficients) with the given `[B, C, mu, E]` on the chosen axis.
+fn make_fit_tire(params: &[f64], lateral: bool) -> PacejkaTire {
+    let mut tire = PacejkaTire::f1_default();
+    let coeffs = coeffs_from(params);
+    if lateral {
+        tire.lateral = coeffs;
+    } else {
+        tire.longitudinal = coeffs;
+    }
+    tire.load_sensitivity = 0.0;
+    tire
+}
+
+/// `[B, C, mu, E]` -> [`PacejkaCoeffs`].
+fn coeffs_from(params: &[f64]) -> PacejkaCoeffs {
+    PacejkaCoeffs {
+        b: params[0],
+        c: params[1],
+        mu: params[2],
+        e: params[3],
+    }
+}
+
+/// LM schedule matching the original in-module fitter (200 iterations,
+/// multiplicative damping from 0.01, 1e-8 step tolerance).
+fn fit_config() -> LmConfig {
+    LmConfig {
+        max_iter: 200,
+        initial_lambda: 0.01,
+        step_tol: 1e-8,
+        cost_tol: 0.0,
+    }
+}
+
+/// Residual provider for Magic-Formula fitting: `residual = measured - predicted`
+/// force at each test point, with box bounds on `[B, C, mu, E]`.
+struct PacejkaResidual<'a> {
+    points: Vec<&'a TireTestPoint>,
+    lateral: bool,
+}
+
+impl ResidualProvider for PacejkaResidual<'_> {
+    fn residuals(&self, params: &[f64]) -> Vec<f64> {
+        let tire = make_fit_tire(params, self.lateral);
+        self.points
+            .iter()
+            .map(|p| {
+                if self.lateral {
+                    p.fy - tire.lateral_force(p.slip_angle, p.fz)
+                } else {
+                    p.fx - tire.longitudinal_force(p.slip_ratio, p.fz)
+                }
+            })
+            .collect()
     }
 
-    // Forward elimination with partial pivoting
-    for col in 0..4 {
-        // Find pivot
-        let mut max_row = col;
-        let mut max_val = aug[col][col].abs();
-        for row in (col + 1)..4 {
-            if aug[row][col].abs() > max_val {
-                max_val = aug[row][col].abs();
-                max_row = row;
-            }
-        }
-        if max_val < 1e-12 {
-            return None;
-        }
-
-        // Swap rows
-        if max_row != col {
-            aug.swap(col, max_row);
-        }
-
-        // Eliminate below
-        for row in (col + 1)..4 {
-            let factor = aug[row][col] / aug[col][col];
-            for j in col..5 {
-                aug[row][j] -= factor * aug[col][j];
-            }
-        }
+    fn bounds(&self) -> Vec<(f64, f64)> {
+        // B in [1,30], C in [0.5,3], mu in [0.5,3], E in [-5,2].
+        vec![(1.0, 30.0), (0.5, 3.0), (0.5, 3.0), (-5.0, 2.0)]
     }
-
-    // Back substitution
-    let mut x = [0.0; 4];
-    for i in (0..4).rev() {
-        x[i] = aug[i][4];
-        for j in (i + 1)..4 {
-            x[i] -= aug[i][j] * x[j];
-        }
-        x[i] /= aug[i][i];
-    }
-
-    Some(x)
 }
 
 #[cfg(test)]

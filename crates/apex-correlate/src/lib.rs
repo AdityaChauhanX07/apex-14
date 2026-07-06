@@ -28,6 +28,7 @@
 mod align;
 pub mod driven;
 mod error;
+pub mod identify;
 mod importer;
 mod mapping;
 pub mod metrics;
@@ -39,8 +40,14 @@ mod units;
 mod writer;
 
 pub use align::{fit_alignment, AlignConfig, AlignResult, Similarity};
-pub use driven::{driven_sim_trace, DrivenResult, DEFAULT_N_FILTER_WINDOW_M};
+pub use driven::{
+    build_driven_geometry, driven_sim_trace, geometry_to_trace, DrivenGeometry, DrivenLineMode,
+    DrivenResult, DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M, DEFAULT_N_FILTER_WINDOW_M,
+};
 pub use error::CorrelateError;
+pub use identify::{
+    apply_params, identify, parse_free_param, FreeParam, IdentifyResult, ParamKind,
+};
 pub use importer::import_telemetry;
 pub use mapping::{ColumnMap, Mapping, UnknownColumns};
 pub use project::{closest_point, project_to_track, ProjectStats, Projection};

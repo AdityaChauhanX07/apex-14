@@ -114,17 +114,70 @@ enum Commands {
         grid_step: f64,
 
         /// Which line the QSS runs on: `centerline` (default) or `measured`
-        /// (the reconstructed driven line from the measured lateral offset).
+        /// (the reconstructed driven line).
         #[arg(long, default_value = "centerline")]
         line: String,
 
-        /// Moving-average half-width (m) applied to n(s) for the driven line
+        /// Driven-line reconstruction: `direct` (default, from smoothed measured
+        /// x/y) or `offset` (centerline + filtered n(s)).
+        #[arg(long, default_value = "direct")]
+        driven_line: String,
+
+        /// Offset mode: moving-average half-width (m) applied to n(s)
         #[arg(long, default_value_t = apex_correlate::DEFAULT_N_FILTER_WINDOW_M)]
         n_filter: f64,
+
+        /// Direct mode: smoothing deviation budget (m) for measured x/y
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M)]
+        driven_smooth_tolerance: f64,
 
         /// Output directory for report.md + SVGs
         #[arg(long)]
         out_dir: PathBuf,
+    },
+
+    /// Identify car parameters by fitting the QSS driven-line sim to measured speed
+    Identify {
+        /// Aligned telemetry CSV (standard format)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Track file (smoothed Apex-14 JSON or TUMFTM CSV)
+        #[arg(long)]
+        track: PathBuf,
+
+        /// Use calibrated F1 2024 parameters as the base
+        #[arg(long, default_value_t = false)]
+        calibrated: bool,
+
+        /// Base car configuration file (TOML), overrides the preset
+        #[arg(long)]
+        car: Option<PathBuf>,
+
+        /// Comma-separated free-parameter paths, e.g.
+        /// "aero.lift_coeff,aero.drag_coeff,powertrain.power_scale"
+        #[arg(long)]
+        free: String,
+
+        /// Output fitted-car TOML (overlay) path
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Driven-line reconstruction: `direct` (default) or `offset`
+        #[arg(long, default_value = "direct")]
+        driven_line: String,
+
+        /// Offset mode: n(s) moving-average half-width (m)
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_N_FILTER_WINDOW_M)]
+        n_filter: f64,
+
+        /// Direct mode: smoothing deviation budget (m)
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M)]
+        driven_smooth_tolerance: f64,
+
+        /// Common-grid resample step (m)
+        #[arg(long, default_value_t = 10.0)]
+        grid_step: f64,
     },
 
     /// Align measured telemetry to a track frame and project GPS to (s, n)
@@ -318,10 +371,44 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             car,
             grid_step,
             line,
+            driven_line,
             n_filter,
+            driven_smooth_tolerance,
             out_dir,
         } => cmd_correlate(
-            telemetry, track, calibrated, car, grid_step, line, n_filter, out_dir,
+            telemetry,
+            track,
+            calibrated,
+            car,
+            grid_step,
+            line,
+            driven_line,
+            n_filter,
+            driven_smooth_tolerance,
+            out_dir,
+        ),
+        Commands::Identify {
+            telemetry,
+            track,
+            calibrated,
+            car,
+            free,
+            out,
+            driven_line,
+            n_filter,
+            driven_smooth_tolerance,
+            grid_step,
+        } => cmd_identify(
+            telemetry,
+            track,
+            calibrated,
+            car,
+            free,
+            out,
+            driven_line,
+            n_filter,
+            driven_smooth_tolerance,
+            grid_step,
         ),
         Commands::TelemetryAlign {
             telemetry,
@@ -638,6 +725,20 @@ fn print_smoothing_diagnostics(r: &apex_track::SmoothingReport) {
     );
 }
 
+/// Parse the `--driven-line` selector into a [`DrivenLineMode`].
+fn driven_line_mode(
+    driven_line: &str,
+    n_filter: f64,
+    smooth_tol: f64,
+) -> Result<apex_correlate::DrivenLineMode, Box<dyn std::error::Error>> {
+    use apex_correlate::DrivenLineMode;
+    match driven_line {
+        "direct" => Ok(DrivenLineMode::Direct(smooth_tol)),
+        "offset" => Ok(DrivenLineMode::Offset(n_filter)),
+        other => Err(format!("--driven-line must be `direct` or `offset`, got `{other}`").into()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_correlate(
     telemetry: PathBuf,
@@ -646,7 +747,9 @@ fn cmd_correlate(
     car: Option<PathBuf>,
     grid_step: f64,
     line: String,
+    driven_line: String,
     n_filter: f64,
+    driven_smooth_tolerance: f64,
     out_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use apex_correlate::report::{correlate, write_report, CorrelationConfig, SimTrace};
@@ -665,15 +768,14 @@ fn cmd_correlate(
             SimTrace::from_qss(&sim)
         }
         "measured" => {
-            let dr = driven_sim_trace(&trk, &measured, &params, n_filter)?;
+            let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
+            let dr = driven_sim_trace(&trk, &measured, &params, mode)?;
             println!(
-                "Driven line: length {:.1} m (centerline {:.1} m, {:+.1} m), \
-                 n filter ±{:.0} m, peak |n| {:.2} m",
+                "Driven line: length {:.1} m (centerline {:.1} m, {:+.1} m); {}",
                 dr.driven_length,
                 dr.centerline_length,
                 dr.driven_length - dr.centerline_length,
-                dr.n_filter_window_m,
-                dr.n_peak
+                dr.detail
             );
             dr.trace
         }
@@ -766,6 +868,248 @@ fn cmd_correlate(
 
     println!("\nReport written to {}", report_path.display());
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_identify(
+    telemetry: PathBuf,
+    track: PathBuf,
+    calibrated: bool,
+    car: Option<PathBuf>,
+    free: String,
+    out: PathBuf,
+    driven_line: String,
+    n_filter: f64,
+    driven_smooth_tolerance: f64,
+    grid_step: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::{identify, import_telemetry, parse_free_param, Mapping};
+
+    let measured = import_telemetry(&telemetry, &Mapping::identity())?;
+    let trk = load_track_from_path(&track)?;
+    let base = load_car_params(car, calibrated)?;
+    let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
+
+    // Parse the free-parameter list.
+    let paths: Vec<String> = free
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if paths.contains(&"tires.mu".to_string()) {
+        println!(
+            "note: `tires.mu` is in the headline free set — see the residual analysis; \
+             μ is normally kept FIXED so it can't mask the aero deficit."
+        );
+    }
+    let free_params: Vec<_> = paths
+        .iter()
+        .map(|p| parse_free_param(p, &base))
+        .collect::<Result<_, _>>()?;
+
+    // --- Headline fit ---
+    println!("=== Identify (headline fit) ===");
+    println!("Driven line: {}", mode_label(&driven_line));
+    let res = identify(&trk, &measured, &base, free_params.clone(), mode, grid_step)?;
+    print_fit_report(&res);
+    println!(
+        "  runtime: {:.3} s total, {:.4} s/iter ({} iterations, {} grid points)",
+        res.total_seconds,
+        res.seconds_per_iter,
+        res.lm.iterations.len(),
+        res.grid_len
+    );
+
+    // Guardrail: a bound-pinned fit is not a shippable car.
+    if !res.lm.bound_pinned.is_empty() {
+        let names: Vec<&str> = res
+            .lm
+            .bound_pinned
+            .iter()
+            .map(|&i| res.free[i].path.as_str())
+            .collect();
+        return Err(format!(
+            "STOP: fit pinned to a bound for {names:?} — the fit is unreliable \
+             (a parameter hit its physical limit). Not writing {}. Investigate \
+             (wrong free set, bad line, or a model gap) before shipping.",
+            out.display()
+        )
+        .into());
+    }
+
+    // Write the fitted overlay TOML (our own derived params — committable).
+    let toml = fitted_car_toml(&res, &base, &measured, &driven_line);
+    std::fs::write(&out, toml)?;
+    println!("\nWrote fitted car overlay: {}", out.display());
+
+    // --- Diagnostic: add tires.mu free (evidence for the μ-fixed guardrail) ---
+    if !paths.contains(&"tires.mu".to_string()) {
+        println!("\n=== Diagnostic fit (μ also free) ===");
+        let mut diag = free_params.clone();
+        diag.push(parse_free_param("tires.mu", &base)?);
+        let dres = identify(&trk, &measured, &base, diag, mode, grid_step)?;
+        print_fit_report(&dres);
+        let mu_idx = dres.free.iter().position(|f| f.path == "tires.mu").unwrap();
+        let mu_fit = dres.lm.params[mu_idx];
+        let mu_se = dres.lm.std_errors[mu_idx];
+        println!(
+            "  μ moved {:.3} → {:.3} (± {:.3}); headline cost {:.1} vs μ-free cost {:.1}; \
+             condition number {:.2e} → {:.2e}",
+            base.tire_mu,
+            mu_fit,
+            mu_se,
+            res.lm.cost,
+            dres.lm.cost,
+            res.lm.condition_number,
+            dres.lm.condition_number
+        );
+        let verdict = if (mu_fit - base.tire_mu).abs() < 0.05
+            && dres.lm.condition_number < 10.0 * res.lm.condition_number
+        {
+            "μ barely moves and identifiability holds — the μ-fixed guardrail is low-cost."
+        } else {
+            "freeing μ moves it and/or degrades identifiability — the guardrail is justified."
+        };
+        println!("  verdict: {verdict}");
+    }
+
+    Ok(())
+}
+
+/// A friendly driven-line label for the report header.
+fn mode_label(driven_line: &str) -> &str {
+    match driven_line {
+        "direct" => "measured (direct, smoothed x/y)",
+        "offset" => "measured (offset, centerline + n)",
+        other => other,
+    }
+}
+
+/// Print the initial→final parameters (± std error), cost, and identifiability
+/// flags of an identification fit.
+fn print_fit_report(res: &apex_correlate::IdentifyResult) {
+    println!(
+        "  cost: {:.2} → {:.2}  ({} obs, {} iters, converged={})",
+        res.lm.initial_cost,
+        res.lm.cost,
+        res.lm.n_residuals,
+        res.lm.iterations.len(),
+        res.lm.converged
+    );
+    println!("  parameters (initial → fitted ± std err):");
+    for (i, f) in res.free.iter().enumerate() {
+        let fitted = res.lm.params[i];
+        let se = res.lm.std_errors[i];
+        let weak = if res.lm.weak_params.contains(&i) {
+            "  [weakly identifiable: σ > 50% of value]"
+        } else {
+            ""
+        };
+        let pinned = if res.lm.bound_pinned.contains(&i) {
+            "  [BOUND-PINNED]"
+        } else {
+            ""
+        };
+        println!(
+            "    {:<24} {:>10.4} → {:>10.4} ± {:<10.4}{}{}",
+            f.path, f.initial, fitted, se, weak, pinned
+        );
+    }
+    println!("  condition number (JᵀJ): {:.3e}", res.lm.condition_number);
+    if res.lm.weak_pairs.is_empty() {
+        println!("  no strongly-correlated parameter pairs (|corr| ≤ 0.95)");
+    } else {
+        for &(i, j, c) in &res.lm.weak_pairs {
+            println!(
+                "  !! |corr({}, {})| = {:.3} > 0.95 (jointly weakly identifiable)",
+                res.free[i].path, res.free[j].path, c
+            );
+        }
+    }
+}
+
+/// Build the fitted-car overlay TOML: only the fitted fields + provenance
+/// comments. Loads on top of the calibrated preset.
+fn fitted_car_toml(
+    res: &apex_correlate::IdentifyResult,
+    base: &apex_physics::CarParams,
+    measured: &apex_correlate::Telemetry,
+    driven_line: &str,
+) -> String {
+    use apex_correlate::ParamKind;
+    let meta = |k: &str| -> String {
+        measured
+            .metadata
+            .iter()
+            .find(|(mk, _)| mk == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "?".to_string())
+    };
+    let fixed: Vec<&str> = [
+        "aero.lift_coeff",
+        "aero.drag_coeff",
+        "tires.mu",
+        "powertrain.power_scale",
+    ]
+    .into_iter()
+    .filter(|p| !res.free.iter().any(|f| f.path == *p))
+    .collect();
+
+    let mut s = String::new();
+    s.push_str("# Fitted car parameters (OVERLAY on the calibrated preset).\n");
+    s.push_str("# These are our own derived parameters (no raw telemetry) — committable.\n");
+    s.push_str(&format!(
+        "# source: {} {} {} {} driver {} lap {}\n",
+        meta("source"),
+        meta("year"),
+        meta("event"),
+        meta("session"),
+        meta("driver"),
+        meta("lap"),
+    ));
+    s.push_str(&format!("# driven line: {}\n", mode_label(driven_line)));
+    s.push_str(&format!("# fixed params: {}\n", fixed.join(", ")));
+    s.push_str(&format!(
+        "# fit: cost {:.2} → {:.2}, {} iterations, condition {:.2e}\n",
+        res.lm.initial_cost,
+        res.lm.cost,
+        res.lm.iterations.len(),
+        res.lm.condition_number
+    ));
+    s.push_str(&format!("# date: {}\n", apex_telemetry::now_rfc3339()));
+    s.push_str("# NOTE: apply with --car on top of --calibrated.\n\n");
+
+    // Group fitted fields into sections.
+    let get = |kind: ParamKind| -> Option<(f64, f64)> {
+        res.free
+            .iter()
+            .position(|f| f.kind == kind)
+            .map(|i| (res.lm.params[i], res.lm.std_errors[i]))
+    };
+    if let (Some((lift, lse)), drag) = (get(ParamKind::LiftCoeff), get(ParamKind::DragCoeff)) {
+        s.push_str("[aero]\n");
+        s.push_str(&format!("lift_coeff = {lift:.5}  # ± {lse:.5}\n"));
+        if let Some((drag, dse)) = drag {
+            s.push_str(&format!("drag_coeff = {drag:.5}  # ± {dse:.5}\n"));
+        }
+        s.push('\n');
+    } else if let Some((drag, dse)) = get(ParamKind::DragCoeff) {
+        s.push_str("[aero]\n");
+        s.push_str(&format!("drag_coeff = {drag:.5}  # ± {dse:.5}\n\n"));
+    }
+    if let Some((mu, mse)) = get(ParamKind::TireMu) {
+        s.push_str("[tires]\n");
+        s.push_str(&format!("mu = {mu:.5}  # ± {mse:.5}\n\n"));
+    }
+    if let Some((scale, sse)) = get(ParamKind::PowerScale) {
+        s.push_str("[car]\n");
+        s.push_str(&format!(
+            "max_drive_force = {:.1}  # power_scale {scale:.5} ± {sse:.5} × base {:.1}\n",
+            base.max_drive_force * scale,
+            base.max_drive_force
+        ));
+    }
+    s
 }
 
 fn cmd_telemetry_align(
