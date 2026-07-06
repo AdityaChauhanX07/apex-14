@@ -139,3 +139,20 @@ carry **both**:
 This hybrid is deliberate: the sim inputs are hash-pinned, the measured inputs
 are descriptive. The generated `report.md` mirrors it — a `RunMetadata` hash
 block for the sim and a plain key/value list for the measured source.
+
+### Inferred CSVs (`apex-14 infer`)
+
+The QSS channel-inference output is **derived-from-measured**: it carries the
+measured source header verbatim plus **descriptive** inference provenance — no
+`RunMetadata` sim block. Its `# key: value` header adds:
+
+- `inference: apex-14 infer v<X>` and `infer_driven_line: direct|offset`;
+- `infer_car_file:` and `infer_car_hash:` — the fitted car's file and
+  `car_params_hash` (a single descriptive hash line, not a full `RunMetadata`);
+- `inference_caveat:` — the **mandatory** effective-parameter caveat: the
+  inferred aero/downforce/loads/power derive from the fitted *effective*
+  coefficients and are model-consistent estimates, **not measurements**.
+
+The data columns are the (re-gridded) input channels plus the inferred channels
+(`downforce`, `aero_drag_force`, `fz_front`, `fz_rear`, `grip_util`,
+`tractive_power`, `braking_power`, and `lateral_g`/`longitudinal_g`).

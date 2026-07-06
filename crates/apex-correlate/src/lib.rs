@@ -30,6 +30,7 @@ pub mod driven;
 mod error;
 pub mod identify;
 mod importer;
+pub mod infer;
 mod mapping;
 pub mod metrics;
 mod project;
@@ -49,6 +50,7 @@ pub use identify::{
     apply_params, identify, parse_free_param, FreeParam, IdentifyResult, ParamKind,
 };
 pub use importer::import_telemetry;
+pub use infer::{infer_channels, infer_on_driven, InferConfig, InferResult, Inferred};
 pub use mapping::{ColumnMap, Mapping, UnknownColumns};
 pub use project::{closest_point, project_to_track, ProjectStats, Projection};
 pub use report::{correlate, CorrelationConfig, CorrelationResult, SimTrace};

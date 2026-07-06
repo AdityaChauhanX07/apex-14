@@ -180,6 +180,37 @@ enum Commands {
         grid_step: f64,
     },
 
+    /// Infer unmeasured channels (accel, loads, grip, power) from measured speed
+    Infer {
+        /// Aligned telemetry CSV (standard format, with x/y)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Track file (smoothed Apex-14 JSON or TUMFTM CSV)
+        #[arg(long)]
+        track: PathBuf,
+
+        /// Fitted car TOML (overlay applied on the calibrated preset)
+        #[arg(long)]
+        car: PathBuf,
+
+        /// Output CSV path (input channels + inferred channels)
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Driven-line reconstruction: `direct` (default) or `offset`
+        #[arg(long, default_value = "direct")]
+        driven_line: String,
+
+        /// Offset mode: n(s) moving-average half-width (m)
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_N_FILTER_WINDOW_M)]
+        n_filter: f64,
+
+        /// Direct mode: smoothing deviation budget (m)
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M)]
+        driven_smooth_tolerance: f64,
+    },
+
     /// Align measured telemetry to a track frame and project GPS to (s, n)
     TelemetryAlign {
         /// Input telemetry CSV (standard Apex telemetry format, with x/y)
@@ -409,6 +440,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             n_filter,
             driven_smooth_tolerance,
             grid_step,
+        ),
+        Commands::Infer {
+            telemetry,
+            track,
+            car,
+            out,
+            driven_line,
+            n_filter,
+            driven_smooth_tolerance,
+        } => cmd_infer(
+            telemetry,
+            track,
+            car,
+            out,
+            driven_line,
+            n_filter,
+            driven_smooth_tolerance,
         ),
         Commands::TelemetryAlign {
             telemetry,
@@ -1110,6 +1158,188 @@ fn fitted_car_toml(
         ));
     }
     s
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_infer(
+    telemetry: PathBuf,
+    track: PathBuf,
+    car: PathBuf,
+    out: PathBuf,
+    driven_line: String,
+    n_filter: f64,
+    driven_smooth_tolerance: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::{
+        import_telemetry, infer_on_driven, write_telemetry_csv, InferConfig, Mapping,
+    };
+    use apex_telemetry::ChannelId;
+
+    const INFER_VERSION: &str = "1.0.0";
+
+    let measured = import_telemetry(&telemetry, &Mapping::identity())?;
+    let trk = load_track_from_path(&track)?;
+    // Fitted TOML is an overlay on the calibrated preset.
+    let params = load_car_params(Some(car.clone()), true)?;
+    let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
+
+    let mut res = infer_on_driven(&trk, &measured, &params, mode, &InferConfig::default())?;
+
+    // Descriptive provenance + the effective-parameter caveat (derived-from-
+    // measured: no RunMetadata sim block; see docs/telemetry_format.md).
+    let car_hash = apex_physics::car_params_hash(&params);
+    res.telemetry.metadata.push((
+        "inference".into(),
+        format!("apex-14 infer v{INFER_VERSION}"),
+    ));
+    res.telemetry
+        .metadata
+        .push(("infer_car_file".into(), car.display().to_string()));
+    res.telemetry
+        .metadata
+        .push(("infer_car_hash".into(), car_hash.to_hex()));
+    res.telemetry
+        .metadata
+        .push(("infer_driven_line".into(), driven_line.clone()));
+    res.telemetry.metadata.push((
+        "inference_caveat".into(),
+        "inferred aero/downforce/loads/power derive from the fitted EFFECTIVE \
+         coefficients and inherit their absorption of point-mass model limitations \
+         — model-consistent estimates, NOT measurements"
+            .into(),
+    ));
+
+    write_telemetry_csv(&out, &res.telemetry)?;
+
+    // --- sanity report ---
+    let ch = |id: ChannelId| res.telemetry.channel(id).unwrap_or(&[]).to_vec();
+    let s = ch(ChannelId::S);
+    let grip = ch(ChannelId::GripUtil);
+    let tp = ch(ChannelId::TractivePower);
+    let bp = ch(ChannelId::BrakingPower);
+    let long_g = ch(ChannelId::LongitudinalG);
+
+    println!("Inferred {} samples → {}", res.len, out.display());
+    println!(
+        "  car: {} (hash {})  driven line: {}",
+        car.display(),
+        car_hash.short(),
+        driven_line
+    );
+    println!("  ⚠ effective-parameter estimates, NOT measurements (see header caveat).");
+    let lat_g = ch(ChannelId::LateralG);
+    // |lateral_g| percentiles (robust to reconstruction curvature spikes).
+    let mut latmag: Vec<f64> = lat_g
+        .iter()
+        .filter(|x| x.is_finite())
+        .map(|x| x.abs())
+        .collect();
+    latmag.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let pct = |v: &[f64], p: f64| {
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v[((p * (v.len() - 1) as f64).round() as usize).min(v.len() - 1)]
+        }
+    };
+    println!(
+        "  lateral g: p95 {:.2}  p99 {:.2}  max {:.2} @ s={:.0} m",
+        pct(&latmag, 0.95),
+        pct(&latmag, 0.99),
+        res.peak_lat_g,
+        res.peak_lat_g_s
+    );
+    let mut brk: Vec<f64> = long_g
+        .iter()
+        .filter(|x| x.is_finite() && **x < 0.0)
+        .map(|x| -x)
+        .collect();
+    brk.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let acc_max = long_g
+        .iter()
+        .cloned()
+        .filter(|x| x.is_finite())
+        .fold(0.0, f64::max);
+    println!(
+        "  braking g: p95 {:.2}  max {:.2} @ s={:.0} m    accel g: max {:.2}",
+        pct(&brk, 0.95),
+        res.peak_brake_g,
+        res.peak_brake_g_s,
+        acc_max
+    );
+
+    // grip-util distribution + over-limit locations.
+    let mut g: Vec<f64> = grip.iter().cloned().filter(|x| x.is_finite()).collect();
+    g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if !g.is_empty() {
+        let pct = |p: f64| g[((p * (g.len() - 1) as f64).round() as usize).min(g.len() - 1)];
+        println!(
+            "  grip util: p50 {:.2}  p95 {:.2}  max {:.2}",
+            pct(0.50),
+            pct(0.95),
+            pct(1.0)
+        );
+        let over: Vec<f64> = (0..grip.len())
+            .filter(|&i| grip[i].is_finite() && grip[i] > 1.05)
+            .map(|i| s[i])
+            .collect();
+        println!(
+            "  grip util > 1.05 at {} samples{}",
+            over.len(),
+            if over.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (s ≈ {})",
+                    over.iter()
+                        .take(6)
+                        .map(|x| format!("{x:.0}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        );
+    }
+
+    let peak_tp = tp
+        .iter()
+        .cloned()
+        .filter(|x| x.is_finite())
+        .fold(0.0, f64::max);
+    let peak_bp = bp
+        .iter()
+        .cloned()
+        .filter(|x| x.is_finite())
+        .fold(0.0, f64::max);
+    println!(
+        "  tractive power peak: {:.0} kW   braking power peak: {:.0} kW ({:.1}× tractive)",
+        peak_tp / 1000.0,
+        peak_bp / 1000.0,
+        if peak_tp > 0.0 {
+            peak_bp / peak_tp
+        } else {
+            0.0
+        }
+    );
+
+    // a_long closure over the lap (should net ~0).
+    let mut closure = 0.0;
+    for i in 0..s.len() {
+        let ds = if i + 1 < s.len() {
+            s[i + 1] - s[i]
+        } else {
+            0.0
+        };
+        if long_g[i].is_finite() {
+            closure += long_g[i] * 9.81 * ds;
+        }
+    }
+    println!(
+        "  a_long closure ∫a·ds over lap: {:+.1} m²/s² (≈0 ideal)",
+        closure
+    );
+
+    Ok(())
 }
 
 fn cmd_telemetry_align(

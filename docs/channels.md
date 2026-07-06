@@ -107,3 +107,32 @@ the centerline. The aligned/projected CSV:
 The fitted transform is persisted to a gitignored `*.align.toml` sidecar and
 echoed into the aligned CSV's `# align_*` header comments (descriptive
 provenance only — measured/derived data carries no `RunMetadata` sim hashes).
+
+### Inferred channels (`apex-correlate::infer`, QSS channel inference)
+
+`apex-14 infer` back-computes unmeasured channels from measured speed on the
+driven line, inverting the point-mass QSS model (see
+[`docs/math/inference.md`](math/inference.md)). Appended channels (append-only):
+
+| Channel | Unit | Quantity | Notes |
+|---------|------|----------|-------|
+| `downforce` | `N` | `Force` | ½·ρ·C_l·A·v² from the car aero model. |
+| `aero_drag_force` | `N` | `Force` | ½·ρ·C_d·A·v². |
+| `fz_front` / `fz_rear` | `N` | `Force` | Per-axle vertical load (static + aero + longitudinal transfer). No lateral transfer — the point-mass QSS has no per-corner grip budget. |
+| `grip_util` | — (dimensionless) | `Dimensionless` | Total friction-circle occupancy `√(F_lat²+F_x²)/(μ(mg+DF))`. **>1 reported, not clamped** (noise / model deficiency). |
+| `tractive_power` | `W` | `Power` | `max(F_x,0)·v` while driving. |
+| `braking_power` | `W` | `Power` | `max(−F_x,0)·v` while braking. |
+
+The accelerations reuse the existing **`lateral_g`** / **`longitudinal_g`**
+channels (the registry name describes the *quantity*; the file header carries the
+inferred-from-measured provenance). Inference output is signed: `lateral_g` **+ =
+left** (matching `lateral_offset`), `longitudinal_g` **+ = accelerating**. (The
+QSS sim writes these as magnitudes; both are "the acceleration" — a benign
+producer-side sign difference.)
+
+New registry primitives added for these: **`Unit::Watt`** (symbol `W`, SI factor
+1) and **`Quantity::Power`**. The inferred CSV carries **descriptive** provenance
+(source lap, fitted-car file + `car_params_hash`, inference version) plus the
+mandatory **effective-parameter caveat** (`# inference_caveat:`) — inferred
+aero/loads/power derive from the fitted *effective* coefficients and are
+model-consistent estimates, not measurements.

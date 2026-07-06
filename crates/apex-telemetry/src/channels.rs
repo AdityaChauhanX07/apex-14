@@ -60,6 +60,8 @@ pub enum Unit {
     Celsius,
     /// Revolutions per minute (rpm).
     Rpm,
+    /// Watt (W) — power.
+    Watt,
     /// Dimensionless / no unit (counts, indices, ratios).
     None,
 }
@@ -80,6 +82,7 @@ impl Unit {
             Unit::Second => "s",
             Unit::Celsius => "°C",
             Unit::Rpm => "rpm",
+            Unit::Watt => "W",
             Unit::None => "",
         }
     }
@@ -125,6 +128,8 @@ pub enum Quantity {
     Dimensionless,
     /// An integer count or index (gear, lap, sequence).
     Count,
+    /// Power (W).
+    Power,
 }
 
 impl Quantity {
@@ -142,6 +147,7 @@ impl Quantity {
             Quantity::Temperature => "temperature",
             Quantity::Dimensionless => "dimensionless",
             Quantity::Count => "count",
+            Quantity::Power => "power",
         }
     }
 }
@@ -271,6 +277,15 @@ define_channels! {
     FzFr            : "fz_fr",             Newton,         Force,           "Fz FR",          "Front-right vertical tire load";
     FzRl            : "fz_rl",             Newton,         Force,           "Fz RL",          "Rear-left vertical tire load";
     FzRr            : "fz_rr",             Newton,         Force,           "Fz RR",          "Rear-right vertical tire load";
+
+    // --- inferred loads / aero / power (QSS channel inference) ---
+    Downforce       : "downforce",         Newton,         Force,           "Downforce",      "Aerodynamic downforce (inferred from the car aero model at v)";
+    AeroDragForce   : "aero_drag_force",   Newton,         Force,           "Aero drag",      "Aerodynamic drag force (inferred from the car aero model at v)";
+    FzFront         : "fz_front",          Newton,         Force,           "Fz front",       "Front-axle vertical load (static + aero + longitudinal transfer)";
+    FzRear          : "fz_rear",           Newton,         Force,           "Fz rear",        "Rear-axle vertical load (static + aero + longitudinal transfer)";
+    GripUtil        : "grip_util",         None,           Dimensionless,   "Grip util",      "Total friction-circle grip utilization |F|/(mu*(mg+DF)); >1 = noise/model deficiency";
+    TractivePower   : "tractive_power",    Watt,           Power,           "Tractive power", "Tractive power at the driven wheels, F_drive*v (accelerating)";
+    BrakingPower    : "braking_power",     Watt,           Power,           "Braking power",  "Braking power dissipated, F_brake*v (braking)";
 
     // --- time ---
     Time            : "t",                 Second,         Time,            "Time",           "Elapsed time";
@@ -466,6 +481,65 @@ mod tests {
         assert_eq!(
             csv_columns_comment(&["throttle", "brake"]),
             "# columns: throttle[], brake[]"
+        );
+    }
+
+    // Inferred loads / aero / power channels (QSS channel inference). Locks
+    // their name/unit/quantity, including the new Watt/Power additions.
+    #[test]
+    fn inferred_channels_have_expected_specs() {
+        let cases = [
+            (
+                ChannelId::Downforce,
+                "downforce",
+                Unit::Newton,
+                Quantity::Force,
+            ),
+            (
+                ChannelId::AeroDragForce,
+                "aero_drag_force",
+                Unit::Newton,
+                Quantity::Force,
+            ),
+            (
+                ChannelId::FzFront,
+                "fz_front",
+                Unit::Newton,
+                Quantity::Force,
+            ),
+            (ChannelId::FzRear, "fz_rear", Unit::Newton, Quantity::Force),
+            (
+                ChannelId::GripUtil,
+                "grip_util",
+                Unit::None,
+                Quantity::Dimensionless,
+            ),
+            (
+                ChannelId::TractivePower,
+                "tractive_power",
+                Unit::Watt,
+                Quantity::Power,
+            ),
+            (
+                ChannelId::BrakingPower,
+                "braking_power",
+                Unit::Watt,
+                Quantity::Power,
+            ),
+        ];
+        for (id, name, unit, quantity) in cases {
+            assert_eq!(id.name(), name);
+            assert_eq!(id.unit(), unit);
+            assert_eq!(id.quantity(), quantity);
+            assert_eq!(ChannelId::from_name(name), Some(id));
+        }
+        // New unit: Watt symbol + SI factor (already SI).
+        assert_eq!(Unit::Watt.symbol(), "W");
+        assert_eq!(Unit::Watt.si_factor(), 1.0);
+        assert_eq!(Quantity::Power.as_str(), "power");
+        assert_eq!(
+            csv_columns_comment(&["downforce", "tractive_power", "grip_util"]),
+            "# columns: downforce[N], tractive_power[W], grip_util[]"
         );
     }
 
