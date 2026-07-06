@@ -26,6 +26,7 @@
 //! - [`write_telemetry_csv`] writes the standard format back out.
 
 mod align;
+pub mod driven;
 mod error;
 mod importer;
 mod mapping;
@@ -38,11 +39,12 @@ mod units;
 mod writer;
 
 pub use align::{fit_alignment, AlignConfig, AlignResult, Similarity};
+pub use driven::{driven_sim_trace, DrivenResult, DEFAULT_N_FILTER_WINDOW_M};
 pub use error::CorrelateError;
 pub use importer::import_telemetry;
 pub use mapping::{ColumnMap, Mapping, UnknownColumns};
 pub use project::{closest_point, project_to_track, ProjectStats, Projection};
-pub use report::{correlate, CorrelationConfig, CorrelationResult};
+pub use report::{correlate, CorrelationConfig, CorrelationResult, SimTrace};
 pub use telemetry::{GridKind, Telemetry};
 pub use units::conversion_factor;
 pub use writer::write_telemetry_csv;

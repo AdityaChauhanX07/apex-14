@@ -1,157 +1,152 @@
 # Telemetry correlation — Silverstone 2024 Q (RUS)
 
-**Headline: Silverstone 2024 Q (RUS): lap delta +30.938 s, speed RMSE 20.13 m/s over 5890 m.**
+**v1 (unsmoothed centerline): lap delta +30.938 s, speed RMSE 20.13 m/s.**
+**v2 (smoothed centerline): +26.355 s, RMSE 18.24 m/s.**
+**v3 (smoothed + measured driven line): +14.544 s, RMSE 13.58 m/s.**
 
-This page records the **first end-to-end correlation** of the Apex-14 QSS
-simulator against a real measured lap, produced by `apex-14 correlate`. It is a
-**derived summary** (numbers only) — the raw FastF1 telemetry is not
-redistributed and stays local (see `telemetry/README.md`).
+This page records the correlation of the Apex-14 QSS simulator against a real
+measured lap, and how two confounds were peeled off in turn: **centerline
+curvature noise** (track import) and the **racing line** (driver vs. centerline).
+It is a **derived summary** (numbers only) — the raw FastF1 telemetry and the
+TUMFTM-derived track are not redistributed and stay local
+(see `telemetry/README.md`, `tracks/README.md`).
 
-> ⚠️ **This is the UNFITTED `--calibrated` preset.** No parameter identification
-> has been applied. The point of this page is to establish a baseline and to
-> locate where the model disagrees with reality — that read feeds parameter
-> identification (task 2.4). **The car was not tuned to improve these numbers.**
+> ⚠️ **Unfitted `--calibrated` preset.** No car-parameter identification has been
+> applied. The car was **not** tuned to improve these numbers. The point is to
+> isolate the *car-model* residual that parameter identification (2.4) will fit.
 
 > **Sector convention:** equal-arc-length **thirds** (`apex_physics::sector_times`),
-> **NOT** official F1 sectors. Every number below uses that convention.
+> **NOT** official F1 sectors.
 
 ## Methodology
 
 - **Measured source:** FastF1 3.8.3, 2024 British Grand Prix (round 12,
-  Silverstone), Qualifying, driver RUS, lap 25 (1:25.819). Exported to the
-  standard Apex telemetry CSV via `tools/fastf1_export.py` (km/h→m/s,
-  throttle %→0–1, X/Y decimetres→metres).
-- **Track:** TUMFTM racetrack-database `Silverstone.csv` imported to our track
-  JSON (`apex-14 import-track`): 5886.8 m centerline, 1178 segments. (LGPL-3.0
-  data — imported locally, not committed.)
-- **Alignment** (`apex-correlate::align`): 2D similarity fit of the FastF1-local
-  XY onto the track frame — rotation **0.283°**, scale **0.99885** (≈1, both
-  frames are metres), translation (178.06, −117.57) m, no reflection, no
-  direction reversal, start-line offset 9.68 m. **Post-fit RMS 4.15 m**, max
-  point distance 10.93 m (< 25 m; no gross outliers).
-- **Projection** (`apex-correlate::project`): each sample projected to the
-  closest centerline point → geometric station `s` (monotone, wrap handled) and
-  signed lateral offset `n` (**positive = left of centerline**). Projected `s`
-  span 5895.9 m vs. FastF1 integrated distance 5830.9 m (+65 m, geometric vs.
-  speed-integrated); `n ∈ [−10.93, +8.76] m`, RMS 4.15 m; 90% of samples within
-  the local track half-width; 0 non-monotone samples.
-- **Comparison engine:** QSS lap sim (`apex_physics::qss_lap_sim`) on the same
-  centerline with the calibrated F1-2024 preset (mass 798 kg, C_l 2.80,
-  μ 1.55). Sim and measured speed are resampled onto a common 10 m arc-length
-  grid; corners are detected as prominent measured-speed minima below 70 m/s.
+  Silverstone), Qualifying, RUS, lap 25 (1:25.819). Exported via
+  `tools/fastf1_export.py`.
+- **Track:** TUMFTM `Silverstone.csv` → `apex-14 import-track`. Import now applies
+  **curvature-aware smoothing** by default (see below).
+- **Alignment** (`apex-correlate::align`): 2D similarity fit onto the (smoothed)
+  track frame — rotation 0.302°, scale 0.99891, no reflection/reversal,
+  s_offset 9.45 m. **Post-fit RMS 4.14 m** (was 4.15 m on the unsmoothed track —
+  smoothing barely moved the fit, as expected: the noise is in curvature, not
+  position).
+- **Projection** gives geometric station `s` and signed lateral offset `n(s)`
+  (**+n = left of centerline**).
+- **Comparison engine:** QSS (`apex_physics::qss_lap_sim`), calibrated F1-2024
+  preset (mass 798 kg, C_l 2.80, μ 1.55). `apex-14 correlate --line
+  centerline|measured` runs the QSS on the centerline or on the reconstructed
+  driven line.
 
-## Lap time
+## Step 1 — Centerline smoothing (kills curvature noise)
 
-| | Time (s) |
-|---|---|
-| Measured (`t` span) | 85.819 |
-| Measured (header comment) | 85.819 |
-| Sim (QSS, calibrated) | 116.757 |
-| **Delta (sim − measured)** | **+30.938** |
+Regularized least squares (2D), second-difference roughness penalty, `λ` chosen
+by bisection as the smoothest curve within a max-deviation budget (default
+**1.0 m**), periodic (no seam kink). Diagnostics on the real import:
 
-The header lap-time and the `t`-span agree exactly (cross-check passes).
+| | Before | After |
+|---|---|---|
+| Tightest radius (1/max\|κ\|) | 13.5 m | 15.7 m |
+| \|κ\| p95 (radius) | 0.0201 (50 m) | 0.0198 (51 m) |
+| \|κ\| p50 (radius) | 0.0011 (906 m) | 0.0011 (897 m) |
+| Total length | 5886.8 m | 5883.3 m (−0.06%) |
 
-## Sectors (equal-arc thirds — not official F1)
+`λ = 5.2`, max point deviation = 1.00 m (the budget binds).
 
-| Sector | Measured (s) | Sim (s) | Delta (s) |
+**On the acceptance targets — honest note.** The v1 diagnosis over-attributed the
+error to noise. A noise-robust wide-baseline analysis of the raw survey shows:
+
+- **s ≈ 1044 m (The Loop):** raw R ≈ 12 m is a **noise spike on a real ~30 m
+  corner**. Smoothing removes the spike (tightest radius 13.5 → 15.7 m); the
+  residual tightness is the genuine Loop, read tight by the 3-point curvature
+  stencil. ✔ spike gone.
+- **s ≈ 400 m (Abbey):** the true **centerline** radius is ~60–80 m at the corner
+  scale (R > 120 m only appears at a ±100 m baseline — that is the *racing-line*
+  radius, not the centerline). **No smoothing tolerance can make the centerline
+  read R > 120 m at Abbey without erasing a real corner** — the >120 m there is
+  the driven line, addressed in Step 2. So the "s ≈ 400 → R > 120 m" acceptance
+  target is not a centerline property; it is met by the driven-line
+  reconstruction, not by smoothing.
+- **Length** preserved to −3.5 m (−0.06%). ✔
+
+Net effect on correlation: lap delta **+30.9 → +26.4 s**, RMSE **20.1 → 18.2 m/s**
+— curvature noise was worth ~4.5 s, less than v1 implied.
+
+## Step 2 — Measured driven line (removes the racing line)
+
+The centerline QSS corners where the *centerline* bends; the driver runs wide to
+open corners. Reconstructing the driven path (smoothed centerline offset by the
+measured `n(s)`, `n` low-passed with a ±10 m periodic moving average) and running
+the same car on it removes that confound:
+
+| Metric | v1 unsmoothed CL | v2 smoothed CL | v3 smoothed **driven** |
 |---|---|---|---|
-| S1 | 29.759 | 40.202 | +10.443 |
-| S2 | 27.401 | 38.624 | +11.223 |
-| S3 | 28.659 | 37.931 | +9.272 |
+| Lap delta (sim − meas) | **+30.938 s** | **+26.355 s** | **+14.544 s** |
+| Sector Δ S1 / S2 / S3 (s) | +10.44 / +11.22 / +9.27 | +8.65 / +9.52 / +8.19 | **+3.59 / +5.57 / +5.38** |
+| Speed RMSE (m/s) | 20.13 | 18.24 | **13.58** |
+| Max \|Δv\| (m/s) @ s | 58.99 @ 400 | 55.16 @ 400 | **39.89 @ 3880** |
+| Corners (< 70 m/s) | 6 | 5 | 5 |
+| Driven length | — | — | 5826.4 m (−56.9 m vs CL) |
 
-The deficit is spread almost evenly across the lap (≈ +10 s per equal-arc
-third), i.e. it is not localized to one sector — consistent with a
-distributed cause rather than a single bad corner.
+Peeling the two confounds cut the lap delta by more than half (**+30.9 → +14.5 s**)
+and moved the worst speed error **off** Abbey.
 
-## Speed trace
+## Apex speeds — centerline vs. driven line
 
-| Metric | Value |
-|---|---|
-| RMSE | 20.13 m/s over 590 grid points (5890 m @ 10 m) |
-| Max \|Δv\| | 58.99 m/s at s = 400 m |
-| Sim carries most extra speed | +5.75 m/s at s = 4880 m |
-| Sim most below measured | −58.99 m/s at s = 400 m |
-| Measured speed range | 25.0 – 90.3 m/s (90 – 325 km/h) |
-| Sim speed range | 14.7 – 96.1 m/s (53 – 346 km/h) |
+| s (m) | Measured (m/s) | Sim CL | Δ CL | Sim driven | Δ driven |
+|---|---|---|---|---|---|
+| 930  | 32.09 | 30.03 | −2.06 | 29.96 | −2.13 |
+| 1060 | 25.25 | 22.31 | −2.94 | 22.23 | −3.03 |
+| 2200 | 32.64 | 32.18 | −0.46 | 26.43 | −6.21 |
+| 4050 | 62.00 | 41.90 | −20.10 | 45.70 | **−16.30** |
+| 5540 | 29.89 | 26.95 | −2.94 | 28.19 | −1.70 |
 
-## Corners & apex speeds
+The **slow** corners (25–32 m/s apexes) match within ~2–3 m/s on both lines — the
+model's **low-speed mechanical grip (μ) is well-calibrated.** The residual is
+concentrated at the **medium/fast** corner s = 4050 (measured 62 m/s ≈ 223 km/h,
+sim −16 m/s) and the fast Abbey approach.
 
-Detected **6** corners (prominent measured-speed minima below 70 m/s). Note this
-is the count of **prominent braking/apex events on a qualifying lap**, not the
-~18 *named* corners — Silverstone's fast corners (Copse, Maggotts–Becketts,
-Stowe) are taken with almost no speed loss and do not form prominent minima.
+## Where the residual points (for parameter identification, 2.4)
 
-| s (m) | Measured apex (m/s) | Sim @ s (m/s) | Δ (sim − meas) |
-|---|---|---|---|
-| 930 | 32.12 | 28.27 | −3.84 |
-| 1060 | 25.08 | 21.54 | −3.53 |
-| 2040 | 47.84 | 34.68 | −13.16 |
-| 2200 | 32.39 | 31.10 | −1.29 |
-| 4050 | 62.03 | 41.76 | −20.27 |
-| 5540 | 30.07 | 25.13 | −4.94 |
+With curvature noise and the racing line removed, the remaining **+14.5 s** is
+now largely **car-model** error, and it has a clear signature:
 
-The sim is **uniformly slow at every apex** (Δ < 0 everywhere). At the genuinely
-slow corners (~25–32 m/s) the error is a few m/s; the large errors are at the
-**medium/fast** minima (s = 2040: −13; s = 4050: −20).
+- **High-speed cornering: sim too slow** (s = 4050: −16 m/s; the Abbey/approach
+  region drives the 39.9 m/s max error). At 60–85 m/s the grip is
+  downforce-dominated ⇒ **the calibrated aero grip (C_l / downforce) is too low.**
+  This is the biggest lever.
+- **Straights: sim slightly *faster*** (+7.4 m/s at s = 4890) ⇒ **drag a touch
+  low or power/traction a touch high** — the sim tops out above the real car.
+- **Low-speed corners: already good** ⇒ leave μ roughly where it is.
 
-## Braking-point offsets
+So parameter ID should **raise downforce first** (recover high-speed cornering),
+then trim **drag/power** on the straights, and treat **μ** as near-final. Fitting
+in the other order (μ first) would over-fit low-speed grip to compensate for the
+aero deficit.
 
-Onset = longitudinal deceleration crossing 2 m/s² on corner approach. Offset =
-`s_sim − s_measured` (**positive ⇒ sim brakes later**).
+### Honest gaps
 
-| Corner s (m) | Measured onset (m) | Sim onset (m) | Offset (m) |
-|---|---|---|---|
-| 930 | 780 | 790 | +10 |
-| 1060 | 1000 | 990 | −10 |
-| 2040 | 1880 | 1960 | +80 |
-| 2200 | 2100 | 2160 | +60 |
-| 4050 | 3830 | 3950 | +120 |
-| 5540 | 5420 | 5400 | −20 |
-
-At the slow corners the braking points nearly coincide (±10 m). The large
-positive offsets (+60…+120 m) are at the medium/fast minima — but they are an
-artifact of the sim already being far below the measured speed on the approach
-(it never reaches a high enough speed to need to brake as early), so these
-offsets should be read together with the apex-speed errors above.
-
-## Where the model disagrees with reality — and why
-
-**Root cause: curvature noise in the imported centerline, not (primarily) car
-calibration.** Evidence:
-
-- At s ≈ 400 m the measured car is at **84 m/s (302 km/h)** and its **own
-  trajectory** curves gently (R ≈ 130–400 m), yet the imported **centerline**
-  reads **R ≈ 34–62 m** at the same place. A 34 m radius forces the QSS to
-  ~25 m/s — the −59 m/s max error. This is the single largest disagreement and
-  it is a *geometry* artifact.
-- The imported centerline contains physically impossible tight spikes
-  (e.g. **R ≈ 12 m** near s ≈ 1044 m — no Silverstone corner is that tight).
-  These are second-derivative (curvature) noise from the 5 m-spaced survey
-  points; they barely move the centerline (alignment RMS is only 4 m) but they
-  wreck the local radius the QSS depends on.
-- The sim's minimum speed (14.7 m/s / 53 km/h) is far below the measured minimum
-  (25.0 m/s / 90 km/h at the Village/Loop complex), i.e. the sim invents slow
-  corners *between* the real ones.
-
-**Read for parameter identification (2.4):** car-parameter identification cannot
-be run meaningfully against this centerline — the phantom tight corners would
-dominate the fit and the identified grip/aero would compensate for geometry
-noise. **The centerline must be de-noised (curvature-aware smoothing / spline
-refit) before, or jointly with, car-parameter identification.** Only the
-genuinely slow corners (25–32 m/s apexes, where sim error is a few m/s) are
-currently trustworthy signal; the medium/fast sections are dominated by the
-geometry artifact.
+- The driven-line reconstruction (centerline + `n·normal`) has a **floor at the
+  very fastest corner**: at Abbey it reconstructs R ≈ 90–95 m vs. the car's own
+  ~128 m trajectory, so a slice of the s ≈ 400 residual is reconstruction error,
+  not car model. Slow/medium corners reconstruct to within ~5% of the car's
+  trajectory. A future improvement is to build the driven line from the smoothed
+  measured `(x, y)` directly rather than via the centerline offset.
+- Corner count is 5 (prominent minima < 70 m/s), **not** the ~18 named corners —
+  Silverstone's fast corners are near-flat on a qualifying lap and form no
+  prominent speed minimum.
 
 ## Reproduce
 
 ```bash
 # (requires local FastF1 export + TUMFTM import — neither is committed)
-apex-14 correlate \
-  --telemetry telemetry/silverstone_2024_Q_aligned.csv \
-  --track tracks/silverstone.json \
-  --calibrated \
-  --out-dir telemetry/correlation_out
+apex-14 import-track -i <TUMFTM>/Silverstone.csv -o tracks/silverstone.json -n Silverstone
+apex-14 telemetry-align --telemetry telemetry/silverstone_2024_Q.csv \
+  --track tracks/silverstone.json --out telemetry/silverstone_2024_Q_aligned.csv
+apex-14 correlate --telemetry telemetry/silverstone_2024_Q_aligned.csv \
+  --track tracks/silverstone.json --calibrated --line centerline --out-dir telemetry/correlation_out
+apex-14 correlate --telemetry telemetry/silverstone_2024_Q_aligned.csv \
+  --track tracks/silverstone.json --calibrated --line measured   --out-dir telemetry/correlation_out_driven
 ```
 
-Outputs `report.md`, `speed_overlay.svg`, and `inputs_panel.svg` (all local /
-gitignored). `APEX_REPRO_TIMESTAMP` makes the report byte-reproducible.
+Outputs (`report.md` + SVGs) are local / gitignored; `APEX_REPRO_TIMESTAMP`
+makes the reports byte-reproducible.

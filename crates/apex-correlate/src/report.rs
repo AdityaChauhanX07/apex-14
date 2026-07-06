@@ -94,6 +94,8 @@ pub struct CorrelationResult {
     pub span: f64,
     /// Corner-detection speed ceiling used (m/s), for reporting.
     pub corner_ceiling: f64,
+    /// Which line the sim ran on (`"centerline"` / `"measured line"`).
+    pub sim_label: String,
     /// Measured-source metadata (descriptive), in file order.
     pub measured_meta: Vec<(String, String)>,
 }
@@ -103,12 +105,45 @@ fn meta_get<'a>(meta: &'a [(String, String)], key: &str) -> Option<&'a str> {
     meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
+/// A simulated speed profile expressed **as a function of centerline station**,
+/// so it can be compared against measured telemetry regardless of whether the
+/// sim ran on the centerline or on the reconstructed driven line.
+#[derive(Debug, Clone)]
+pub struct SimTrace {
+    /// Centerline station (m) per sample, monotone in `[0, L)`.
+    pub station: Vec<f64>,
+    /// Sim speed (m/s) at each station.
+    pub speed: Vec<f64>,
+    /// Sim lap time (s).
+    pub lap_time: f64,
+    /// Sim sector times (s), equal-arc thirds by centerline station.
+    pub sector_times: Vec<f64>,
+    /// Human label for the trace (e.g. `"centerline"`, `"measured line"`).
+    pub label: String,
+}
+
+impl SimTrace {
+    /// Build a centerline-line trace directly from a QSS result (its distances
+    /// are already centerline stations).
+    pub fn from_qss(sim: &QssResult) -> SimTrace {
+        SimTrace {
+            station: sim.distances.clone(),
+            speed: sim.speeds.clone(),
+            lap_time: sim.lap_time,
+            sector_times: sim.sector_times.clone(),
+            label: "centerline".to_string(),
+        }
+    }
+}
+
 /// Run the full correlation. `measured` must carry `s` (geometric station),
-/// `speed`, and `t`; `sim` is a QSS result on `track`.
+/// `speed`, and `t`; `sim` is a [`SimTrace`] expressed in centerline station
+/// (from either the centerline or the driven-line QSS). `track` supplies the
+/// centerline length and name.
 pub fn correlate(
     measured: &Telemetry,
     track: &Track,
-    sim: &QssResult,
+    sim: &SimTrace,
     config: CorrelationConfig,
 ) -> Result<CorrelationResult, CorrelateError> {
     let meas_s = measured
@@ -137,7 +172,7 @@ pub fn correlate(
 
     let meas_v = resample_linear(meas_s, meas_v_raw, &grid_s);
     // Sim speed is periodic in centerline station; grid mod L selects it.
-    let sim_v = resample_periodic(&sim.distances, &sim.speeds, track.total_length, &grid_s);
+    let sim_v = resample_periodic(&sim.station, &sim.speed, track.total_length, &grid_s);
 
     // Lap time: measured from t span (authoritative), sim from the QSS integral.
     let measured_lap_from_t = meas_t[meas_t.len() - 1] - meas_t[0];
@@ -210,6 +245,7 @@ pub fn correlate(
         sim_slowest_dv: fmin,
         span,
         corner_ceiling: config.corner.ceiling,
+        sim_label: sim.label.clone(),
         measured_meta: measured.metadata.clone(),
     })
 }
@@ -417,6 +453,7 @@ pub fn write_speed_overlay_svg(
         .fold(f64::NEG_INFINITY, f64::max)
         .max(1.0);
     let markers: Vec<f64> = result.corners.iter().map(|&k| result.grid_s[k]).collect();
+    let sim_series = format!("QSS sim ({})", result.sim_label);
     let panels = vec![Panel {
         title,
         y_label: "Speed [m/s]",
@@ -424,7 +461,7 @@ pub fn write_speed_overlay_svg(
         y_max: (vmax / 10.0).ceil() * 10.0,
         series: vec![
             ("measured (RUS)", "#4fc3f7", &result.meas_v),
-            ("QSS sim", "#ffb74d", &result.sim_v),
+            (sim_series.as_str(), "#ffb74d", &result.sim_v),
         ],
         height: 360.0,
     }];
@@ -518,6 +555,8 @@ pub fn render_markdown(
     let _ = writeln!(md, "# Telemetry correlation: {}", track.name);
     let _ = writeln!(md);
     let _ = writeln!(md, "**{}**", result.headline(&track.name));
+    let _ = writeln!(md);
+    let _ = writeln!(md, "*QSS line: **{}***", result.sim_label);
     let _ = writeln!(md);
     let _ = writeln!(
         md,
@@ -764,7 +803,8 @@ mod tests {
             ],
         };
 
-        let result = correlate(&measured, &track, &sim, CorrelationConfig::default()).unwrap();
+        let trace = SimTrace::from_qss(&sim);
+        let result = correlate(&measured, &track, &trace, CorrelationConfig::default()).unwrap();
         assert!(
             result.lap.delta.abs() < 0.2,
             "lap delta {}",

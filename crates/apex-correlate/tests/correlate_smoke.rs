@@ -27,8 +27,9 @@ fn correlate_synthetic_lap_end_to_end() {
     let track = build_track("SynthCircle", &pts, closed);
     let sim = qss_lap_sim(&track, &CarParams::default());
 
+    let trace = apex_correlate::report::SimTrace::from_qss(&sim);
     let result =
-        correlate(&measured, &track, &sim, CorrelationConfig::default()).expect("correlate");
+        correlate(&measured, &track, &trace, CorrelationConfig::default()).expect("correlate");
 
     // Metrics are finite and the grid spans most of the lap.
     assert!(result.rmse.rmse.is_finite());

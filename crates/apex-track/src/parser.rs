@@ -20,6 +20,30 @@ pub struct TrackPointJson {
     pub width_right: Option<f64>,
 }
 
+/// Provenance/processing metadata recorded in a track JSON file.
+///
+/// Currently records centerline-smoothing parameters so a re-imported track
+/// carries proof of what was done to it (see [`crate::smoothing`]). All fields
+/// are optional and skipped when empty, so older files parse unchanged.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct TrackMetaJson {
+    /// Free-form source label (e.g. `"TUMFTM racetrack-database"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Whether the centerline was curvature-smoothed on import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smoothed: Option<bool>,
+    /// Deviation tolerance (m) used by smoothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth_tolerance_m: Option<f64>,
+    /// Regularization weight `λ` chosen by smoothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth_lambda: Option<f64>,
+    /// Actual maximum point deviation (m) achieved by smoothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth_max_deviation_m: Option<f64>,
+}
+
 /// A complete track definition as loaded from a JSON file.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TrackFileJson {
@@ -28,6 +52,9 @@ pub struct TrackFileJson {
     pub closed: bool,
     #[serde(default)]
     pub width: Option<f64>,
+    /// Optional processing/provenance metadata (e.g. smoothing parameters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<TrackMetaJson>,
     pub points: Vec<TrackPointJson>,
 }
 
@@ -70,10 +97,20 @@ pub fn parse_track_json(json: &str) -> Result<Track, Box<dyn std::error::Error>>
 
 /// Export a track to a JSON string (for saving generated tracks).
 pub fn export_track_json(track: &Track) -> Result<String, Box<dyn std::error::Error>> {
+    export_track_json_with_meta(track, None)
+}
+
+/// Export a track to a JSON string, embedding optional processing
+/// [`TrackMetaJson`] (e.g. smoothing provenance).
+pub fn export_track_json_with_meta(
+    track: &Track,
+    metadata: Option<TrackMetaJson>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let file = TrackFileJson {
         name: track.name.clone(),
         closed: track.is_closed,
         width: None, // per-point widths are used
+        metadata,
         points: track
             .segments
             .iter()

@@ -81,6 +81,14 @@ enum Commands {
         /// Track name
         #[arg(short, long)]
         name: String,
+
+        /// Disable curvature-aware centerline smoothing (on by default)
+        #[arg(long, default_value_t = false)]
+        no_smooth: bool,
+
+        /// Max deviation (m) a smoothed point may move from its survey point
+        #[arg(long, default_value_t = apex_track::DEFAULT_SMOOTH_TOLERANCE_M)]
+        smooth_tolerance: f64,
     },
 
     /// Correlate measured telemetry against a QSS sim (deltas, RMSE, corners)
@@ -104,6 +112,15 @@ enum Commands {
         /// Common-grid resample step (m)
         #[arg(long, default_value_t = 10.0)]
         grid_step: f64,
+
+        /// Which line the QSS runs on: `centerline` (default) or `measured`
+        /// (the reconstructed driven line from the measured lateral offset).
+        #[arg(long, default_value = "centerline")]
+        line: String,
+
+        /// Moving-average half-width (m) applied to n(s) for the driven line
+        #[arg(long, default_value_t = apex_correlate::DEFAULT_N_FILTER_WINDOW_M)]
+        n_filter: f64,
 
         /// Output directory for report.md + SVGs
         #[arg(long)]
@@ -291,15 +308,21 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             name,
-        } => cmd_import_track(input, output, name),
+            no_smooth,
+            smooth_tolerance,
+        } => cmd_import_track(input, output, name, !no_smooth, smooth_tolerance),
         Commands::Correlate {
             telemetry,
             track,
             calibrated,
             car,
             grid_step,
+            line,
+            n_filter,
             out_dir,
-        } => cmd_correlate(telemetry, track, calibrated, car, grid_step, out_dir),
+        } => cmd_correlate(
+            telemetry, track, calibrated, car, grid_step, line, n_filter, out_dir,
+        ),
         Commands::TelemetryAlign {
             telemetry,
             track,
@@ -533,20 +556,86 @@ fn cmd_import_track(
     input: PathBuf,
     output: PathBuf,
     name: String,
+    smooth: bool,
+    smooth_tolerance: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Importing track '{}' from {}", name, input.display());
-    let track = apex_track::load_tumftm_csv(&input, &name)?;
+    let raw = apex_track::load_tumftm_csv(&input, &name)?;
     println!(
         "Track length: {:.3} km, {} segments",
-        track.total_length / 1000.0,
-        track.segments.len()
+        raw.total_length / 1000.0,
+        raw.segments.len()
     );
 
-    let json = apex_track::export_track_json(&track)?;
+    let (track, meta) = if smooth {
+        let (smoothed, report) = apex_track::smooth_track(&raw, smooth_tolerance);
+        print_smoothing_diagnostics(&report);
+        let meta = apex_track::TrackMetaJson {
+            source: Some("TUMFTM racetrack-database".to_string()),
+            smoothed: Some(true),
+            smooth_tolerance_m: Some(report.tolerance_m),
+            smooth_lambda: Some(report.lambda),
+            smooth_max_deviation_m: Some(report.max_deviation_m),
+        };
+        (smoothed, Some(meta))
+    } else {
+        println!("Smoothing: DISABLED (--no-smooth)");
+        let meta = apex_track::TrackMetaJson {
+            source: Some("TUMFTM racetrack-database".to_string()),
+            smoothed: Some(false),
+            ..Default::default()
+        };
+        (raw, Some(meta))
+    };
+
+    let json = apex_track::export_track_json_with_meta(&track, meta)?;
     std::fs::write(&output, json)?;
     println!("Exported to {}", output.display());
 
     Ok(())
+}
+
+/// Print before/after smoothing diagnostics (radii, curvature percentiles,
+/// deviation, length).
+fn print_smoothing_diagnostics(r: &apex_track::SmoothingReport) {
+    let rkm = |k: f64| if k > 1e-9 { 1.0 / k } else { f64::INFINITY };
+    println!(
+        "Smoothing: ON (tolerance {:.2} m, lambda {:.1}, max deviation {:.3} m)",
+        r.tolerance_m, r.lambda, r.max_deviation_m
+    );
+    println!(
+        "  min radius:   {:.1} m -> {:.1} m",
+        r.min_radius_before, r.min_radius_after
+    );
+    println!(
+        "  |kappa| p50:  {:.5} (R {:.0} m) -> {:.5} (R {:.0} m)",
+        r.kappa_p50_before,
+        rkm(r.kappa_p50_before),
+        r.kappa_p50_after,
+        rkm(r.kappa_p50_after)
+    );
+    println!(
+        "  |kappa| p95:  {:.5} (R {:.0} m) -> {:.5} (R {:.0} m)",
+        r.kappa_p95_before,
+        rkm(r.kappa_p95_before),
+        r.kappa_p95_after,
+        rkm(r.kappa_p95_after)
+    );
+    println!(
+        "  |kappa| max:  {:.5} (R {:.1} m) -> {:.5} (R {:.1} m)",
+        r.kappa_max_before,
+        rkm(r.kappa_max_before),
+        r.kappa_max_after,
+        rkm(r.kappa_max_after)
+    );
+    let dlen = r.length_after - r.length_before;
+    println!(
+        "  length:       {:.1} m -> {:.1} m ({:+.2} m, {:+.3}%)",
+        r.length_before,
+        r.length_after,
+        dlen,
+        100.0 * dlen / r.length_before
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -556,23 +645,48 @@ fn cmd_correlate(
     calibrated: bool,
     car: Option<PathBuf>,
     grid_step: f64,
+    line: String,
+    n_filter: f64,
     out_dir: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use apex_correlate::report::{correlate, write_report, CorrelationConfig};
-    use apex_correlate::{import_telemetry, Mapping};
+    use apex_correlate::report::{correlate, write_report, CorrelationConfig, SimTrace};
+    use apex_correlate::{driven_sim_trace, import_telemetry, Mapping};
 
     // 1. Measured telemetry (aligned, standard format → identity mapping).
     let measured = import_telemetry(&telemetry, &Mapping::identity())?;
     // 2. Track + car.
     let trk = load_track_from_path(&track)?;
     let params = load_car_params(car, calibrated)?;
-    // 3. QSS sim (the comparison engine).
-    let sim = apex_physics::qss_lap_sim(&trk, &params);
+
+    // 3. Build the sim trace on the requested line.
+    let trace = match line.as_str() {
+        "centerline" => {
+            let sim = apex_physics::qss_lap_sim(&trk, &params);
+            SimTrace::from_qss(&sim)
+        }
+        "measured" => {
+            let dr = driven_sim_trace(&trk, &measured, &params, n_filter)?;
+            println!(
+                "Driven line: length {:.1} m (centerline {:.1} m, {:+.1} m), \
+                 n filter ±{:.0} m, peak |n| {:.2} m",
+                dr.driven_length,
+                dr.centerline_length,
+                dr.driven_length - dr.centerline_length,
+                dr.n_filter_window_m,
+                dr.n_peak
+            );
+            dr.trace
+        }
+        other => {
+            return Err(format!("--line must be `centerline` or `measured`, got `{other}`").into())
+        }
+    };
+
     // 4. Sim-side provenance (RunMetadata). QSS has no RNG / tunable solver.
     let meta = apex_telemetry::RunMetadata::new(
         apex_physics::car_params_hash(&params),
         apex_track::processed_track_hash(&trk),
-        apex_telemetry::settings_hash_for_mode("correlate.qss.grip-circle"),
+        apex_telemetry::settings_hash_for_mode(&format!("correlate.qss.grip-circle.{line}")),
         None,
     );
 
@@ -580,7 +694,8 @@ fn cmd_correlate(
         grid_step,
         ..CorrelationConfig::default()
     };
-    let result = correlate(&measured, &trk, &sim, config)?;
+    let result = correlate(&measured, &trk, &trace, config)?;
+    println!("Line: {}", trace.label);
 
     // 5. Write report.md + SVGs.
     let report_path = write_report(&out_dir, &result, &measured, &meta, &trk)?;
