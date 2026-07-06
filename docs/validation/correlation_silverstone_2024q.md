@@ -22,6 +22,13 @@ summary** (numbers only) — the raw FastF1 telemetry and the TUMFTM-derived tra
 are not redistributed and stay local (see `telemetry/README.md`,
 `tracks/README.md`). The **fitted car overlay is committed**
 (`cars/silverstone_2024q_fitted.toml`) — our own derived parameters, no raw data.
+Silverstone is one of five circuits in the
+[correlation campaign](correlation_summary.md).
+
+> ⚠️ The fitted parameters are **point-mass-QSS *effective* values, not physical
+> measurements.** They absorb the model's limitations (no elevation, no transient
+> load transfer, a single fixed aero/trim); a parameter that varies across
+> circuits beyond its std-error band is absorbing circuit-specific model error.
 
 > **Sector convention:** equal-arc-length **thirds** (`apex_physics::sector_times`),
 > **NOT** official F1 sectors.

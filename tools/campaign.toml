@@ -1,0 +1,40 @@
+# Multi-circuit correlation campaign spec (consumed by tools/correlate_campaign.py).
+#
+# All raw telemetry, the FastF1 cache, and TUMFTM-derived track JSON stay LOCAL
+# (gitignored). Only the fitted-car TOMLs and the docs summary pages are
+# committable. `gp` MUST be the resolved FastF1 event name so the fuzzy-match
+# guard in fastf1_export.py passes without --allow-fuzzy.
+
+year = 2024
+session = "Q"
+tumftm_dir = "F:/PROJECTS/racetrack-database/tracks"
+
+[[circuit]]
+slug = "silverstone"
+name = "Silverstone"
+gp = "British Grand Prix"
+tumftm = "Silverstone.csv"
+
+[[circuit]]
+slug = "monza"
+name = "Monza"
+gp = "Italian Grand Prix"
+tumftm = "Monza.csv"
+
+[[circuit]]
+slug = "spa"
+name = "Spa"
+gp = "Belgian Grand Prix"
+tumftm = "Spa.csv"
+
+[[circuit]]
+slug = "spielberg"
+name = "Spielberg"
+gp = "Austrian Grand Prix"
+tumftm = "Spielberg.csv"
+
+[[circuit]]
+slug = "catalunya"
+name = "Catalunya"
+gp = "Spanish Grand Prix"
+tumftm = "Catalunya.csv"

@@ -11,9 +11,11 @@
 !crates/apex-correlate/tests/fixtures/*.csv
 
 # TUMFTM-derived local track imports (LGPL-3.0 data, not redistributed — see
-# tracks/README.md). The committed sample tracks (test_circle.json,
-# oval_simple.json) are NOT matched by these patterns.
-/tracks/silverstone.json
+# tracks/README.md). Ignore ALL imported track JSON, re-including only the two
+# committed synthetic sample tracks.
+/tracks/*.json
+!/tracks/test_circle.json
+!/tracks/oval_simple.json
 /tracks/*.tumftm.json
 
 # --- Measured telemetry (apex-correlate / FastF1 bridge) ---
@@ -31,6 +33,8 @@
 # stays local. The hand-curated summary in docs/validation/ IS committed.
 /telemetry/correlation_out/
 /telemetry/**/report.md
+# Campaign output (per-circuit correlate dirs + summary.json) — derived, local.
+/telemetry/campaign/
 
 # OS files
 .DS_Store

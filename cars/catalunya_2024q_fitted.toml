@@ -1,0 +1,15 @@
+# Fitted car parameters (OVERLAY on the calibrated preset).
+# These are our own derived parameters (no raw telemetry) — committable.
+# source: fastf1 2024 Spanish Grand Prix Q driver NOR lap 11
+# driven line: measured (direct, smoothed x/y)
+# fixed params: tires.mu
+# fit: cost 67795.49 → 17505.81, 43 iterations, condition 8.59e1
+# date: 2026-07-06T00:00:00Z
+# NOTE: apply with --car on top of --calibrated.
+
+[aero]
+lift_coeff = 5.25293  # ± 0.04735
+drag_coeff = 1.83522  # ± 0.09296
+
+[car]
+max_drive_force = 12725.1  # power_scale 1.15683 ± 0.04568 × base 11000.0
