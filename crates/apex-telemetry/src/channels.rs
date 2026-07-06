@@ -300,6 +300,11 @@ define_channels! {
     Gear            : "gear",              None,           Count,           "Gear",           "Current gear (0 = neutral)";
     Lap             : "lap",               None,           Count,           "Lap",            "Current lap number";
     Sequence        : "sequence",          None,           Count,           "Seq",            "Packet sequence number";
+
+    // --- estimated dynamic states (RTS single-track smoother) ---
+    SlipAngleFront  : "slip_angle_front",  Radian,         Angle,           "Slip front",     "Front-axle tire slip angle (estimated, single-track smoother)";
+    SlipAngleRear   : "slip_angle_rear",   Radian,         Angle,           "Slip rear",      "Rear-axle tire slip angle (estimated, single-track smoother)";
+    BodySlipAngle   : "body_slip_angle",   Radian,         Angle,           "Body slip",      "Vehicle body slip angle beta = atan2(v_y, v_x) (estimated)";
 }
 
 impl ChannelId {
@@ -541,6 +546,51 @@ mod tests {
             csv_columns_comment(&["downforce", "tractive_power", "grip_util"]),
             "# columns: downforce[N], tractive_power[W], grip_util[]"
         );
+    }
+
+    // Estimated dynamic-state channels (RTS single-track smoother). Locks their
+    // name/unit/quantity so the estimator output format can't drift. yaw_rate and
+    // lateral_v already existed and are reused (asserted here too).
+    #[test]
+    fn estimated_state_channels_have_expected_specs() {
+        let cases = [
+            (
+                ChannelId::SlipAngleFront,
+                "slip_angle_front",
+                Unit::Radian,
+                Quantity::Angle,
+            ),
+            (
+                ChannelId::SlipAngleRear,
+                "slip_angle_rear",
+                Unit::Radian,
+                Quantity::Angle,
+            ),
+            (
+                ChannelId::BodySlipAngle,
+                "body_slip_angle",
+                Unit::Radian,
+                Quantity::Angle,
+            ),
+            (
+                ChannelId::YawRate,
+                "yaw_rate",
+                Unit::RadPerSecond,
+                Quantity::AngularVelocity,
+            ),
+            (
+                ChannelId::LateralV,
+                "lateral_v",
+                Unit::MeterPerSecond,
+                Quantity::Speed,
+            ),
+        ];
+        for (id, name, unit, quantity) in cases {
+            assert_eq!(id.name(), name);
+            assert_eq!(id.unit(), unit);
+            assert_eq!(id.quantity(), quantity);
+            assert_eq!(ChannelId::from_name(name), Some(id));
+        }
     }
 
     #[test]

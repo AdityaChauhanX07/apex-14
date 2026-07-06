@@ -19,6 +19,9 @@ apex-math = { path = "../apex-math" }
 apex-telemetry = { path = "../apex-telemetry" }
 apex-track = { path = "../apex-track" }
 apex-physics = { path = "../apex-physics" }
+# Single-track EKF/RTS state estimator: RK4 time-propagation of the bicycle model
+# and its dual-number Jacobians.
+apex-integrator = { path = "../apex-integrator" }
 serde = { version = "1", features = ["derive"] }
 csv = "1"
 toml = "0.8"

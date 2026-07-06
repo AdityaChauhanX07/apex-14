@@ -244,6 +244,36 @@ enum Commands {
         driven_smooth_tolerance: f64,
     },
 
+    /// Estimate smoothed dynamic states (slip angles, yaw rate, body slip) with
+    /// an RTS single-track Kalman smoother over the measured lap
+    Estimate {
+        /// Aligned telemetry CSV (standard format, with t/x/y/speed)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Track file (smoothed Apex-14 JSON or TUMFTM CSV)
+        #[arg(long)]
+        track: PathBuf,
+
+        /// Fitted car TOML (overlay applied on the calibrated preset)
+        #[arg(long)]
+        car: PathBuf,
+
+        /// Output CSV path (measured channels + smoothed states)
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Position measurement noise sigma (m). Default 3.0 (below the ~4 m
+        /// telemetry align RMS).
+        #[arg(long, default_value_t = 3.0)]
+        pos_sigma: f64,
+
+        /// Disable the course (motion-direction) pseudo-measurement. Not
+        /// recommended — the heading diverges without it.
+        #[arg(long, default_value_t = false)]
+        no_course: bool,
+    },
+
     /// Align measured telemetry to a track frame and project GPS to (s, n)
     TelemetryAlign {
         /// Input telemetry CSV (standard Apex telemetry format, with x/y)
@@ -502,6 +532,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             n_filter,
             driven_smooth_tolerance,
         ),
+        Commands::Estimate {
+            telemetry,
+            track,
+            car,
+            out,
+            pos_sigma,
+            no_course,
+        } => cmd_estimate(telemetry, track, car, out, pos_sigma, !no_course),
         Commands::TelemetryAlign {
             telemetry,
             track,
@@ -1549,6 +1587,199 @@ fn cmd_infer(
         "  a_long closure ∫a·ds over lap: {:+.1} m²/s² (≈0 ideal)",
         closure
     );
+
+    Ok(())
+}
+
+fn cmd_estimate(
+    telemetry: PathBuf,
+    track: PathBuf,
+    car: PathBuf,
+    out: PathBuf,
+    pos_sigma: f64,
+    use_course: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::{
+        attach_estimated_channels, diagnostics_json, import_telemetry, smooth_states,
+        write_telemetry_csv, EstimatorConfig, Mapping,
+    };
+    use apex_telemetry::ChannelId;
+
+    const EST_VERSION: &str = "1.0.0";
+
+    let measured = import_telemetry(&telemetry, &Mapping::identity())?;
+    let trk = load_track_from_path(&track)?;
+    // Fitted TOML is an overlay on the calibrated preset.
+    let params = load_car_params(Some(car.clone()), true)?;
+    // The single-track model needs a tire; the fit does not identify one, so use
+    // the representative F1 Pacejka. Slip angles therefore depend on this assumed
+    // tire (documented in the output caveat).
+    let tire = apex_physics::PacejkaTire::f1_default();
+
+    // The estimator runs in TIME: pull t / x / y / speed from the aligned lap.
+    let pull =
+        |id: ChannelId, what: &'static str| -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+            measured
+                .channel(id)
+                .map(|c| c.to_vec())
+                .ok_or_else(|| format!("telemetry is missing the `{what}` channel").into())
+        };
+    let t = pull(ChannelId::Time, "t")?;
+    let x = pull(ChannelId::X, "x")?;
+    let y = pull(ChannelId::Y, "y")?;
+    let speed = pull(ChannelId::Speed, "speed")?;
+
+    let cfg = EstimatorConfig {
+        pos_sigma,
+        use_course,
+        ..EstimatorConfig::default()
+    };
+
+    let res = smooth_states(&t, &x, &y, &speed, &params, &tire, &cfg)?;
+    let mut out_tel = attach_estimated_channels(&measured, &res);
+
+    // Provenance: descriptive (derived-from-measured, no RunMetadata sim block) +
+    // car hash + estimator-config hash + the effective-parameter caveat.
+    let car_hash = apex_physics::car_params_hash(&params);
+    let cfg_hash = apex_telemetry::settings_hash_for_mode(&cfg.settings_label());
+    out_tel.metadata.push((
+        "estimation".into(),
+        format!("apex-14 estimate v{EST_VERSION} (RTS single-track Kalman smoother)"),
+    ));
+    out_tel
+        .metadata
+        .push(("estimate_car_file".into(), car.display().to_string()));
+    out_tel
+        .metadata
+        .push(("estimate_car_hash".into(), car_hash.to_hex()));
+    out_tel
+        .metadata
+        .push(("estimate_config_hash".into(), cfg_hash.to_hex()));
+    out_tel.metadata.push((
+        "estimate_caveat".into(),
+        "slip angles / body slip / yaw rate are single-track ESTIMATES that depend \
+         on the fitted EFFECTIVE tire+aero parameters and the assumed Pacejka tire \
+         model — model-consistent estimates, NOT measurements"
+            .into(),
+    ));
+
+    write_telemetry_csv(&out, &out_tel)?;
+
+    // Sidecar diagnostics JSON (per-state std devs + NIS + robustness counts).
+    let diag_path = out.with_extension("diag.json");
+    std::fs::write(&diag_path, diagnostics_json(&res))?;
+
+    // --- console report ---
+    let d = &res.diagnostics;
+    let deg = |r: f64| r.to_degrees();
+    let s = measured.channel(ChannelId::S).map(|c| c.to_vec());
+    let s_at = |i: usize| s.as_ref().map(|v| v[i]).unwrap_or(i as f64);
+
+    // Peak slip angles + locations.
+    let peak = |v: &[f64]| -> (f64, usize) {
+        let mut best = 0.0_f64;
+        let mut idx = 0;
+        for (i, &val) in v.iter().enumerate() {
+            if val.is_finite() && val.abs() > best {
+                best = val.abs();
+                idx = i;
+            }
+        }
+        (best, idx)
+    };
+    let (pf, pf_i) = peak(&res.slip_front);
+    let (pr, pr_i) = peak(&res.slip_rear);
+    let beta_min = res
+        .beta
+        .iter()
+        .cloned()
+        .filter(|v| v.is_finite())
+        .fold(f64::INFINITY, f64::min);
+    let beta_max = res
+        .beta
+        .iter()
+        .cloned()
+        .filter(|v| v.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max);
+    let yaw_peak = res
+        .state
+        .iter()
+        .map(|st| st[5].abs())
+        .fold(0.0_f64, f64::max);
+
+    println!("Estimated {} samples → {}", res.state.len(), out.display());
+    println!(
+        "  car: {} (hash {})   course pseudo-measurement: {}",
+        car.display(),
+        car_hash.short(),
+        if use_course { "on" } else { "OFF" }
+    );
+    println!("  ⚠ single-track estimates, NOT measurements (see header caveat).");
+    println!(
+        "  peak slip: front {:.2}° @ s={:.0} m   rear {:.2}° @ s={:.0} m",
+        deg(pf),
+        s_at(pf_i),
+        deg(pr),
+        s_at(pr_i)
+    );
+    println!(
+        "  body slip beta: [{:+.2}°, {:+.2}°]   yaw-rate peak: {:.3} rad/s",
+        deg(beta_min),
+        deg(beta_max),
+        yaw_peak
+    );
+    println!(
+        "  NIS: mean {:.2} (dof {})   p50 {:.2}  p95 {:.2}  within-95 {:.0}%",
+        d.nis_mean,
+        d.nis_dof,
+        d.nis_p50,
+        d.nis_p95,
+        100.0 * d.nis_within_95
+    );
+    println!(
+        "  robustness: {} updates, {} gaps, {} soft-gated (down-weighted) updates",
+        d.n_updates, d.n_gaps, d.n_rejected
+    );
+
+    // Smoother yaw-rate vs kinematic v·kappa (QSS inference sees only the latter).
+    // The disagreement IS the transient/dynamic content the QSS misses.
+    if let Some(sv) = &s {
+        let mut sum_all = 0.0;
+        let mut n_all = 0usize;
+        let mut sum_corner = 0.0;
+        let mut n_corner = 0usize;
+        for i in 0..sv.len() {
+            let (seg, _) = trk.locate(sv[i]);
+            let kappa = trk.segments[seg.min(trk.segments.len() - 1)].curvature;
+            let kin = speed[i] * kappa;
+            let dyn_yaw = res.state[i][5];
+            let diff = (dyn_yaw - kin).abs();
+            if diff.is_finite() {
+                sum_all += diff;
+                n_all += 1;
+                if kappa.abs() > 1.0 / 200.0 {
+                    sum_corner += diff;
+                    n_corner += 1;
+                }
+            }
+        }
+        let mean_all = if n_all > 0 {
+            sum_all / n_all as f64
+        } else {
+            0.0
+        };
+        let mean_corner = if n_corner > 0 {
+            sum_corner / n_corner as f64
+        } else {
+            0.0
+        };
+        println!(
+            "  yaw-rate vs kinematic v·κ: mean |Δ| {:.4} rad/s overall, {:.4} rad/s in corners \
+             ({} corner samples) — this gap is the dynamic content QSS inference cannot see",
+            mean_all, mean_corner, n_corner
+        );
+    }
+    println!("  diagnostics sidecar: {}", diag_path.display());
 
     Ok(())
 }

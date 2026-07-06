@@ -4,7 +4,8 @@
 //! one front axle and one rear axle — and integrates planar rigid-body motion
 //! with Pacejka lateral tire forces.
 
-use apex_integrator::OdeSystem;
+use apex_integrator::{OdeSystem, OdeSystemGeneric};
+use apex_math::Float;
 
 use crate::car_params::CarParams;
 use crate::tire::PacejkaTire;
@@ -76,6 +77,55 @@ impl OdeSystem<6, 2> for BicycleModel<'_> {
         let domega_z_dt = (lf * fy_front * delta.cos() - lr * fy_rear) / iz;
 
         // Global position derivatives
+        let dx_dt = vx_safe * psi.cos() - vy * psi.sin();
+        let dy_dt = vx_safe * psi.sin() + vy * psi.cos();
+        let dpsi_dt = omega_z;
+
+        [dx_dt, dy_dt, dpsi_dt, dvx_dt, dvy_dt, domega_z_dt]
+    }
+}
+
+/// Generic (autodiff-capable) single-track dynamics. This is a `Float` mirror of
+/// the concrete [`OdeSystem`] impl above: evaluated on `f64` it reproduces
+/// `derivatives` to floating-point round-off (operation order differs slightly
+/// because generic `T` only supports `T * f64`, not `f64 * T`), and on
+/// [`apex_math::Dual`] it yields analytic Jacobian columns. The EKF/RTS estimator
+/// in `apex-correlate` relies on this equivalence; `generic_matches_concrete`
+/// locks it.
+impl<T: Float> OdeSystemGeneric<T, 6, 2> for BicycleModel<'_> {
+    fn derivatives_generic(&self, state: &[T; 6], control: &[T; 2], _t: T) -> [T; 6] {
+        let psi = state[2];
+        let vx = state[3];
+        let vy = state[4];
+        let omega_z = state[5];
+
+        let delta = control[0];
+        let fx_total = control[1];
+
+        let lf = self.params.cog_to_front;
+        let lr = self.params.cog_to_rear;
+        let m = self.params.mass;
+        let iz = self.params.yaw_inertia;
+
+        // Minimum speed guard, mirroring the concrete `vx.max(1.0)`.
+        let vx_safe = vx.max(T::from_f64(1.0));
+
+        let alpha_front = delta - ((vy + omega_z * lf) / vx_safe).atan();
+        let alpha_rear = -((vy - omega_z * lr) / vx_safe).atan();
+
+        let ax_approx = fx_total / m;
+        let (fz_front, fz_rear) = self.params.axle_loads_generic(vx_safe, ax_approx);
+
+        let fy_front = self.tire.lateral_force_generic(alpha_front, fz_front);
+        let fy_rear = self.tire.lateral_force_generic(alpha_rear, fz_rear);
+
+        let f_drag = self.params.drag_force_generic(vx_safe);
+        let f_roll = T::from_f64(self.params.rolling_resistance_force());
+
+        let dvx_dt = (fx_total - f_drag - f_roll - fy_front * delta.sin()) / m + vy * omega_z;
+        let dvy_dt = (fy_front * delta.cos() + fy_rear) / m - vx_safe * omega_z;
+        let domega_z_dt = (fy_front * delta.cos() * lf - fy_rear * lr) / iz;
+
         let dx_dt = vx_safe * psi.cos() - vy * psi.sin();
         let dy_dt = vx_safe * psi.sin() + vy * psi.cos();
         let dpsi_dt = omega_z;
@@ -282,6 +332,67 @@ mod tests {
         let (ff_brake, fr_brake) = params.axle_loads(50.0, -10.0);
         assert!(ff_brake > ff1, "front {} should exceed {}", ff_brake, ff1);
         assert!(fr_brake < fr1, "rear {} should be below {}", fr_brake, fr1);
+    }
+
+    #[test]
+    fn generic_matches_concrete() {
+        // The generic f64 dynamics must reproduce the concrete impl exactly, at
+        // several non-trivial operating points (the estimator's Jacobians are
+        // taken on this generic path, so any drift would silently bias them).
+        let params = CarParams::f1_2024_calibrated();
+        let tire = PacejkaTire::f1_default();
+        let model = f1_model(&params, &tire);
+
+        let states = [
+            [0.0, 0.0, 0.0, 50.0, 0.0, 0.0],
+            [10.0, -5.0, 0.3, 70.0, 1.5, 0.4],
+            [100.0, 200.0, -1.2, 30.0, -2.0, -0.6],
+            [0.0, 0.0, 2.0, 0.5, 0.1, 0.05], // below the vx guard
+        ];
+        let controls = [[0.0, 0.0], [0.05, 4000.0], [-0.08, -12000.0]];
+        for s in &states {
+            for c in &controls {
+                let concrete = model.derivatives(s, c, 0.0);
+                let generic = model.derivatives_generic(s, c, 0.0f64);
+                for i in 0..6 {
+                    let tol = 1e-9 * (1.0 + concrete[i].abs());
+                    assert!(
+                        (concrete[i] - generic[i]).abs() <= tol,
+                        "state {s:?} control {c:?} component {i}: {} vs {}",
+                        concrete[i],
+                        generic[i]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dual_jacobian_column_is_finite_and_plausible() {
+        // Seeding vy as the dual variable yields ∂(dvy/dt)/∂vy < 0 (lateral
+        // damping): a sanity check that the dual path differentiates the tire
+        // force chain correctly.
+        use apex_math::Dual;
+        let params = CarParams::f1_2024_calibrated();
+        let tire = PacejkaTire::f1_default();
+        let model = f1_model(&params, &tire);
+
+        let state = [
+            Dual::constant(0.0),
+            Dual::constant(0.0),
+            Dual::constant(0.0),
+            Dual::constant(60.0),
+            Dual::variable(1.0), // d/d(vy)
+            Dual::constant(0.2),
+        ];
+        let control = [Dual::constant(0.03), Dual::constant(3000.0)];
+        let d = model.derivatives_generic(&state, &control, Dual::constant(0.0));
+        assert!(d[4].dual.is_finite());
+        assert!(
+            d[4].dual < 0.0,
+            "∂(dvy/dt)/∂vy = {} should be negative (lateral damping)",
+            d[4].dual
+        );
     }
 
     #[test]

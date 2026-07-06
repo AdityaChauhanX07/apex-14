@@ -29,6 +29,8 @@
 /telemetry/*.csv
 # Alignment sidecars (derived from measured telemetry; stay local).
 /telemetry/*.align.toml
+# Estimator diagnostic sidecars (derived from measured telemetry; stay local).
+/telemetry/*.diag.json
 # Correlation report output (report.md + SVGs) — derived from measured data,
 # stays local. The hand-curated summary in docs/validation/ IS committed.
 /telemetry/correlation_out/

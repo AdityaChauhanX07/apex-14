@@ -52,6 +52,8 @@ pub enum CorrelateError {
     AlignFailed(&'static str),
     /// A `--free` identification parameter path is not recognized.
     UnknownFreeParam(String),
+    /// The state estimator received structurally unusable input.
+    EstimatorInput(&'static str),
 }
 
 impl fmt::Display for CorrelateError {
@@ -104,6 +106,7 @@ impl fmt::Display for CorrelateError {
             CorrelateError::UnknownFreeParam(p) => {
                 write!(f, "unknown identification parameter path `{p}`")
             }
+            CorrelateError::EstimatorInput(m) => write!(f, "estimator input error: {m}"),
         }
     }
 }

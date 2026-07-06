@@ -28,6 +28,7 @@
 mod align;
 pub mod driven;
 mod error;
+pub mod estimator;
 pub mod identify;
 mod importer;
 pub mod infer;
@@ -46,6 +47,10 @@ pub use driven::{
     DrivenResult, DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M, DEFAULT_N_FILTER_WINDOW_M,
 };
 pub use error::CorrelateError;
+pub use estimator::{
+    attach_estimated_channels, diagnostics_json, smooth_states, Diagnostics, EstimatorConfig,
+    SmootherResult,
+};
 pub use identify::{
     apply_params, identify, parse_free_param, FreeParam, IdentifyResult, ParamKind,
 };

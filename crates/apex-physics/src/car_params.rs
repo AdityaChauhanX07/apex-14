@@ -1,5 +1,7 @@
 //! Vehicle parameters shared across all model fidelities.
 
+use apex_math::Float;
+
 /// Standard gravitational acceleration (m/s²).
 pub const GRAVITY: f64 = 9.81;
 
@@ -219,6 +221,45 @@ impl CarParams {
         let fz_rr = (rear_total / 2.0 + dfz_rear).max(0.0);
 
         [fz_fl, fz_fr, fz_rl, fz_rr]
+    }
+
+    // --- generic (autodiff-capable) mirrors -------------------------------
+    //
+    // These reproduce `drag_force` / `downforce` / `axle_loads` over any
+    // `T: Float`, so the single-track dynamics can be differentiated with dual
+    // numbers (see `BicycleModel`'s `OdeSystemGeneric` impl). They are exact
+    // f64-for-f64 replicas of the concrete methods above; the estimator's
+    // Jacobians depend on that equivalence, and a test in `bicycle.rs` locks it.
+
+    /// Generic aerodynamic drag force: `0.5 · ρ · C_d · A · v²`.
+    pub fn drag_force_generic<T: Float>(&self, speed: T) -> T {
+        speed * speed * (0.5 * self.air_density * self.drag_coeff * self.frontal_area)
+    }
+
+    /// Generic aerodynamic downforce: `0.5 · ρ · C_l · A · v²`.
+    pub fn downforce_generic<T: Float>(&self, speed: T) -> T {
+        speed * speed * (0.5 * self.air_density * self.lift_coeff * self.frontal_area)
+    }
+
+    /// Generic front/rear axle vertical loads — the dual-number mirror of
+    /// [`axle_loads`](Self::axle_loads). Same static + aero + longitudinal-
+    /// transfer decomposition, same `.max(0.0)` floor.
+    pub fn axle_loads_generic<T: Float>(&self, speed: T, longitudinal_accel: T) -> (T, T) {
+        let weight = self.mass * GRAVITY;
+        let df = self.downforce_generic(speed);
+
+        let fz_front_static = T::from_f64(weight * self.cog_to_rear / self.wheelbase);
+        let fz_rear_static = T::from_f64(weight * self.cog_to_front / self.wheelbase);
+
+        let fz_front_aero = df * self.aero_balance_front;
+        let fz_rear_aero = df * (1.0 - self.aero_balance_front);
+
+        let wt = longitudinal_accel * (self.mass * self.cog_height / self.wheelbase);
+
+        let fz_front = (fz_front_static + fz_front_aero - wt).max(T::zero());
+        let fz_rear = (fz_rear_static + fz_rear_aero + wt).max(T::zero());
+
+        (fz_front, fz_rear)
     }
 }
 
