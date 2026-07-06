@@ -5,12 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["parquet"]
+# Parquet output (arrow-rs family). Default-on, but `--no-default-features`
+# keeps the crate light (no arrow/parquet). apex-telemetry is NOT in the wasm
+# graph, so this never touches wasm builds.
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
+
 [dependencies]
 apex-math = { path = "../apex-math" }
 apex-physics = { path = "../apex-physics" }
 apex-track = { path = "../apex-track" }
 serde = { version = "1", features = ["derive"] }
 csv = "1"
+parquet = { version = "59", optional = true, default-features = false, features = ["arrow"] }
+arrow-array = { version = "59", optional = true }
+arrow-schema = { version = "59", optional = true }
 
 [dev-dependencies]
 serde_json = "1"

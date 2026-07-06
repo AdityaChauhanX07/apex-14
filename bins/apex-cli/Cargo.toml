@@ -5,13 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["parquet"]
+# Parquet export (forwards to apex-telemetry/parquet). Default-on; disable with
+# --no-default-features to drop the arrow/parquet dependency.
+parquet = ["apex-telemetry/parquet"]
+
 [dependencies]
 apex-math = { path = "../../crates/apex-math" }
 clap = { version = "4", features = ["derive"] }
 apex-physics = { path = "../../crates/apex-physics" }
 apex-track = { path = "../../crates/apex-track" }
 apex-optimizer = { path = "../../crates/apex-optimizer" }
-apex-telemetry = { path = "../../crates/apex-telemetry" }
+apex-telemetry = { path = "../../crates/apex-telemetry", default-features = false }
 apex-correlate = { path = "../../crates/apex-correlate" }
 apex-race = { path = "../../crates/apex-race" }
 

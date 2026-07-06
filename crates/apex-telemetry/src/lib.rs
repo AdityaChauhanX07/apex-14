@@ -7,10 +7,18 @@
 
 pub mod channels;
 pub mod csv_export;
+pub mod motec;
+#[cfg(feature = "parquet")]
+pub mod parquet_export;
 pub mod run_metadata;
 pub mod svg_track;
 
 pub use channels::{ChannelId, ChannelSpec, Quantity, Unit, CHANNELS};
 pub use csv_export::{export_columns_csv, export_qss_csv};
+pub use motec::{export_ld, read_ld, Grid, LdOptions, LdReport, MotecError};
+#[cfg(feature = "parquet")]
+pub use parquet_export::{
+    export_channels_parquet, read_parquet, write_parquet, ParquetColumn, ParquetData, ParquetError,
+};
 pub use run_metadata::{now_rfc3339, settings_hash_for_mode, RunMetadata};
 pub use svg_track::render_track_svg;

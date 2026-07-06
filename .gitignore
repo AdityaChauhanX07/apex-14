@@ -36,6 +36,12 @@
 # Campaign output (per-circuit correlate dirs + summary.json) — derived, local.
 /telemetry/campaign/
 
+# Independent .ld verification reader (ldparser, GPL-3.0) is fetched on demand
+# to this local cache by tools/verify_ld.py — never vendored/committed (license
+# incompatible with this repo's MIT/Apache).
+/tools/.ldparser_cache/
+/tools/__pycache__/
+
 # OS files
 .DS_Store
 Thumbs.db

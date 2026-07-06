@@ -134,6 +134,39 @@ enum Commands {
         /// Output directory for report.md + SVGs
         #[arg(long)]
         out_dir: PathBuf,
+
+        /// Also write the aligned report grid (s, meas_speed, sim_speed) to
+        /// this Parquet file.
+        #[cfg(feature = "parquet")]
+        #[arg(long)]
+        parquet: Option<PathBuf>,
+    },
+
+    /// Export a standard telemetry CSV to a MoTeC i2 `.ld` log file
+    ExportLd {
+        /// Input telemetry CSV (standard Apex telemetry format)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Output `.ld` file path
+        #[arg(long)]
+        out: PathBuf,
+
+        /// Output sample rate (Hz). Default: nominal rate inferred from the data.
+        #[arg(long)]
+        rate: Option<u16>,
+    },
+
+    /// Export a standard telemetry CSV to an Apache Parquet file
+    #[cfg(feature = "parquet")]
+    ExportParquet {
+        /// Input telemetry CSV (standard Apex telemetry format)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Output `.parquet` file path
+        #[arg(long)]
+        out: PathBuf,
     },
 
     /// Identify car parameters by fitting the QSS driven-line sim to measured speed
@@ -406,6 +439,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             n_filter,
             driven_smooth_tolerance,
             out_dir,
+            #[cfg(feature = "parquet")]
+            parquet,
         } => cmd_correlate(
             telemetry,
             track,
@@ -417,7 +452,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             n_filter,
             driven_smooth_tolerance,
             out_dir,
+            #[cfg(feature = "parquet")]
+            parquet,
         ),
+        Commands::ExportLd {
+            telemetry,
+            out,
+            rate,
+        } => cmd_export_ld(telemetry, out, rate),
+        #[cfg(feature = "parquet")]
+        Commands::ExportParquet { telemetry, out } => cmd_export_parquet(telemetry, out),
         Commands::Identify {
             telemetry,
             track,
@@ -799,6 +843,7 @@ fn cmd_correlate(
     n_filter: f64,
     driven_smooth_tolerance: f64,
     out_dir: PathBuf,
+    #[cfg(feature = "parquet")] parquet: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use apex_correlate::report::{correlate, write_report, CorrelationConfig, SimTrace};
     use apex_correlate::{driven_sim_trace, import_telemetry, Mapping};
@@ -849,6 +894,13 @@ fn cmd_correlate(
 
     // 5. Write report.md + SVGs.
     let report_path = write_report(&out_dir, &result, &measured, &meta, &trk)?;
+
+    // Optional: aligned report grid → Parquet (measured + sim speed side by side).
+    #[cfg(feature = "parquet")]
+    if let Some(pq_path) = parquet {
+        write_correlation_parquet(&pq_path, &result, &meta)?;
+        println!("Aligned grid Parquet written to {}", pq_path.display());
+    }
 
     // 6. Console summary.
     println!("{}", result.headline(&trk.name));
@@ -915,6 +967,165 @@ fn cmd_correlate(
     }
 
     println!("\nReport written to {}", report_path.display());
+    Ok(())
+}
+
+/// Load a standard telemetry CSV and return its grid, ordered columns (axis
+/// channel first, then registry order — matching the CSV writer), and the
+/// descriptive header metadata.
+#[allow(clippy::type_complexity)]
+fn load_standard_telemetry(
+    telemetry: &std::path::Path,
+) -> Result<
+    (
+        apex_correlate::GridKind,
+        Vec<(apex_telemetry::ChannelId, Vec<f64>)>,
+        Vec<(String, String)>,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    use apex_correlate::{import_telemetry, Mapping};
+
+    let tel = import_telemetry(telemetry, &Mapping::identity())?;
+    let axis = tel.grid.axis_channel();
+    let mut ordered: Vec<apex_telemetry::ChannelId> = Vec::with_capacity(tel.channels.len());
+    if tel.channels.contains_key(&axis) {
+        ordered.push(axis);
+    }
+    for &id in tel.channels.keys() {
+        if id != axis {
+            ordered.push(id);
+        }
+    }
+    let columns: Vec<(apex_telemetry::ChannelId, Vec<f64>)> = ordered
+        .iter()
+        .map(|&id| (id, tel.channel(id).unwrap_or(&[]).to_vec()))
+        .collect();
+    Ok((tel.grid, columns, tel.metadata))
+}
+
+fn cmd_export_ld(
+    telemetry: PathBuf,
+    out: PathBuf,
+    rate: Option<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::GridKind;
+    use apex_telemetry::motec::{export_ld, Grid, LdOptions};
+
+    let (grid, columns, metadata) = load_standard_telemetry(&telemetry)?;
+    let grid = match grid {
+        GridKind::S => Grid::Distance,
+        GridKind::T => Grid::Time,
+    };
+    let borrowed: Vec<(apex_telemetry::ChannelId, &[f64])> =
+        columns.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+
+    let opts = LdOptions {
+        sample_rate_hz: rate,
+        timestamp: apex_telemetry::now_rfc3339(),
+    };
+    let report = export_ld(&out, grid, &borrowed, &metadata, &opts)?;
+
+    println!("Wrote MoTeC .ld: {}", out.display());
+    println!(
+        "  {} channels, {} samples @ {} Hz ({:.2} s)",
+        report.channels.len(),
+        report.n_samples,
+        report.sample_rate_hz,
+        report.duration_s
+    );
+    if report.gap_filled_samples > 0 {
+        println!(
+            "  {} sample(s) gap-filled (hold-last); see the `gap_fill` marker channel",
+            report.gap_filled_samples
+        );
+    }
+    println!("  channels: {}", channel_summary(&report.channels));
+    Ok(())
+}
+
+/// Compact `name[unit]` summary of a channel list.
+fn channel_summary(channels: &[(String, String)]) -> String {
+    channels
+        .iter()
+        .map(|(n, u)| {
+            if u.is_empty() {
+                n.clone()
+            } else {
+                format!("{n}[{u}]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(feature = "parquet")]
+fn cmd_export_parquet(telemetry: PathBuf, out: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_telemetry::export_channels_parquet;
+
+    let (grid, columns, metadata) = load_standard_telemetry(&telemetry)?;
+    let borrowed: Vec<(apex_telemetry::ChannelId, &[f64])> =
+        columns.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+    // Measured/inferred data: descriptive provenance only, no RunMetadata.
+    export_channels_parquet(&out, &borrowed, Some(grid.as_str()), &metadata, None)?;
+
+    let rows = columns.first().map(|(_, v)| v.len()).unwrap_or(0);
+    println!("Wrote Parquet: {}", out.display());
+    println!(
+        "  {} columns, {} rows (grid: {})",
+        columns.len(),
+        rows,
+        grid.as_str()
+    );
+    Ok(())
+}
+
+/// Write the aligned correlation grid (measured + sim speed side by side) to a
+/// Parquet file. Columns are explicitly prefixed (`meas_speed` / `sim_speed`)
+/// since they mix two sources; provenance is the documented hybrid (sim
+/// `RunMetadata` under `run.*`, measured descriptive verbatim).
+#[cfg(feature = "parquet")]
+fn write_correlation_parquet(
+    path: &std::path::Path,
+    result: &apex_correlate::CorrelationResult,
+    meta: &apex_telemetry::RunMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_telemetry::{write_parquet, ParquetColumn};
+
+    let columns = vec![
+        ParquetColumn {
+            name: "s",
+            unit: "m",
+            data: &result.grid_s,
+        },
+        ParquetColumn {
+            name: "meas_speed",
+            unit: "m/s",
+            data: &result.meas_v,
+        },
+        ParquetColumn {
+            name: "sim_speed",
+            unit: "m/s",
+            data: &result.sim_v,
+        },
+    ];
+    let mut kv: Vec<(String, String)> = vec![
+        ("grid".into(), "s".into()),
+        ("sim_line".into(), result.sim_label.clone()),
+    ];
+    // Sim-side reproducible provenance (RunMetadata) under run.* keys.
+    kv.push(("run.config_hash".into(), meta.config_hash.to_hex()));
+    kv.push(("run.car_hash".into(), meta.car_hash.to_hex()));
+    kv.push(("run.track_hash".into(), meta.track_hash.to_hex()));
+    kv.push(("run.settings_hash".into(), meta.settings_hash.to_hex()));
+    kv.push(("run.git_sha".into(), meta.git_sha.clone()));
+    kv.push(("run.apex_version".into(), meta.apex_version.clone()));
+    kv.push(("run.timestamp".into(), meta.timestamp.clone()));
+    // Measured-side descriptive provenance (verbatim), prefixed to avoid clashes.
+    for (k, v) in &result.measured_meta {
+        kv.push((format!("measured.{k}"), v.clone()));
+    }
+    write_parquet(path, &columns, &kv)?;
     Ok(())
 }
 
