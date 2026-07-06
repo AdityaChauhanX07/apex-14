@@ -11,10 +11,13 @@ license = "MIT OR Apache-2.0"
 #
 # Deps are intentionally light. This crate is NOT in the wasm (web-viewer) graph
 # — it does file I/O and TOML parsing — and must stay out of it. `apex-track` is
-# used by the alignment/projection modules (centerline geometry queries).
+# used by the alignment/projection modules (centerline geometry queries);
+# `apex-physics` supplies the QSS comparison engine and the shared sector-split
+# definition for the correlation report.
 [dependencies]
 apex-telemetry = { path = "../apex-telemetry" }
 apex-track = { path = "../apex-track" }
+apex-physics = { path = "../apex-physics" }
 serde = { version = "1", features = ["derive"] }
 csv = "1"
 toml = "0.8"

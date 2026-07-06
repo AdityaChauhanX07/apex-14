@@ -123,3 +123,19 @@ misleading. Measured files therefore carry only **descriptive** provenance
 version) and MUST NOT include the sim `*_hash` fields. The `git_sha` /
 `timestamp` of the exporting tool MAY be recorded as ordinary comment lines but
 are not part of a `RunMetadata` block.
+
+### Hybrid provenance on correlation artifacts
+
+Some artifacts mix the two. The `apex-14 correlate` overlays (speed-vs-`s` SVG,
+driver-inputs SVG) compare a **sim** trace against a **measured** trace, so they
+carry **both**:
+
+- a full sim-side `RunMetadata` block (as an SVG `<metadata>` element) —
+  `config_hash` / `car_hash` / `track_hash` / `settings_hash` etc. — describing
+  the QSS run, which *is* reproducible-by-hash; plus
+- **descriptive** measured-source lines (session identifiers from the measured
+  file header) as an XML comment — never sim hashes for the measured side.
+
+This hybrid is deliberate: the sim inputs are hash-pinned, the measured inputs
+are descriptive. The generated `report.md` mirrors it — a `RunMetadata` hash
+block for the sim and a plain key/value list for the measured source.

@@ -255,6 +255,7 @@ dependencies = [
 name = "apex-correlate"
 version = "0.1.0"
 dependencies = [
+ "apex-physics",
  "apex-telemetry",
  "apex-track",
  "csv",

@@ -83,6 +83,33 @@ enum Commands {
         name: String,
     },
 
+    /// Correlate measured telemetry against a QSS sim (deltas, RMSE, corners)
+    Correlate {
+        /// Aligned telemetry CSV (standard format, with projected `s` + `speed`)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Track file (Apex-14 JSON or TUMFTM CSV)
+        #[arg(long)]
+        track: PathBuf,
+
+        /// Use calibrated F1 2024 parameters
+        #[arg(long, default_value_t = false)]
+        calibrated: bool,
+
+        /// Car configuration file (TOML), overrides the base preset
+        #[arg(long)]
+        car: Option<PathBuf>,
+
+        /// Common-grid resample step (m)
+        #[arg(long, default_value_t = 10.0)]
+        grid_step: f64,
+
+        /// Output directory for report.md + SVGs
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+
     /// Align measured telemetry to a track frame and project GPS to (s, n)
     TelemetryAlign {
         /// Input telemetry CSV (standard Apex telemetry format, with x/y)
@@ -265,6 +292,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             name,
         } => cmd_import_track(input, output, name),
+        Commands::Correlate {
+            telemetry,
+            track,
+            calibrated,
+            car,
+            grid_step,
+            out_dir,
+        } => cmd_correlate(telemetry, track, calibrated, car, grid_step, out_dir),
         Commands::TelemetryAlign {
             telemetry,
             track,
@@ -511,6 +546,110 @@ fn cmd_import_track(
     std::fs::write(&output, json)?;
     println!("Exported to {}", output.display());
 
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_correlate(
+    telemetry: PathBuf,
+    track: PathBuf,
+    calibrated: bool,
+    car: Option<PathBuf>,
+    grid_step: f64,
+    out_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::report::{correlate, write_report, CorrelationConfig};
+    use apex_correlate::{import_telemetry, Mapping};
+
+    // 1. Measured telemetry (aligned, standard format → identity mapping).
+    let measured = import_telemetry(&telemetry, &Mapping::identity())?;
+    // 2. Track + car.
+    let trk = load_track_from_path(&track)?;
+    let params = load_car_params(car, calibrated)?;
+    // 3. QSS sim (the comparison engine).
+    let sim = apex_physics::qss_lap_sim(&trk, &params);
+    // 4. Sim-side provenance (RunMetadata). QSS has no RNG / tunable solver.
+    let meta = apex_telemetry::RunMetadata::new(
+        apex_physics::car_params_hash(&params),
+        apex_track::processed_track_hash(&trk),
+        apex_telemetry::settings_hash_for_mode("correlate.qss.grip-circle"),
+        None,
+    );
+
+    let config = CorrelationConfig {
+        grid_step,
+        ..CorrelationConfig::default()
+    };
+    let result = correlate(&measured, &trk, &sim, config)?;
+
+    // 5. Write report.md + SVGs.
+    let report_path = write_report(&out_dir, &result, &measured, &meta, &trk)?;
+
+    // 6. Console summary.
+    println!("{}", result.headline(&trk.name));
+    println!();
+    println!(
+        "Lap: measured {:.3} s, sim {:.3} s, delta {:+.3} s",
+        result.measured_lap_from_t, result.lap.sim, result.lap.delta
+    );
+    if let Some(d) = result.lap_time_mismatch {
+        println!(
+            "  !! measured header lap-time and t-span disagree by {:.3} s",
+            d
+        );
+    }
+    print!("Sectors (equal-arc thirds — NOT official F1): ");
+    for i in 0..result.sectors.delta.len() {
+        print!("S{} {:+.3}s  ", i + 1, result.sectors.delta[i]);
+    }
+    println!();
+    println!(
+        "Speed RMSE {:.3} m/s over {:.0} m; max |Δv| {:.2} m/s at s={:.0} m",
+        result.rmse.rmse, result.span, result.rmse.max_abs, result.rmse.s_at_max
+    );
+    println!(
+        "Sim carries most extra speed {:+.2} m/s @ s={:.0} m; most below {:+.2} m/s @ s={:.0} m",
+        result.sim_fastest_dv, result.sim_fastest_s, result.sim_slowest_dv, result.sim_slowest_s
+    );
+    println!("\nCorners detected: {}", result.corners.len());
+
+    // 5 largest apex-speed errors (by |delta|).
+    let mut apex = result.apex.clone();
+    apex.sort_by(|a, b| b.delta.abs().partial_cmp(&a.delta.abs()).unwrap());
+    println!("Top-5 apex-speed errors (sim − measured):");
+    for a in apex.iter().take(5) {
+        println!(
+            "  s={:5.0} m  measured {:5.2}  sim {:5.2}  Δ {:+.2} m/s",
+            a.s, a.v_measured, a.v_sim, a.delta
+        );
+    }
+
+    // 5 largest braking-point offsets (by |offset|).
+    let mut brk: Vec<_> = result
+        .braking
+        .iter()
+        .filter(|b| b.offset.is_some())
+        .cloned()
+        .collect();
+    brk.sort_by(|a, b| {
+        b.offset
+            .unwrap()
+            .abs()
+            .partial_cmp(&a.offset.unwrap().abs())
+            .unwrap()
+    });
+    println!("Top-5 braking-point offsets (sim − measured, + = sim brakes later):");
+    for b in brk.iter().take(5) {
+        println!(
+            "  corner s={:5.0} m  measured onset {:5.0}  sim onset {:5.0}  offset {:+.0} m",
+            b.corner_s,
+            b.s_measured.unwrap(),
+            b.s_sim.unwrap(),
+            b.offset.unwrap()
+        );
+    }
+
+    println!("\nReport written to {}", report_path.display());
     Ok(())
 }
 
