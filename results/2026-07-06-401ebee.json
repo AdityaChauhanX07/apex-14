@@ -1,0 +1,101 @@
+{
+  "git_sha": "401ebee",
+  "timestamp": "2026-07-06T00:47:21Z",
+  "results": [
+    {
+      "id": "dynamics_rhs/point_mass_4",
+      "mean_ns": 10.330147234913738,
+      "unit": "ns"
+    },
+    {
+      "id": "dynamics_rhs/single_track_6",
+      "mean_ns": 114.34180526814902,
+      "unit": "ns"
+    },
+    {
+      "id": "dynamics_rhs/four_wheel_10",
+      "mean_ns": 338.81094321259314,
+      "unit": "ns"
+    },
+    {
+      "id": "dynamics_rhs/fourteen_dof_24",
+      "mean_ns": 588.8448519705291,
+      "unit": "ns"
+    },
+    {
+      "id": "integrator/rk4_step_2dof",
+      "mean_ns": 68.55754669139262,
+      "unit": "ns"
+    },
+    {
+      "id": "integrator/rk4_step_10state",
+      "mean_ns": 33.42591543033272,
+      "unit": "ns"
+    },
+    {
+      "id": "integrator/rk4_integrate_2dof_1000steps",
+      "mean_ns": 72620.89670009997,
+      "unit": "ns"
+    },
+    {
+      "id": "integrator/rk45_step_2dof",
+      "mean_ns": 161.95446454461396,
+      "unit": "ns"
+    },
+    {
+      "id": "optimizer/equality_jacobian_autodiff_n50",
+      "mean_ns": 110268.62261905608,
+      "unit": "ns"
+    },
+    {
+      "id": "optimizer/equality_jacobian_numerical_n50",
+      "mean_ns": 3851123.910769229,
+      "unit": "ns"
+    },
+    {
+      "id": "optimizer/gn_single_iteration_n30",
+      "mean_ns": 485119.71067716315,
+      "unit": "ns"
+    },
+    {
+      "id": "suspension/forces",
+      "mean_ns": 7.000946141486533,
+      "unit": "ns"
+    },
+    {
+      "id": "suspension/static_equilibrium",
+      "mean_ns": 583.061918981566,
+      "unit": "ns"
+    },
+    {
+      "id": "fourteen_dof/derivatives",
+      "mean_ns": 606.322324228978,
+      "unit": "ns"
+    },
+    {
+      "id": "tire/lateral_force_f64",
+      "mean_ns": 42.90398956174668,
+      "unit": "ns"
+    },
+    {
+      "id": "tire/combined_forces",
+      "mean_ns": 97.72736793845478,
+      "unit": "ns"
+    },
+    {
+      "id": "tire/combined_forces_smooth",
+      "mean_ns": 133.91619352563995,
+      "unit": "ns"
+    },
+    {
+      "id": "tire/lateral_force_dual",
+      "mean_ns": 64.73575020074829,
+      "unit": "ns"
+    },
+    {
+      "id": "tire/lateral_force_generic_f64",
+      "mean_ns": 41.89207842460604,
+      "unit": "ns"
+    }
+  ]
+}
