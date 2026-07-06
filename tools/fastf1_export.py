@@ -34,7 +34,7 @@ from pathlib import Path
 
 # Script version — bumped when the output format/semantics change. Recorded in
 # the CSV header for provenance.
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 
 # Cache directory for FastF1's HTTP cache (kept local; see telemetry/README.md).
 CACHE_DIR = Path("telemetry/.fastf1_cache")
@@ -72,7 +72,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument(
         "--gp",
         required=True,
-        help='Grand Prix name or round, e.g. "Great Britain" or "9"',
+        help='Grand Prix name or round, e.g. "British Grand Prix", "Silverstone", or "12"',
     )
     p.add_argument(
         "--session",
@@ -91,11 +91,58 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument(
         "--out",
-        required=True,
+        default=None,
         type=Path,
-        help="Output CSV path, e.g. telemetry/silverstone_2024_Q_VER.csv",
+        help=(
+            "Output CSV path. Default: telemetry/<location>_<year>_<session>_<driver>.csv "
+            "derived from the RESOLVED session metadata (never from --gp)."
+        ),
+    )
+    p.add_argument(
+        "--allow-fuzzy",
+        action="store_true",
+        help=(
+            "Permit FastF1's fuzzy event matcher to resolve --gp to a materially "
+            "different event name. Without this, a fuzzy mismatch is a hard error "
+            "(guards against e.g. 'Great Britain' silently resolving to Austria)."
+        ),
     )
     return p.parse_args(argv)
+
+
+def _norm(s) -> str:
+    """Lowercase, keep only alphanumerics — for tolerant event-name comparison."""
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+
+def event_matches(requested: str, name, location, official, round_number) -> bool:
+    """True if `requested` plausibly names the resolved event.
+
+    Accepts an exact round number, or a normalized (case/punctuation-insensitive)
+    match / substring against the resolved event name, circuit location, or
+    official name. A materially different string (e.g. 'Great Britain' vs
+    'British Grand Prix'/'Silverstone') does NOT match — that must be an explicit
+    --allow-fuzzy decision.
+    """
+    req_raw = str(requested).strip()
+    if req_raw.isdigit():
+        try:
+            return int(req_raw) == int(round_number)
+        except (TypeError, ValueError):
+            return False
+    r = _norm(requested)
+    if not r:
+        return False
+    for cand in (name, location, official):
+        c = _norm(cand)
+        if c and (r == c or r in c or c in r):
+            return True
+    return False
+
+
+def _slug(s) -> str:
+    """A filename-safe lowercase slug of a resolved metadata string."""
+    return "".join(ch if ch.isalnum() else "_" for ch in str(s).strip().lower()).strip("_")
 
 
 def load_fastf1():
@@ -227,29 +274,122 @@ def main(argv=None) -> int:
     except Exception as e:  # noqa: BLE001
         die(f"failed to load session data: {e}")
 
+    # --- Resolve the ACTUAL event from the loaded session, and guard against
+    # FastF1's fuzzy matcher having silently corrected --gp to another event.
+    ev = _event_fields(session, args.year)
+    print("=" * 64)
+    print(f"  requested --gp : {args.gp!r}")
+    print(f"  RESOLVED event : {ev['name']}  (round {ev['round']}, {ev['location']})")
+    print(f"  session date   : {ev['date']}   year {ev['year']}   session {args.session}")
+    print("=" * 64)
+
+    if not event_matches(args.gp, ev["name"], ev["location"], ev["official"], ev["round"]):
+        if not args.allow_fuzzy:
+            die(
+                f"requested --gp {args.gp!r} resolved to a DIFFERENT event: "
+                f"{ev['name']!r} at {ev['location']!r} (round {ev['round']}). "
+                "FastF1's fuzzy matcher may have corrected the name. If this is "
+                "intended, re-run with --allow-fuzzy; otherwise fix --gp."
+            )
+        print(
+            "fastf1_export: warning: --gp did not match the resolved event; "
+            "proceeding because --allow-fuzzy was given.",
+            file=sys.stderr,
+        )
+
     lap = select_lap(session, args.driver, args.lap)
     frame = build_frame(lap)
 
     driver = args.driver if args.driver is not None else _lap_driver(lap)
     lap_number = _lap_number(lap)
+    lap_time = _lap_time(lap)
+
+    # Header + default output filename derive ONLY from resolved metadata.
     header_meta = {
         "source": "fastf1",
-        "year": args.year,
-        "gp": args.gp,
+        "year": ev["year"],
+        "event": ev["name"],
+        "official_event": ev["official"],
+        "location": ev["location"],
+        "round": ev["round"],
         "session": args.session,
+        "session_date": ev["date"],
         "driver": driver,
         "lap": lap_number,
+        "lap_time_s": lap_time,
+        "requested_gp": args.gp,  # recorded for traceability, not authoritative
         "fastf1_version": getattr(fastf1, "__version__", "unknown"),
         "exporter": "tools/fastf1_export.py",
         "exporter_version": SCRIPT_VERSION,
     }
 
-    write_csv(args.out, frame, header_meta)
+    out_path = args.out
+    if out_path is None:
+        loc = _slug(ev["location"]) or _slug(ev["name"]) or "session"
+        out_path = Path("telemetry") / f"{loc}_{ev['year']}_{args.session}_{driver}.csv"
+
+    write_csv(out_path, frame, header_meta)
     print(
-        f"wrote {len(frame)} samples -> {args.out} "
-        f"({args.year} {args.gp} {args.session} {driver} lap {lap_number})"
+        f"wrote {len(frame)} samples -> {out_path} "
+        f"({ev['name']} {args.session} {driver} lap {lap_number}, "
+        f"lap time {lap_time}s)"
     )
     return 0
+
+
+def _event_fields(session, fallback_year) -> dict:
+    """Read resolved event metadata defensively from the loaded session."""
+    ev = getattr(session, "event", None)
+
+    def field(*keys, default="unknown"):
+        for k in keys:
+            try:
+                val = ev[k]
+            except Exception:  # noqa: BLE001
+                continue
+            if val is not None and str(val) != "nan":
+                return val
+        return default
+
+    name = field("EventName")
+    official = field("OfficialEventName", default=name)
+    location = field("Location", "Country")
+    round_number = field("RoundNumber", default="unknown")
+
+    # Year and date from the event date if available, else the session date.
+    year = fallback_year
+    date_str = "unknown"
+    try:
+        ed = ev["EventDate"]
+        year = int(ed.year)
+        date_str = ed.date().isoformat()
+    except Exception:  # noqa: BLE001
+        sd = getattr(session, "date", None)
+        if sd is not None:
+            try:
+                year = int(sd.year)
+                date_str = sd.date().isoformat()
+            except Exception:  # noqa: BLE001
+                pass
+
+    return {
+        "name": name,
+        "official": official,
+        "location": location,
+        "round": round_number,
+        "year": year,
+        "date": date_str,
+    }
+
+
+def _lap_time(lap):
+    """Lap time in seconds (float) if available, else 'unknown'."""
+    try:
+        lt = lap["LapTime"]
+        secs = lt.total_seconds()
+        return round(secs, 3) if secs == secs else "unknown"  # guard NaT/NaN
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def _lap_driver(lap):

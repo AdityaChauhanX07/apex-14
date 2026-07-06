@@ -83,6 +83,21 @@ enum Commands {
         name: String,
     },
 
+    /// Align measured telemetry to a track frame and project GPS to (s, n)
+    TelemetryAlign {
+        /// Input telemetry CSV (standard Apex telemetry format, with x/y)
+        #[arg(long)]
+        telemetry: PathBuf,
+
+        /// Track file (Apex-14 JSON or TUMFTM CSV) providing the centerline
+        #[arg(long)]
+        track: PathBuf,
+
+        /// Output aligned CSV path (projected s/s_raw/x/y/lateral_offset)
+        #[arg(long)]
+        out: PathBuf,
+    },
+
     /// List available built-in tracks
     Tracks,
 
@@ -250,6 +265,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             name,
         } => cmd_import_track(input, output, name),
+        Commands::TelemetryAlign {
+            telemetry,
+            track,
+            out,
+        } => cmd_telemetry_align(telemetry, track, out),
         Commands::Tracks => cmd_tracks(),
         Commands::CarInfo {
             car,
@@ -492,6 +512,174 @@ fn cmd_import_track(
     println!("Exported to {}", output.display());
 
     Ok(())
+}
+
+fn cmd_telemetry_align(
+    telemetry: PathBuf,
+    track: PathBuf,
+    out: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_correlate::{
+        fit_alignment, import_telemetry, project_to_track, write_telemetry_csv, AlignConfig,
+        Mapping,
+    };
+
+    println!(
+        "Aligning telemetry {} to track {}",
+        telemetry.display(),
+        track.display()
+    );
+    // 1. Import measured telemetry (already registry names/units → identity map).
+    let tel = import_telemetry(&telemetry, &Mapping::identity())?;
+    println!("  telemetry: {} samples", tel.len());
+
+    // 2. Load the centerline.
+    let trk = load_track_from_path(&track)?;
+    println!(
+        "  track: {} ({:.1} m, {} segments)",
+        trk.name,
+        trk.total_length,
+        trk.segments.len()
+    );
+
+    // 3. Fit the similarity transform.
+    let align = fit_alignment(&tel, &trk, AlignConfig::default())?;
+    let theta_deg = align.transform.theta.to_degrees();
+    println!("\n=== Alignment fit ===");
+    println!("  rotation:   {:.3} deg", theta_deg);
+    println!("  scale:      {:.5}", align.transform.scale);
+    println!(
+        "  translation: ({:.2}, {:.2}) m",
+        align.transform.tx, align.transform.ty
+    );
+    println!("  reflection: {}", align.transform.reflect);
+    println!("  direction reversed: {}", align.direction_reversed);
+    println!("  s_offset:   {:.2} m", align.s_offset);
+    println!("  post-fit RMS: {:.3} m", align.rms);
+    println!("  max closest-point distance: {:.3} m", align.max_dist);
+    if (align.transform.scale - 1.0).abs() > 0.05 {
+        println!(
+            "  !! WARNING: scale {:.4} deviates >5% from 1.0 — frames may not both be metres",
+            align.transform.scale
+        );
+    }
+    let half_width = 0.5
+        * trk
+            .segments
+            .iter()
+            .map(|s| s.width_left + s.width_right)
+            .sum::<f64>()
+        / trk.segments.len() as f64;
+    if align.rms > half_width {
+        println!(
+            "  !! WARNING: RMS {:.2} m exceeds mean half-width {:.2} m",
+            align.rms, half_width
+        );
+    }
+
+    // 4. Persist the sidecar (flat scalar TOML) next to the telemetry file.
+    let sidecar_path = sidecar_for(&telemetry);
+    let sidecar = format!(
+        "# Fitted FastF1-local → track-frame similarity transform.\n\
+         # Derived from measured telemetry; keep local (gitignored).\n\
+         scale = {:.8}\n\
+         rotation_rad = {:.8}\n\
+         rotation_deg = {:.6}\n\
+         tx = {:.6}\n\
+         ty = {:.6}\n\
+         reflection = {}\n\
+         direction_reversed = {}\n\
+         s_offset = {:.6}\n\
+         rms = {:.6}\n\
+         max_dist = {:.6}\n\
+         telemetry = {:?}\n\
+         track = {:?}\n",
+        align.transform.scale,
+        align.transform.theta,
+        theta_deg,
+        align.transform.tx,
+        align.transform.ty,
+        align.transform.reflect,
+        align.direction_reversed,
+        align.s_offset,
+        align.rms,
+        align.max_dist,
+        telemetry.display().to_string(),
+        track.display().to_string(),
+    );
+    std::fs::write(&sidecar_path, sidecar)?;
+    println!("\n  wrote alignment sidecar: {}", sidecar_path.display());
+
+    // 5. Project GPS → (s, n).
+    let (mut aligned, stats) = project_to_track(&tel, &trk, &align.transform)?;
+    println!("\n=== Projection ===");
+    println!(
+        "  s_proj span: {:.1} m   (FastF1 raw s span: {:.1} m, diff {:.1} m)",
+        stats.s_proj_span,
+        stats.s_raw_span,
+        stats.s_proj_span - stats.s_raw_span
+    );
+    println!(
+        "  lateral_offset n: min {:.2}  max {:.2}  RMS {:.2} m",
+        stats.n_min, stats.n_max, stats.n_rms
+    );
+    println!(
+        "  within track bounds: {:.1}%   max |dist|: {:.2} m   non-monotone samples: {}",
+        stats.frac_within_bounds * 100.0,
+        stats.max_dist,
+        stats.non_monotone
+    );
+
+    // 6. Aligned CSV carries descriptive provenance + transform params in the
+    //    header (no RunMetadata sim hashes — this is derived-from-measured data).
+    aligned
+        .metadata
+        .push(("aligned_to_track".into(), trk.name.clone()));
+    aligned
+        .metadata
+        .push(("align_rotation_deg".into(), format!("{theta_deg:.4}")));
+    aligned.metadata.push((
+        "align_scale".into(),
+        format!("{:.6}", align.transform.scale),
+    ));
+    aligned.metadata.push((
+        "align_translation_m".into(),
+        format!("{:.3},{:.3}", align.transform.tx, align.transform.ty),
+    ));
+    aligned.metadata.push((
+        "align_reflection".into(),
+        align.transform.reflect.to_string(),
+    ));
+    aligned.metadata.push((
+        "align_direction_reversed".into(),
+        align.direction_reversed.to_string(),
+    ));
+    aligned
+        .metadata
+        .push(("align_s_offset_m".into(), format!("{:.3}", align.s_offset)));
+    aligned
+        .metadata
+        .push(("align_rms_m".into(), format!("{:.4}", align.rms)));
+    aligned.metadata.push((
+        "lateral_offset_sign".into(),
+        "positive = left of centerline (direction of travel)".into(),
+    ));
+
+    write_telemetry_csv(&out, &aligned)?;
+    println!("\n  wrote aligned telemetry: {}", out.display());
+    Ok(())
+}
+
+/// Derive the alignment sidecar path from a telemetry path:
+/// `foo/bar.csv` → `foo/bar.align.toml`.
+fn sidecar_for(telemetry: &std::path::Path) -> PathBuf {
+    let stem = telemetry
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("telemetry");
+    let mut p = telemetry.to_path_buf();
+    p.set_file_name(format!("{stem}.align.toml"));
+    p
 }
 
 fn cmd_tracks() -> Result<(), Box<dyn std::error::Error>> {

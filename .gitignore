@@ -10,6 +10,12 @@
 # hand-written, and required by the apex-correlate importer tests).
 !crates/apex-correlate/tests/fixtures/*.csv
 
+# TUMFTM-derived local track imports (LGPL-3.0 data, not redistributed — see
+# tracks/README.md). The committed sample tracks (test_circle.json,
+# oval_simple.json) are NOT matched by these patterns.
+/tracks/silverstone.json
+/tracks/*.tumftm.json
+
 # --- Measured telemetry (apex-correlate / FastF1 bridge) ---
 # Derived telemetry CSVs and the FastF1 HTTP cache stay LOCAL for now. FastF1
 # serves official F1/FOM timing data whose redistribution terms we are not
@@ -19,6 +25,8 @@
 # clarity and to also ignore the binary cache directory.
 /telemetry/.fastf1_cache/
 /telemetry/*.csv
+# Alignment sidecars (derived from measured telemetry; stay local).
+/telemetry/*.align.toml
 
 # OS files
 .DS_Store

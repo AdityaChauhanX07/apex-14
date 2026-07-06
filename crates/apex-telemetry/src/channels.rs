@@ -219,6 +219,7 @@ macro_rules! define_channels {
 define_channels! {
     // --- geometry / position (Distance, meters) ---
     S               : "s",                 Meter,          Distance,        "Distance",       "Arc length along the track centerline";
+    SRaw            : "s_raw",              Meter,          Distance,        "Distance (raw)", "Raw source arc length before geometric re-projection (e.g. FastF1 integrated Distance)";
     X               : "x",                 Meter,          Distance,        "X",              "World X coordinate of the centerline point";
     Y               : "y",                 Meter,          Distance,        "Y",              "World Y coordinate of the centerline point";
     PosX            : "pos_x",             Meter,          Distance,        "Pos X",          "Vehicle world X position";
@@ -452,6 +453,8 @@ mod tests {
                 Unit::Radian,
                 Quantity::Angle,
             ),
+            // s_raw: raw source arc length kept alongside re-projected `s`.
+            (ChannelId::SRaw, "s_raw", Unit::Meter, Quantity::Distance),
         ];
         for (id, name, unit, quantity) in cases {
             assert_eq!(id.name(), name);

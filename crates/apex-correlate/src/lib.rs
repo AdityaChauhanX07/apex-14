@@ -25,17 +25,21 @@
 //!   linear interpolation; gaps longer than a threshold stay `NaN`.
 //! - [`write_telemetry_csv`] writes the standard format back out.
 
+mod align;
 mod error;
 mod importer;
 mod mapping;
+mod project;
 mod resample;
 mod telemetry;
 mod units;
 mod writer;
 
+pub use align::{fit_alignment, AlignConfig, AlignResult, Similarity};
 pub use error::CorrelateError;
 pub use importer::import_telemetry;
 pub use mapping::{ColumnMap, Mapping, UnknownColumns};
+pub use project::{closest_point, project_to_track, ProjectStats, Projection};
 pub use telemetry::{GridKind, Telemetry};
 pub use units::conversion_factor;
 pub use writer::write_telemetry_csv;

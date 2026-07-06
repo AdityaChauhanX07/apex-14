@@ -82,7 +82,28 @@ registry, so a handful of driver-input / powertrain channels were appended
 | `brake` | — (dimensionless) | `Dimensionless` | 0…1 fraction, or a 0/1 on-off flag (FastF1 exposes a boolean). |
 | `rpm` | `rpm` | `AngularVelocity` | Engine speed. Modelled as an **angular velocity with its own display unit** (`Unit::Rpm`, symbol `rpm`), not a `Count`: it is a genuine physical rotational speed, and keeping `rpm` as the canonical unit avoids a lossy rpm→rad/s round-trip on the raw ECU value. (Grouped under `AngularVelocity` for coarse plot binning; it is not co-plotted with the rad/s wheel-speed channels.) |
 | `steering_angle` | `rad` | `Angle` | Measured steering channel; degree sources convert via `Unit::si_factor()`. |
+| `s_raw` | `m` | `Distance` | Raw source arc length (e.g. FastF1 integrated `Distance`) kept alongside the re-projected geometric `s` after track alignment. |
 
 `x`, `y` (world position) and `gear` already existed and are reused as-is for
-measured telemetry — note the FastF1 `x`/`y` frame is FastF1-local and is **not**
-aligned to the Apex track frame (alignment is a later task).
+measured telemetry.
+
+### Track-frame alignment & projection (`apex-correlate::align` / `::project`)
+
+The `apex-14 telemetry-align` command fits a 2D similarity transform mapping the
+FastF1-local `x`/`y` onto the Apex track frame, then projects each sample onto
+the centerline. The aligned/projected CSV:
+
+- **`s`** ← re-projected **geometric** arc length (station of the closest
+  centerline point), unwrapped to be monotone across the start/finish line.
+- **`s_raw`** ← the original FastF1 `Distance` (speed-integrated), retained for
+  comparison. The two spans differ by ~1% (geometric vs. integrated).
+- **`x`, `y`** ← rewritten into the **Apex track frame** (were FastF1-local).
+- **`lateral_offset`** ← signed offset `n` of the driven line from the
+  centerline. **Sign: positive = LEFT of the centerline in the direction of
+  travel** (matches the viewer boundary construction `left = center +
+  width_left·normal` with left normal `(heading + π/2)`, and the optimizer's
+  `lateral_offset`). Negative = right.
+
+The fitted transform is persisted to a gitignored `*.align.toml` sidecar and
+echoed into the aligned CSV's `# align_*` header comments (descriptive
+provenance only — measured/derived data carries no `RunMetadata` sim hashes).

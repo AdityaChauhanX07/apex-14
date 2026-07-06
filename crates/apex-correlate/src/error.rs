@@ -48,6 +48,8 @@ pub enum CorrelateError {
     MissingAxis(&'static str),
     /// Resampling step must be finite and strictly positive.
     BadStep(f64),
+    /// Alignment could not be fitted (degenerate input).
+    AlignFailed(&'static str),
 }
 
 impl fmt::Display for CorrelateError {
@@ -96,6 +98,7 @@ impl fmt::Display for CorrelateError {
             CorrelateError::BadStep(s) => {
                 write!(f, "resampling step must be finite and > 0, got {s}")
             }
+            CorrelateError::AlignFailed(m) => write!(f, "alignment failed: {m}"),
         }
     }
 }
