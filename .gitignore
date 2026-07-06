@@ -45,6 +45,10 @@ PROJECT_REPORT.md
 # Local scratch / manual test scripts
 test_*.py
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+
 # ML training artifacts (generated, not checked in)
 *.safetensors
 *.safetensors.meta.json
