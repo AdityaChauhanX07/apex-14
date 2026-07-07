@@ -1133,6 +1133,118 @@ mod tests {
         assert!(last(&descent) > last(&climb));
     }
 
+    /// A constant-grade straight of length `(n1-1)*dx` running into a tight
+    /// hairpin (radius `r`, ~170° turn) held at zero grade through the turn
+    /// itself. Used by `braking_pass_grade_matches_analytic_onset` below: the
+    /// straight is long/flat enough that grade is the only thing that differs
+    /// between the three cases exercised there.
+    fn grade_straight_into_hairpin(theta: f64, n1: usize, dx: f64, r: f64, n2: usize) -> Ribbon3d {
+        let mut pts: Vec<[f64; 3]> = (0..n1)
+            .map(|i| {
+                let x = i as f64 * dx;
+                [x, 0.0, x * theta.tan()]
+            })
+            .collect();
+        let x_end = (n1 - 1) as f64 * dx;
+        let z_end = x_end * theta.tan();
+        let turn = 170f64.to_radians();
+        for j in 1..=n2 {
+            let a = turn * j as f64 / n2 as f64;
+            pts.push([x_end + r * a.sin(), r - r * a.cos(), z_end]);
+        }
+        let n = pts.len();
+        let w = vec![5.0; n];
+        let bank = vec![0.0; n];
+        Ribbon3d::from_centerline_3d("grade_hairpin", &pts, &bank, &w, &w, false)
+    }
+
+    /// Direct test that the braking (backward) pass includes the grade force
+    /// `+m·g·sinθ` in its longitudinal budget, not just the forward pass.
+    ///
+    /// Setup: a constant-grade straight (drive- and grip-limited, zero drag/
+    /// downforce so both the forward acceleration `a_accel` and the braking
+    /// deceleration `a_decel` are speed-independent constants) running into a
+    /// tight, effectively-flat hairpin. With a single forward pass building
+    /// `v_fwd(s)² = 2·a_accel·s` from the start and a single backward pass
+    /// building `v_bwd(s)² = v_apex² + 2·a_decel·(L−s)` from the apex, the
+    /// braking-onset point is exactly where the two curves cross:
+    ///   `d_onset = a_accel·L/(a_accel+a_decel) − v_apex²/(2·(a_accel+a_decel))`
+    /// with `a_accel = μg·cosθ − C_rr·g − g·sinθ` and
+    /// `a_decel = μg·cosθ + C_rr·g + g·sinθ` (independently re-derived here,
+    /// not by calling the solver's internal helpers). If the braking pass
+    /// dropped the grade term, `a_decel` would be identical (`μg·cosθ +
+    /// C_rr·g`) across climb/flat/descent and `d_onset` would not separate by
+    /// grade at all — this test would fail on the ordering assertion alone.
+    #[test]
+    fn braking_pass_grade_matches_analytic_onset() {
+        let mut params = CarParams::f1_2024_calibrated();
+        // Zero drag/downforce so a_accel/a_decel are speed-independent, and
+        // drive/brake limits are set high enough that both passes are
+        // grip-limited (not power/brake-limited) — required for the closed
+        // form below.
+        params.drag_coeff = 0.0;
+        params.lift_coeff = 0.0;
+        params.max_drive_force = 1.0e7;
+        params.max_brake_force = 1.0e7;
+
+        let g = GRAVITY;
+        let mu = params.tire_mu;
+        let croll = params.rolling_resistance;
+        let a_accel = |theta: f64| mu * g * theta.cos() - croll * g - g * theta.sin();
+        let a_decel = |theta: f64| mu * g * theta.cos() + croll * g + g * theta.sin();
+
+        let (n1, dx, r, n2) = (500usize, 1.0, 5.0, 80usize);
+        let l = (n1 - 1) as f64 * dx;
+        let v_apex = (mu * g * r).sqrt(); // flat, unbanked circular-corner formula
+
+        let analytic_onset = |theta: f64| -> f64 {
+            let (aa, ad) = (a_accel(theta), a_decel(theta));
+            aa * l / (aa + ad) - v_apex * v_apex / (2.0 * (aa + ad))
+        };
+
+        // Locate the simulated onset: the arg-max of the speed trace on the
+        // straight portion (indices < n1) is exactly where forward-limited
+        // (still rising) hands off to backward-limited (falling toward the
+        // apex).
+        let sim_onset = |theta: f64| -> f64 {
+            let ribbon = grade_straight_into_hairpin(theta, n1, dx, r, n2);
+            let res = qss_lap_sim_3d(&ribbon, &params);
+            let (mut peak_i, mut peak_v) = (0usize, 0.0f64);
+            for i in 0..n1 {
+                if res.speeds[i] > peak_v {
+                    peak_v = res.speeds[i];
+                    peak_i = i;
+                }
+            }
+            l - res.distances[peak_i]
+        };
+
+        let thetas = [-0.05, 0.0, 0.05]; // descent, flat, climb
+        let onsets: Vec<f64> = thetas.iter().map(|&t| sim_onset(t)).collect();
+        let analytic: Vec<f64> = thetas.iter().map(|&t| analytic_onset(t)).collect();
+
+        for i in 0..3 {
+            let rel_err = (onsets[i] - analytic[i]).abs() / analytic[i];
+            assert!(
+                rel_err < 0.03,
+                "theta {}: sim onset {} vs analytic {} (rel err {})",
+                thetas[i],
+                onsets[i],
+                analytic[i],
+                rel_err
+            );
+        }
+
+        // The physical claim under test: downhill braking distance > flat > uphill.
+        assert!(
+            onsets[0] > onsets[1] && onsets[1] > onsets[2],
+            "expected descent {} > flat {} > climb {}",
+            onsets[0],
+            onsets[1],
+            onsets[2]
+        );
+    }
+
     #[test]
     fn gravity_work_closes_on_closed_lap() {
         // Tilted closed ring: net elevation change is zero, so gravity does zero
