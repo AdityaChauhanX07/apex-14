@@ -200,7 +200,38 @@ identical float ops (and cost nothing extra). A dedicated test asserts
 closed track — the gravity term does zero net work per lap (asserted to machine
 precision).
 
-### 5.8 Deferrals
+### 5.8 Spatial grip scaling (`mu_scale` grid, Phase 1.4)
+
+The per-station scalar `mu_scale(s)` placeholder (§5.9, historically `1.0`
+and unused) is superseded by a bilinearly-interpolated `(s, n)` grid,
+`apex_track::MuScaleGrid` (schema v2's optional `mu_scale_grid` block,
+`tracks/README.md`). The §5.4 grip circle becomes
+
+$$
+F_{x,\max} = \sqrt{\max\bigl(0,\;(\mu \cdot \text{mu\_scale}(s, n) \cdot N)^2 - F_\text{lat}^2\bigr)},
+\qquad \mu N \to \mu \cdot \text{mu\_scale}(s, n) \cdot N \text{ in the §5.4 cornering limit too.}
+$$
+
+QSS's point-mass model has no lateral state, so `n` is whatever the *line*
+sampling the grid is — the centerline (`n = 0`) for a plain centerline run,
+or the driven path's own projected `(s, n)` for a driven-line run
+(`apex_correlate::driven`). Critically, **`qss_lap_sim_3d` never reads a
+ribbon's `mu_scale_grid` field itself** — a driven-line run passes QSS a
+*synthesized*, reparameterized ribbon whose own `(s, n)` is not the
+original centerline's, so a QSS-internal lookup on its own ribbon argument
+would silently sample the wrong location. Instead `qss_lap_sim_3d_with_grip`
+takes an externally-supplied per-station multiplier vector, baked by
+whichever code constructs the line.
+
+**Byte stability.** No grid attached ⇒ multiplier `1.0`, and
+`params.tire_mu * 1.0 == params.tire_mu` bit-for-bit (IEEE-754 exact) — the
+same "exact algebra" collapse as §5.6's `cosθ = 1.0`/`sinθ = 0.0`, not a
+branch that skips the multiply. An explicit all-`1.0` grid is bitwise
+equivalent too: bilinear interpolation of a constant field returns the
+exact constant regardless of the interpolation fraction
+(`c + t·(c − c) = c`).
+
+### 5.9 Deferrals
 
 - **Higher fidelities** (single-track / four-wheel / 14-DOF) get the same 3D
   terms in a **follow-up task** — the correlation pipeline runs on QSS, so QSS is
@@ -208,4 +239,7 @@ precision).
 - **Banking** is plumbed and unit-tested but `0` in the current GLO-30-derived
   data (a 25–30 m DEM cannot resolve camber across a ~14 m track). The
   `banking_deg` field is the manual per-corner override for later.
-- **`mu_scale(s)`** remains a plumbed placeholder (`1.0`), unused by physics.
+- **`mu_scale(s)`** (the per-station scalar) is superseded by the `(s, n)`
+  grid mechanism (§5.8); real grip-map *data* (rubbered line vs. dirty line)
+  is still future work — §5.8 ships the mechanism, nothing populates a real
+  grid yet.

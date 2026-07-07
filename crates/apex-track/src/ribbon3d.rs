@@ -27,6 +27,7 @@
 //! recovery derivation (completed when the physics lands).
 
 use crate::builder::normalize_angle;
+use crate::grip_grid::MuScaleGrid;
 use crate::types::Track;
 
 /// Default (unused) grip scaling — a placeholder for future 3D physics.
@@ -122,6 +123,19 @@ pub struct Ribbon3d {
     pub total_length: f64,
     /// `true` if the ribbon forms a closed loop.
     pub is_closed: bool,
+    /// Optional schema v2 `(station, lateral)` grip-multiplier grid (Phase
+    /// 1.4). Presence/absence doesn't affect [`Ribbon3d::is_flat`] — a flat
+    /// ribbon carrying a grid still takes the flat QSS fast path, since the
+    /// grid is inert there exactly like the per-station `mu_scale`
+    /// placeholder. **QSS never reads this field directly** — callers sample
+    /// it themselves (see [`Ribbon3d::centerline_mu_scale`]) and hand QSS a
+    /// plain multiplier vector; a driven-line run must sample the *original*
+    /// ribbon's grid at the driven path's own `(s, n)`, not this ribbon's.
+    pub mu_scale_grid: Option<MuScaleGrid>,
+    /// Optional schema v2 sector-marker stations (m, ascending, sector-start
+    /// arc lengths; the first sector implicitly starts at `s = 0`). Absent ⇒
+    /// the classic equal-arc-length-thirds split (`apex_physics::DEFAULT_SECTOR_COUNT`).
+    pub sector_markers: Option<Vec<f64>>,
 }
 
 /// Geometry-validation report from [`Ribbon3d::validate`].
@@ -206,6 +220,8 @@ impl Ribbon3d {
             stations,
             total_length: track.total_length,
             is_closed: track.is_closed,
+            mu_scale_grid: None,
+            sector_markers: track.sector_markers.clone(),
         }
     }
 
@@ -233,6 +249,7 @@ impl Ribbon3d {
             segments,
             total_length: self.total_length,
             is_closed: self.is_closed,
+            sector_markers: self.sector_markers.clone(),
         }
     }
 
@@ -591,7 +608,25 @@ impl Ribbon3d {
             stations,
             total_length,
             is_closed: closed,
+            mu_scale_grid: None,
+            sector_markers: None,
         }
+    }
+
+    /// Bake a per-station centerline grip-multiplier vector from
+    /// [`Ribbon3d::mu_scale_grid`] (sampled at `n = 0`, i.e. this ribbon's own
+    /// centerline). `None` when no grid is attached — the byte-stable no-op
+    /// case. This is a convenience for genuine centerline QSS runs; a
+    /// driven-line run must instead sample the *original* ribbon's grid at
+    /// the driven path's own `(s, n)` (see `apex_correlate::driven`).
+    pub fn centerline_mu_scale(&self) -> Option<Vec<f64>> {
+        let grid = self.mu_scale_grid.as_ref()?;
+        Some(
+            self.stations
+                .iter()
+                .map(|st| grid.mu_at(st.s, 0.0, self.total_length, self.is_closed))
+                .collect(),
+        )
     }
 }
 

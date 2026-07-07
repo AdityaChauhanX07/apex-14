@@ -45,6 +45,12 @@ pub struct Track {
     pub total_length: f64,
     /// `true` if the track forms a closed loop.
     pub is_closed: bool,
+    /// Optional schema v2 sector-marker stations (m, ascending, sector-start
+    /// arc lengths; the first sector implicitly starts at `s = 0`). Absent ⇒
+    /// the classic equal-arc-length-thirds split (`apex_physics::DEFAULT_SECTOR_COUNT`).
+    /// Intentionally **excluded** from [`processed_track_hash`]: it's
+    /// lap-timing metadata, not geometry the solvers integrate over.
+    pub sector_markers: Option<Vec<f64>>,
 }
 
 impl apex_math::ContentHash for TrackSegment {

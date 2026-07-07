@@ -81,6 +81,7 @@ pub fn build_track(name: &str, points: &[TrackPoint], closed: bool) -> Track {
         segments,
         total_length,
         is_closed: closed,
+        sector_markers: None,
     }
 }
 

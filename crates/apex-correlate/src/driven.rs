@@ -19,7 +19,7 @@
 //!   reproduces the driver's actual radius at speed (e.g. Abbey), so it is the
 //!   default.
 
-use apex_physics::{qss_lap_sim, qss_lap_sim_3d, CarParams, DEFAULT_SECTOR_COUNT};
+use apex_physics::{qss_lap_sim, qss_lap_sim_3d_with_grip, CarParams, DEFAULT_SECTOR_COUNT};
 use apex_telemetry::ChannelId;
 use apex_track::{build_track, smooth_points, Ribbon3d, Track, TrackPoint};
 
@@ -73,6 +73,19 @@ pub struct DrivenGeometry {
     /// Continuous centerline station (m, monotone) of each driven segment, so a
     /// speed profile on this line can be mapped back to centerline coordinates.
     pub station_per_segment: Vec<f64>,
+    /// Signed lateral offset (m, +left, matching the ribbon frame's `n`) of
+    /// each driven segment from the centerline at the same continuous
+    /// station — the driven path's own `(s, n)` in the *original* ribbon
+    /// frame, used to sample a `mu_scale` grid correctly (see [`Self::mu_scale`]).
+    pub lateral_offset_per_segment: Vec<f64>,
+    /// Per-driven-segment grip multiplier, baked from `elevation`'s
+    /// `mu_scale_grid` (if any) sampled at this segment's own
+    /// `(station_per_segment, lateral_offset_per_segment)` in the *original*
+    /// ribbon frame — never the driven ribbon's own frame (see
+    /// `apex_physics::qss::qss_lap_sim_3d_with_grip`'s docs for why that
+    /// distinction matters). `None` when no grid is present (the byte-stable
+    /// no-op case).
+    pub mu_scale: Option<Vec<f64>>,
     /// Arc length of the driven path (m).
     pub driven_length: f64,
     /// Centerline arc length (m).
@@ -118,10 +131,12 @@ pub fn driven_sim_trace_3d(
 }
 
 /// Run the QSS on a driven geometry: 3D when the driven ribbon is present
-/// (elevated centerline), else the flat 2D QSS on the driven track.
+/// (elevated centerline), else the flat 2D QSS on the driven track. Passes
+/// `geom.mu_scale` (if baked) into the grid-aware QSS entry point — QSS
+/// itself never inspects `driven_ribbon`'s own (nonexistent) grid.
 pub fn run_qss_on_driven(geom: &DrivenGeometry, car: &CarParams) -> apex_physics::QssResult {
     match &geom.driven_ribbon {
-        Some(ribbon) => qss_lap_sim_3d(ribbon, car),
+        Some(ribbon) => qss_lap_sim_3d_with_grip(ribbon, car, geom.mu_scale.as_deref()),
         None => qss_lap_sim(&geom.track, car),
     }
 }
@@ -151,8 +166,27 @@ pub fn build_driven_geometry_3d(
     }?;
     if let Some(elev) = elevation {
         geom.driven_ribbon = Some(elevate_driven(&geom, elev));
+        geom.mu_scale = bake_mu_scale(&geom, elev);
     }
     Ok(geom)
+}
+
+/// Bake a per-driven-segment grip multiplier from `elevation`'s `mu_scale_grid`
+/// (if any), sampled at each segment's own `(station_per_segment,
+/// lateral_offset_per_segment)` — the driven path's position in the
+/// **original** ribbon's `(s, n)` frame, not the synthesized driven ribbon's.
+/// `None` when `elevation` carries no grid (the byte-stable no-op case).
+fn bake_mu_scale(geom: &DrivenGeometry, elevation: &Ribbon3d) -> Option<Vec<f64>> {
+    let grid = elevation.mu_scale_grid.as_ref()?;
+    let l = elevation.total_length;
+    let closed = elevation.is_closed;
+    Some(
+        geom.station_per_segment
+            .iter()
+            .zip(&geom.lateral_offset_per_segment)
+            .map(|(&s, &n)| grid.mu_at(s.rem_euclid(l), n, l, closed))
+            .collect(),
+    )
 }
 
 /// Build the 3D driven ribbon: the driven `(x, y)` path with `z` sampled from
@@ -284,6 +318,8 @@ fn geom_offset(
         driven_ribbon: None,
         track,
         station_per_segment,
+        lateral_offset_per_segment: n_filt,
+        mu_scale: None,
     })
 }
 
@@ -357,6 +393,26 @@ fn geom_direct(
         true,
     );
 
+    // Signed lateral offset of each driven point from the centerline at the
+    // same continuous station (left-positive, matching the ribbon frame's
+    // `n` and `geom_offset`'s convention) — direct mode has no measured n(s)
+    // channel, so it's recovered here by projection onto the centerline's
+    // local frame.
+    let lateral_offset_per_segment: Vec<f64> = smoothed
+        .iter()
+        .zip(&stations_cont)
+        .map(|(pt, &s)| {
+            let s_mod = s.rem_euclid(l);
+            let (cx, cy) = centerline.position_at(s_mod);
+            let heading = centerline.heading_at(s_mod);
+            let (nx, ny) = (
+                (heading + std::f64::consts::FRAC_PI_2).cos(),
+                (heading + std::f64::consts::FRAC_PI_2).sin(),
+            );
+            (pt.x - cx) * nx + (pt.y - cy) * ny
+        })
+        .collect();
+
     Ok(DrivenGeometry {
         driven_length: track.total_length,
         centerline_length: l,
@@ -367,6 +423,8 @@ fn geom_direct(
         driven_ribbon: None,
         track,
         station_per_segment: stations_cont,
+        lateral_offset_per_segment,
+        mu_scale: None,
     })
 }
 
@@ -553,6 +611,94 @@ mod tests {
                 w[1]
             );
         }
+    }
+
+    #[test]
+    fn driven_line_off_center_hits_low_grip_patch_centerline_does_not() {
+        // A mu_scale grid with LATERAL variation only (uniform in s): full
+        // grip for |n| <= 1, 0.3 grip for n > 1. A driven line held at
+        // n = +3 must sample the low-grip side and slow down; a driven line
+        // at n = 0 (the centerline) must sample the full-grip side and be
+        // unaffected — this is exactly the dirty-line-vs-racing-line use case
+        // and the failure mode the grid-external QSS design (see
+        // `qss_lap_sim_3d_with_grip`'s docs) exists to prevent: naively
+        // sampling at `n = 0` on whatever ribbon QSS happens to hold would
+        // get this backwards for the driven line.
+        let track = oval();
+        let l = track.total_length;
+
+        // A constant tiny (1e-6 m) elevation bump defeats `Ribbon3d::is_flat`'s
+        // fast path — which would otherwise skip the grid-aware 3D QSS code
+        // entirely — without perturbing the physics.
+        let pts: Vec<[f64; 3]> = track
+            .segments
+            .iter()
+            .map(|seg| [seg.x, seg.y, 1e-6])
+            .collect();
+        let zeros = vec![0.0; pts.len()];
+        let wl: Vec<f64> = track.segments.iter().map(|s| s.width_left).collect();
+        let wr: Vec<f64> = track.segments.iter().map(|s| s.width_right).collect();
+        let mut elevation = Ribbon3d::from_centerline_3d("oval_elev", &pts, &zeros, &wl, &wr, true);
+        assert!(
+            !elevation.is_flat(),
+            "tiny z must defeat the flat fast path"
+        );
+        elevation.mu_scale_grid = Some(
+            apex_track::MuScaleGrid::new(
+                vec![0.0, l * 0.5],
+                vec![-10.0, 1.0, 3.0, 10.0],
+                vec![
+                    1.0, 1.0, 0.3, 0.3, // s = 0
+                    1.0, 1.0, 0.3, 0.3, // s = L/2
+                ],
+            )
+            .unwrap(),
+        );
+
+        let car = CarParams::default();
+        let geom_n3 = build_driven_geometry_3d(
+            &track,
+            &aligned_offset(&track, 3.0),
+            DrivenLineMode::Offset(10.0),
+            Some(&elevation),
+        )
+        .unwrap();
+        let geom_n0 = build_driven_geometry_3d(
+            &track,
+            &aligned_offset(&track, 0.0),
+            DrivenLineMode::Offset(10.0),
+            Some(&elevation),
+        )
+        .unwrap();
+
+        // The baked multiplier vector reflects the ORIGINAL ribbon's (s, n) —
+        // not the driven ribbon's own frame.
+        let mu3 = geom_n3.mu_scale.as_ref().expect("grid attached");
+        let mu0 = geom_n0.mu_scale.as_ref().expect("grid attached");
+        assert!(
+            mu3.iter().all(|&m| (m - 0.3).abs() < 1e-6),
+            "n=+3 must sample the low-grip side: {mu3:?}"
+        );
+        assert!(
+            mu0.iter().all(|&m| (m - 1.0).abs() < 1e-6),
+            "n=0 must sample the full-grip side: {mu0:?}"
+        );
+
+        let sim_n3 = run_qss_on_driven(&geom_n3, &car);
+        let sim_n0 = run_qss_on_driven(&geom_n0, &car);
+        let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        assert!(
+            avg(&sim_n3.speeds) < avg(&sim_n0.speeds),
+            "off-line n=+3 (low grip) should be slower than centerline n=0: {} vs {}",
+            avg(&sim_n3.speeds),
+            avg(&sim_n0.speeds)
+        );
+
+        // The plain centerline query (not a driven run at all) must also read
+        // full grip everywhere — confirms the grid doesn't leak into n=0 via
+        // any other path either.
+        let centerline_mu = elevation.centerline_mu_scale().expect("grid attached");
+        assert!(centerline_mu.iter().all(|&m| (m - 1.0).abs() < 1e-6));
     }
 
     #[test]

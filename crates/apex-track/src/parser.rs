@@ -6,6 +6,7 @@
 //! (or 12 m) is split evenly to both sides.
 
 use crate::builder::build_track;
+use crate::grip_grid::MuScaleGrid;
 use crate::ribbon3d::Ribbon3d;
 use crate::types::{Track, TrackPoint};
 
@@ -73,11 +74,33 @@ pub struct TrackFileJson {
     /// Optional processing/provenance metadata (e.g. smoothing parameters).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<TrackMetaJson>,
+    /// Optional sector-marker stations (m, ascending sector-start arc
+    /// lengths). Absent ⇒ equal-arc-length thirds. Available at v1 or v2 (not
+    /// 3D-specific), same as `metadata`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector_markers: Option<Vec<f64>>,
+    /// Optional `mu_scale(s, n)` grip-multiplier grid block (Phase 1.4,
+    /// schema v2 / 3D-ribbon-only — ignored by the 2D `parse_track_json` path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mu_scale_grid: Option<MuScaleGridJson>,
     pub points: Vec<TrackPointJson>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// A schema v2 `mu_scale(s, n)` grip-multiplier grid block, as represented in
+/// a track JSON file (see [`crate::grip_grid::MuScaleGrid`]).
+///
+/// `stations` and `lateral` are the grid axes (m); `values` is the row-major
+/// `stations.len() * lateral.len()` flattened grid. Absent ⇒ uniform `1.0`
+/// (no grid at all — the byte-stable default).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct MuScaleGridJson {
+    pub stations: Vec<f64>,
+    pub lateral: Vec<f64>,
+    pub values: Vec<f64>,
 }
 
 /// Load a track from a JSON file path.
@@ -110,7 +133,9 @@ pub fn parse_track_json(json: &str) -> Result<Track, Box<dyn std::error::Error>>
         })
         .collect();
 
-    Ok(build_track(&file.name, &points, file.closed))
+    let mut track = build_track(&file.name, &points, file.closed);
+    track.sector_markers = file.sector_markers.clone();
+    Ok(track)
 }
 
 /// Export a track to a JSON string (for saving generated tracks).
@@ -130,6 +155,8 @@ pub fn export_track_json_with_meta(
         closed: track.is_closed,
         width: None, // per-point widths are used
         metadata,
+        sector_markers: track.sector_markers.clone(),
+        mu_scale_grid: None, // 2D Track has no grid; Ribbon3d/export_ribbon3d_json carries it
         points: track
             .segments
             .iter()
@@ -190,8 +217,11 @@ pub fn parse_ribbon3d_json(json: &str) -> Result<Ribbon3d, Box<dyn std::error::E
                 width_right: p.width_right.unwrap_or(default_half),
             })
             .collect();
-        let track = build_track(&file.name, &points, file.closed);
-        return Ok(Ribbon3d::from_flat(&track));
+        let mut track = build_track(&file.name, &points, file.closed);
+        track.sector_markers = file.sector_markers.clone();
+        let mut ribbon = Ribbon3d::from_flat(&track);
+        ribbon.mu_scale_grid = parse_mu_scale_grid(&file.mu_scale_grid)?;
+        return Ok(ribbon);
     }
 
     // 3D file: assemble points + per-point bank/widths and build the ribbon.
@@ -215,14 +245,23 @@ pub fn parse_ribbon3d_json(json: &str) -> Result<Ribbon3d, Box<dyn std::error::E
         .iter()
         .map(|p| p.width_right.unwrap_or(default_half))
         .collect();
-    Ok(Ribbon3d::from_centerline_3d(
-        &file.name,
-        &pts,
-        &bank,
-        &wl,
-        &wr,
-        file.closed,
-    ))
+    let mut ribbon = Ribbon3d::from_centerline_3d(&file.name, &pts, &bank, &wl, &wr, file.closed);
+    ribbon.sector_markers = file.sector_markers.clone();
+    ribbon.mu_scale_grid = parse_mu_scale_grid(&file.mu_scale_grid)?;
+    Ok(ribbon)
+}
+
+/// Validate + build a [`MuScaleGrid`] from its JSON representation, if present.
+fn parse_mu_scale_grid(
+    json: &Option<MuScaleGridJson>,
+) -> Result<Option<MuScaleGrid>, Box<dyn std::error::Error>> {
+    match json {
+        None => Ok(None),
+        Some(g) => Ok(Some(
+            MuScaleGrid::new(g.stations.clone(), g.lateral.clone(), g.values.clone())
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+        )),
+    }
 }
 
 /// Export a [`Ribbon3d`] to a JSON string. Emits **v2** (a `version: 2` field
@@ -231,6 +270,7 @@ pub fn parse_ribbon3d_json(json: &str) -> Result<Ribbon3d, Box<dyn std::error::E
 /// so flat tracks written through this path diff cleanly against v1 files.
 pub fn export_ribbon3d_json(ribbon: &Ribbon3d) -> Result<String, Box<dyn std::error::Error>> {
     let has_3d = !ribbon.is_flat();
+    let has_v2_data = has_3d || ribbon.mu_scale_grid.is_some();
     let points = ribbon
         .stations
         .iter()
@@ -247,12 +287,19 @@ pub fn export_ribbon3d_json(ribbon: &Ribbon3d) -> Result<String, Box<dyn std::er
             },
         })
         .collect();
+    let mu_scale_grid = ribbon.mu_scale_grid.as_ref().map(|g| MuScaleGridJson {
+        stations: g.stations.clone(),
+        lateral: g.lateral.clone(),
+        values: g.values.clone(),
+    });
     let file = TrackFileJson {
-        version: if has_3d { Some(2) } else { None },
+        version: if has_v2_data { Some(2) } else { None },
         name: ribbon.name.clone(),
         closed: ribbon.is_closed,
         width: None,
         metadata: None,
+        sector_markers: ribbon.sector_markers.clone(),
+        mu_scale_grid,
         points,
     };
     Ok(serde_json::to_string_pretty(&file)?)
@@ -733,6 +780,111 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
         assert!(parse_ribbon3d_json(json).is_err());
     }
 
+    // ---- mu_scale grid (Phase 1.4) ----
+
+    #[test]
+    fn mu_scale_grid_round_trips() {
+        let json_in = r#"{
+            "version": 2,
+            "name": "Grippy",
+            "closed": true,
+            "mu_scale_grid": {
+                "stations": [0.0, 50.0],
+                "lateral": [-5.0, 5.0],
+                "values": [1.0, 0.7, 1.0, 0.7]
+            },
+            "points": [
+                { "x": 0.0, "y": 0.0 },
+                { "x": 100.0, "y": 0.0 },
+                { "x": 50.0, "y": 80.0 }
+            ]
+        }"#;
+        let ribbon = parse_ribbon3d_json(json_in).expect("parse grid");
+        let grid = ribbon.mu_scale_grid.as_ref().expect("grid attached");
+        assert_eq!(grid.mu_at(0.0, -5.0, ribbon.total_length, true), 1.0);
+        assert_eq!(grid.mu_at(0.0, 5.0, ribbon.total_length, true), 0.7);
+
+        let out = export_ribbon3d_json(&ribbon).expect("export with grid");
+        assert!(out.contains("\"version\": 2"));
+        assert!(out.contains("mu_scale_grid"));
+        let back = parse_ribbon3d_json(&out).expect("reparse grid");
+        let grid_back = back
+            .mu_scale_grid
+            .as_ref()
+            .expect("grid survives round-trip");
+        assert_eq!(grid_back.mu_at(0.0, 5.0, back.total_length, true), 0.7);
+    }
+
+    #[test]
+    fn flat_ribbon_with_explicit_uniform_grid_stays_flat() {
+        // A flat ribbon carrying an all-1.0 grid must still report is_flat() —
+        // the grid doesn't affect geometry, so it still takes the flat QSS
+        // fast path (byte-stability discipline, same as the per-station
+        // mu_scale placeholder).
+        let json_in = r#"{
+            "version": 2,
+            "name": "FlatGrid",
+            "closed": true,
+            "mu_scale_grid": {
+                "stations": [0.0, 50.0],
+                "lateral": [-5.0, 5.0],
+                "values": [1.0, 1.0, 1.0, 1.0]
+            },
+            "points": [
+                { "x": 0.0, "y": 0.0 },
+                { "x": 100.0, "y": 0.0 },
+                { "x": 50.0, "y": 80.0 }
+            ]
+        }"#;
+        let ribbon = parse_ribbon3d_json(json_in).expect("parse");
+        assert!(ribbon.is_flat(), "grid presence must not affect flatness");
+        assert!(ribbon.mu_scale_grid.is_some());
+    }
+
+    #[test]
+    fn invalid_mu_scale_grid_is_rejected() {
+        let json = r#"{
+            "version": 2,
+            "name": "Bad",
+            "closed": true,
+            "mu_scale_grid": { "stations": [0.0, 50.0], "lateral": [0.0], "values": [1.0, 1.0] },
+            "points": [
+                { "x": 0.0, "y": 0.0 }, { "x": 100.0, "y": 0.0 }, { "x": 50.0, "y": 80.0 }
+            ]
+        }"#;
+        assert!(parse_ribbon3d_json(json).is_err());
+    }
+
+    // ---- sector markers (roadmap 1.2) ----
+
+    #[test]
+    fn sector_markers_round_trip_2d_and_3d() {
+        let json_in = r#"{
+            "name": "Markers",
+            "closed": true,
+            "sector_markers": [0.0, 100.0, 220.0],
+            "points": [
+                { "x": 0.0, "y": 0.0 }, { "x": 100.0, "y": 0.0 },
+                { "x": 100.0, "y": 100.0 }, { "x": 0.0, "y": 100.0 }
+            ]
+        }"#;
+        let track = parse_track_json(json_in).expect("parse 2d");
+        assert_eq!(
+            track.sector_markers.as_deref(),
+            Some(&[0.0, 100.0, 220.0][..])
+        );
+        let out = export_track_json(&track).expect("export 2d");
+        assert!(out.contains("sector_markers"));
+        let back = parse_track_json(&out).expect("reparse 2d");
+        assert_eq!(back.sector_markers, track.sector_markers);
+
+        let ribbon = parse_ribbon3d_json(json_in).expect("parse ribbon");
+        assert_eq!(
+            ribbon.sector_markers.as_deref(),
+            Some(&[0.0, 100.0, 220.0][..])
+        );
+    }
+
     #[test]
     fn synthetic_3d_load_and_validate_smoke() {
         // A tilted closed ring (z varies sinusoidally): a genuine 3D loop built
@@ -766,6 +918,8 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
             closed: true,
             width: None,
             metadata: None,
+            sector_markers: None,
+            mu_scale_grid: None,
             points: pts,
         };
         let json = serde_json::to_string(&file).unwrap();

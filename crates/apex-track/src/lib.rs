@@ -7,6 +7,7 @@ pub mod builder;
 pub mod circuits;
 pub mod constraints;
 pub mod generators;
+pub mod grip_grid;
 pub mod layout;
 pub mod parser;
 pub mod query;
@@ -19,13 +20,14 @@ pub use builder::{build_track, normalize_angle};
 pub use circuits::{monza_circuit, silverstone_circuit};
 pub use constraints::{check_constraints, ConstraintViolation, TrackConstraints};
 pub use generators::{circle_track, oval_track};
+pub use grip_grid::MuScaleGrid;
 pub use layout::{
     is_valid_layout, point_in_polygon, track_within_boundary, ControlPoint, TrackLayout,
 };
 pub use parser::{
     export_ribbon3d_json, export_track_json, export_track_json_with_meta, export_tumftm_csv,
     load_ribbon3d_json, load_track_json, load_tumftm_csv, parse_ribbon3d_json, parse_track_json,
-    parse_tumftm_csv, TrackFileJson, TrackMetaJson, TrackPointJson,
+    parse_tumftm_csv, MuScaleGridJson, TrackFileJson, TrackMetaJson, TrackPointJson,
 };
 pub use ribbon3d::{Frame, Ribbon3d, RibbonStation, RibbonValidation, DEFAULT_MU_SCALE};
 pub use smoothing::{smooth_points, smooth_track, SmoothingReport, DEFAULT_SMOOTH_TOLERANCE_M};

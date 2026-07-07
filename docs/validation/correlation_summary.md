@@ -58,9 +58,16 @@ below). All five passed every hygiene check (event match, align scale ∈
 > **not met**, and cross-circuit `power_scale` scatter *grows* (CoV 12.2 % → ~13.5 %,
 > Spa moving further from the pack). Silverstone (control) moves < 1 %. So Spa's
 > de-powering is **not primarily an elevation artifact**; correct gravity is
-> conservative on a closed lap and a new point-mass descent over-carry keeps the
-> fit de-powered. Full analysis + hypotheses:
-> [`correlation_spa_2024q.md` § Phase 1.3](correlation_spa_2024q.md#phase-13-flat-vs-3d-elevation-physics--an-honest-mixed-result).
+> conservative on a closed lap (proven analytically to < 1e-6, zero net work per
+> lap) and a new point-mass descent over-carry keeps the fit de-powered — measured
+> throttle confirms the real driver manages the descent (median throttle 0.71)
+> rather than free-wheeling it as the point-mass model does. **Verdict: (b), an
+> intended physics change with an honest negative result** — elevation physics is
+> real, correctly implemented, and necessary, but not sufficient for Spa-class
+> terrain without dynamic/driver modeling. Full analysis + hypotheses:
+> [`correlation_spa_2024q.md` § Phase 1.3](correlation_spa_2024q.md#phase-13-flat-vs-3d-elevation-physics--an-honest-mixed-result);
+> the complete Phase 1 validation story (geometry, physics, this finding, scope
+> ledger): [`track3d.md`](track3d.md).
 > No parameter was tuned to force the criterion; higher-fidelity models are deferred.
 
 ## Parameter scatter — the key analysis

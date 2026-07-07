@@ -81,6 +81,35 @@ pub fn sector_times(
     sectors
 }
 
+/// Splits per-interval traversal times into sector totals defined by explicit
+/// **marker** stations (`Track::sector_markers` / `Ribbon3d::sector_markers`):
+/// ascending arc lengths, each the start of the sector *after* the first (the
+/// first sector always starts at `s = 0`), so `n_sectors = markers.len() + 1`.
+/// Same whole-interval-attribution discipline as [`sector_times`] (each
+/// interval's time goes in full to the sector containing its midpoint), so
+/// the sum identity holds the same way.
+pub fn sector_times_with_markers(
+    stations: &[f64],
+    interval_times: &[f64],
+    total_length: f64,
+    markers: &[f64],
+) -> Vec<f64> {
+    let n = stations.len();
+    let n_sectors = markers.len() + 1;
+    let mut sectors = vec![0.0; n_sectors];
+    for (i, &dt) in interval_times.iter().enumerate() {
+        let ds = if i + 1 < n {
+            stations[i + 1] - stations[i]
+        } else {
+            total_length - stations[n - 1]
+        };
+        let s_mid = stations[i] + 0.5 * ds;
+        let idx = markers.partition_point(|&m| m <= s_mid).min(n_sectors - 1);
+        sectors[idx] += dt;
+    }
+    sectors
+}
+
 /// Integrates lap time and per-sector times from a completed speed profile.
 ///
 /// Builds the same `ds / v_avg` per-interval times as the lap-time integral,
@@ -89,12 +118,17 @@ pub fn sector_times(
 /// split reuses the shared definition — so `sector_times.iter().sum()` equals
 /// `lap_time` up to floating-point reassociation, asserted within 1e-9 s by
 /// the unit test `sector_times_sum_to_lap_time`.
+///
+/// `markers`, when `Some` and non-empty, switches the split to
+/// [`sector_times_with_markers`]; otherwise (`None` or empty — the default,
+/// unchanged behavior) it's the classic equal-arc-length [`DEFAULT_SECTOR_COUNT`]
+/// split via [`sector_times`].
 fn integrate_lap_and_sectors(
     s: &[f64],
     speeds: &[f64],
     total_length: f64,
     closed: bool,
-    n_sectors: usize,
+    markers: Option<&[f64]>,
 ) -> (f64, Vec<f64>) {
     let n = s.len();
     let intervals = if closed { n } else { n - 1 };
@@ -110,7 +144,10 @@ fn integrate_lap_and_sectors(
         dt.push(if v_avg > 0.0 { ds / v_avg } else { 0.0 });
     }
     let lap_time = dt.iter().sum();
-    let sectors = sector_times(s, &dt, total_length, n_sectors);
+    let sectors = match markers {
+        Some(m) if !m.is_empty() => sector_times_with_markers(s, &dt, total_length, m),
+        _ => sector_times(s, &dt, total_length, DEFAULT_SECTOR_COUNT),
+    };
     (lap_time, sectors)
 }
 
@@ -241,8 +278,13 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
     }
 
     // Step 4: lap time, per-sector times, and accelerations.
-    let (lap_time, sector_times) =
-        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
+    let (lap_time, sector_times) = integrate_lap_and_sectors(
+        &s,
+        &speeds,
+        total_length,
+        closed,
+        track.sector_markers.as_deref(),
+    );
 
     let lateral_gs: Vec<f64> = (0..n)
         .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
@@ -294,15 +336,28 @@ fn lateral_demand_3d(params: &CarParams, v: f64, kappa: f64, phi: f64) -> f64 {
     params.mass * (v * v * kappa * phi.cos() - GRAVITY * phi.sin())
 }
 
-/// Cornering-limited speed with 3D load: largest `v` with `μN ≥ |F_lat|`
-/// (bisection; both sides scale with `v²`). Reduces to the flat closed form.
-fn cornering_speed_3d(params: &CarParams, kappa: f64, theta: f64, phi: f64, kappa_v: f64) -> f64 {
+/// Cornering-limited speed with 3D load: largest `v` with `μ·mu_scale·N ≥
+/// |F_lat|` (bisection; both sides scale with `v²`). Reduces to the flat
+/// closed form. `mu_scale` is the externally-supplied spatial grip multiplier
+/// (docs/math/track3d.md §5.9) — `1.0` when no grid is in play, in which case
+/// `params.tire_mu * 1.0 == params.tire_mu` bit-for-bit (IEEE-754 exact), so
+/// this is byte-stable with the pre-grip-map code by construction, not by a
+/// branch that skips the multiply (the same "exact algebra" discipline as
+/// the `cosθ=1.0`/`sinθ=0.0` flat collapse, §5.6).
+fn cornering_speed_3d(
+    params: &CarParams,
+    kappa: f64,
+    theta: f64,
+    phi: f64,
+    kappa_v: f64,
+    mu_scale: f64,
+) -> f64 {
     if kappa < 1e-9 && phi.abs() < 1e-12 {
         return V_CAP;
     }
     let feasible = |v: f64| -> bool {
         let n = normal_load_3d(params, v, kappa, theta, phi, kappa_v);
-        params.tire_mu * n >= lateral_demand_3d(params, v, kappa, phi).abs()
+        params.tire_mu * mu_scale * n >= lateral_demand_3d(params, v, kappa, phi).abs()
     };
     if feasible(V_CAP) {
         return V_CAP;
@@ -319,9 +374,19 @@ fn cornering_speed_3d(params: &CarParams, kappa: f64, theta: f64, phi: f64, kapp
     lo.max(V_FLOOR)
 }
 
-/// Longitudinal grip headroom `F_x,max = sqrt((μN)² − F_lat²)` at `(v, κ, …)`.
-fn f_lon_max_3d(params: &CarParams, v: f64, kappa: f64, theta: f64, phi: f64, kappa_v: f64) -> f64 {
-    let grip = params.tire_mu * normal_load_3d(params, v, kappa, theta, phi, kappa_v);
+/// Longitudinal grip headroom `F_x,max = sqrt((μ·mu_scale·N)² − F_lat²)` at
+/// `(v, κ, …)`. See [`cornering_speed_3d`] for the `mu_scale` byte-stability
+/// argument.
+fn f_lon_max_3d(
+    params: &CarParams,
+    v: f64,
+    kappa: f64,
+    theta: f64,
+    phi: f64,
+    kappa_v: f64,
+    mu_scale: f64,
+) -> f64 {
+    let grip = params.tire_mu * mu_scale * normal_load_3d(params, v, kappa, theta, phi, kappa_v);
     let f_lat = lateral_demand_3d(params, v, kappa, phi).abs();
     if f_lat >= grip {
         0.0
@@ -331,6 +396,7 @@ fn f_lon_max_3d(params: &CarParams, v: f64, kappa: f64, theta: f64, phi: f64, ka
 }
 
 /// Forward (accel) speed one step ahead, with the grade force `−m·g·sinθ`.
+#[allow(clippy::too_many_arguments)]
 fn forward_speed_3d(
     params: &CarParams,
     v: f64,
@@ -338,9 +404,10 @@ fn forward_speed_3d(
     theta: f64,
     phi: f64,
     kappa_v: f64,
+    mu_scale: f64,
     ds: f64,
 ) -> f64 {
-    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v);
+    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v, mu_scale);
     let f_accel = f_lon.min(params.max_drive_force)
         - params.drag_force(v)
         - params.rolling_resistance_force()
@@ -350,6 +417,7 @@ fn forward_speed_3d(
 }
 
 /// Backward (braking) speed one step behind; climbing (`θ>0`) aids the decel.
+#[allow(clippy::too_many_arguments)]
 fn backward_speed_3d(
     params: &CarParams,
     v: f64,
@@ -357,9 +425,10 @@ fn backward_speed_3d(
     theta: f64,
     phi: f64,
     kappa_v: f64,
+    mu_scale: f64,
     ds: f64,
 ) -> f64 {
-    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v);
+    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v, mu_scale);
     let a_decel = (f_lon.min(params.max_brake_force)
         + params.drag_force(v)
         + params.rolling_resistance_force()
@@ -401,7 +470,33 @@ fn vertical_curvature(s: &[f64], theta: &[f64], closed: bool, total_length: f64)
 /// load, and banking (docs/math/track3d.md §5). A geometrically flat ribbon
 /// short-circuits to the untouched 2D [`qss_lap_sim`] on its projection, so flat
 /// tracks are **bitwise-identical** and cost nothing extra.
+///
+/// This is a thin wrapper over [`qss_lap_sim_3d_with_grip`] with no grip
+/// multiplier — it never reads `ribbon.mu_scale_grid` (QSS never inspects a
+/// grid directly; see that function's docs for why).
 pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
+    qss_lap_sim_3d_with_grip(ribbon, params, None)
+}
+
+/// [`qss_lap_sim_3d`] with an optional externally-supplied per-station grip
+/// multiplier (Phase 1.4, `mu_scale(s, n)`): `mu_scale[i]` scales `params.tire_mu`
+/// at station `i` (`None`, or a shorter/longer slice than `ribbon.stations`,
+/// behaves as uniform `1.0` — the byte-stable default).
+///
+/// **QSS deliberately never reads `ribbon.mu_scale_grid` itself.** A driven-line
+/// run passes QSS a *synthesized*, reparameterized ribbon (see
+/// `apex_correlate::driven`) whose own `(s, n)` frame is not the original
+/// centerline's — sampling a grid attached to *that* ribbon at, say, `n = 0`
+/// would silently look up the wrong location. Instead, whoever constructs the
+/// line (a plain centerline caller via `Ribbon3d::centerline_mu_scale`, or the
+/// driven-line pipeline sampling the *original* ribbon's grid at each sample's
+/// projected `(s, n)`) bakes the multiplier vector and hands it to this
+/// function explicitly.
+pub fn qss_lap_sim_3d_with_grip(
+    ribbon: &Ribbon3d,
+    params: &CarParams,
+    mu_scale: Option<&[f64]>,
+) -> QssResult {
     if ribbon.is_flat() {
         return qss_lap_sim(&ribbon.to_track_2d(), params);
     }
@@ -414,6 +509,12 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
     let theta: Vec<f64> = ribbon.stations.iter().map(|st| st.grade).collect();
     let phi: Vec<f64> = ribbon.stations.iter().map(|st| st.bank).collect();
     let kappa_v = vertical_curvature(&s, &theta, closed, total_length);
+    let mu_at = |i: usize| -> f64 {
+        match mu_scale {
+            Some(m) if m.len() == n => m[i],
+            _ => 1.0,
+        }
+    };
 
     let ds_next = |i: usize| -> f64 {
         if i + 1 < n {
@@ -425,7 +526,7 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
 
     // Step 1: cornering-limited speed.
     let mut speeds: Vec<f64> = (0..n)
-        .map(|i| cornering_speed_3d(params, kappa[i], theta[i], phi[i], kappa_v[i]))
+        .map(|i| cornering_speed_3d(params, kappa[i], theta[i], phi[i], kappa_v[i], mu_at(i)))
         .collect();
     if !closed {
         speeds[0] = speeds[0].min(V_FLOOR);
@@ -444,6 +545,7 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
                 theta[i],
                 phi[i],
                 kappa_v[i],
+                mu_at(i),
                 ds_next(i),
             );
             if cand < speeds[j] {
@@ -464,7 +566,14 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
                     s[i] - s[i - 1]
                 };
                 let cand = backward_speed_3d(
-                    params, speeds[i], kappa[i], theta[i], phi[i], kappa_v[i], ds,
+                    params,
+                    speeds[i],
+                    kappa[i],
+                    theta[i],
+                    phi[i],
+                    kappa_v[i],
+                    mu_at(i),
+                    ds,
                 );
                 if cand < speeds[p] {
                     speeds[p] = cand;
@@ -474,7 +583,14 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
             for i in (1..n).rev() {
                 let ds = s[i] - s[i - 1];
                 let cand = backward_speed_3d(
-                    params, speeds[i], kappa[i], theta[i], phi[i], kappa_v[i], ds,
+                    params,
+                    speeds[i],
+                    kappa[i],
+                    theta[i],
+                    phi[i],
+                    kappa_v[i],
+                    mu_at(i),
+                    ds,
                 );
                 if cand < speeds[i - 1] {
                     speeds[i - 1] = cand;
@@ -484,8 +600,13 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
     }
 
     // Step 4: lap time, sectors, accelerations (kinematic, unchanged formulas).
-    let (lap_time, sector_times) =
-        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
+    let (lap_time, sector_times) = integrate_lap_and_sectors(
+        &s,
+        &speeds,
+        total_length,
+        closed,
+        ribbon.sector_markers.as_deref(),
+    );
     let lateral_gs: Vec<f64> = (0..n)
         .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
         .collect();
@@ -674,8 +795,13 @@ pub fn qss_lap_sim_tire(
     }
 
     // Step 4: lap time, per-sector times, and accelerations (unchanged integral).
-    let (lap_time, sector_times) =
-        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
+    let (lap_time, sector_times) = integrate_lap_and_sectors(
+        &s,
+        &speeds,
+        total_length,
+        closed,
+        track.sector_markers.as_deref(),
+    );
 
     let lateral_gs: Vec<f64> = (0..n)
         .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
@@ -1059,7 +1185,7 @@ mod tests {
         let (r, phi) = (120.0, 0.18_f64);
         let mu = params.tire_mu;
         let kappa = 1.0 / r;
-        let v = cornering_speed_3d(&params, kappa, 0.0, phi, 0.0);
+        let v = cornering_speed_3d(&params, kappa, 0.0, phi, 0.0, 1.0);
         let v2 = GRAVITY * r * (phi.sin() + mu * phi.cos()) / (phi.cos() - mu * phi.sin());
         let v_analytic = v2.sqrt();
         assert!(
@@ -1067,7 +1193,7 @@ mod tests {
             "banked v {v} vs analytic {v_analytic}"
         );
         // Banking raises the limit above the unbanked corner.
-        let v_flat = cornering_speed_3d(&params, kappa, 0.0, 0.0, 0.0);
+        let v_flat = cornering_speed_3d(&params, kappa, 0.0, 0.0, 0.0, 1.0);
         assert!(v > v_flat, "banked {v} should exceed flat {v_flat}");
     }
 
@@ -1271,5 +1397,176 @@ mod tests {
         let res = qss_lap_sim_3d(&ribbon, &params);
         assert!(res.speeds.iter().all(|&v| v > 0.0 && v < V_CAP));
         assert!(res.lap_time > 0.0);
+    }
+
+    // --- mu_scale grip grid (Phase 1.4) ---
+
+    use apex_track::MuScaleGrid;
+
+    #[test]
+    fn mu_scale_scales_grip_circle_by_analytic_sqrt_factor() {
+        // No downforce, flat/unbanked: N = mg (constant), so the grip-circle
+        // cornering limit reduces to the exact closed form v² = μ·mu_scale·g/κ,
+        // i.e. v ∝ sqrt(mu_scale).
+        let params = CarParams {
+            lift_coeff: 0.0,
+            ..CarParams::default()
+        };
+        let kappa = 1.0 / 100.0;
+        let v_full = cornering_speed_3d(&params, kappa, 0.0, 0.0, 0.0, 1.0);
+        let v_patch = cornering_speed_3d(&params, kappa, 0.0, 0.0, 0.0, 0.7);
+        let ratio = v_patch / v_full;
+        let analytic = 0.7_f64.sqrt();
+        assert!(
+            (ratio - analytic).abs() < 1e-9,
+            "ratio {ratio} vs analytic sqrt(0.7) = {analytic}"
+        );
+    }
+
+    /// A flat circular ring perturbed by a uniform, physically negligible
+    /// bank (`1e-9` rad) purely to defeat `Ribbon3d::is_flat`'s fast path and
+    /// exercise the real `qss_lap_sim_3d_with_grip` code path — the perturbation
+    /// is ~9 orders of magnitude below the tolerances used below, so it does
+    /// not itself move the result.
+    fn ring_with_tiny_bank(n: usize, r: f64) -> Ribbon3d {
+        let pts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let u = 2.0 * PI * i as f64 / n as f64;
+                [r * u.cos(), r * u.sin(), 0.0]
+            })
+            .collect();
+        let w = vec![6.0; n];
+        let bank = vec![1e-9; n];
+        Ribbon3d::from_centerline_3d("ring_tiny_bank", &pts, &bank, &w, &w, true)
+    }
+
+    #[test]
+    fn low_grip_patch_slows_qss_by_analytic_grip_circle_factor() {
+        let params = CarParams {
+            lift_coeff: 0.0,
+            ..CarParams::default()
+        };
+        let (n, r) = (720usize, 200.0);
+        let mut ribbon = ring_with_tiny_bank(n, r);
+        let l = ribbon.total_length;
+
+        // A 0.7 patch over the quarter [L/4, L/2), else 1.0, with a narrow
+        // linear ramp at each edge (grid rows just inside the plateau).
+        let edge = l * 0.005;
+        let grid = MuScaleGrid::new(
+            vec![
+                0.0,
+                l * 0.25 - edge,
+                l * 0.25,
+                l * 0.5,
+                l * 0.5 + edge,
+                l * 0.999,
+            ],
+            vec![-10.0, 10.0],
+            vec![
+                1.0, 1.0, // s=0
+                1.0, 1.0, // s=L/4-edge
+                0.7, 0.7, // s=L/4
+                0.7, 0.7, // s=L/2
+                1.0, 1.0, // s=L/2+edge
+                1.0, 1.0, // s=0.999L
+            ],
+        )
+        .expect("valid grid");
+        ribbon.mu_scale_grid = Some(grid);
+
+        let mu_scale = ribbon.centerline_mu_scale().expect("grid attached");
+        let res = qss_lap_sim_3d_with_grip(&ribbon, &params, Some(&mu_scale));
+
+        // Deep interior of the patch vs. deep interior of the unaffected
+        // region (each a band well clear of the ramp edges), averaged to
+        // smooth out any residual forward/backward-pass transition noise.
+        let avg_speed_in = |lo: f64, hi: f64| -> f64 {
+            let vs: Vec<f64> = ribbon
+                .stations
+                .iter()
+                .zip(&res.speeds)
+                .filter(|(st, _)| st.s >= lo && st.s < hi)
+                .map(|(_, &v)| v)
+                .collect();
+            vs.iter().sum::<f64>() / vs.len() as f64
+        };
+        let patch_speed = avg_speed_in(l * 0.30, l * 0.45);
+        let outside_speed = avg_speed_in(l * 0.60, l * 0.75);
+
+        let ratio = patch_speed / outside_speed;
+        let analytic = 0.7_f64.sqrt();
+        assert!(
+            (ratio - analytic).abs() < 0.02,
+            "patch/outside speed ratio {ratio} vs analytic sqrt(0.7) = {analytic} \
+             (patch {patch_speed}, outside {outside_speed})"
+        );
+    }
+
+    #[test]
+    fn absent_grid_and_explicit_uniform_grid_are_bitwise_equal_to_baseline() {
+        // A non-flat (tiny-banked) ribbon must produce IDENTICAL QSS output
+        // whether it carries no grid at all, or an explicit all-1.0 grid —
+        // both must also match the grid-oblivious `qss_lap_sim_3d` exactly.
+        // This is the byte-stability proof for Task 1: `params.tire_mu * 1.0`
+        // is exact in IEEE-754, and bilinear interpolation of a constant
+        // field returns the exact constant, so both paths collapse to the
+        // pre-grip-map arithmetic bit-for-bit.
+        let params = CarParams::f1_2024_calibrated();
+        let (n, r) = (360usize, 150.0);
+        let mut ribbon_uniform = ring_with_tiny_bank(n, r);
+        let l = ribbon_uniform.total_length;
+        ribbon_uniform.mu_scale_grid =
+            Some(MuScaleGrid::new(vec![0.0, l * 0.5], vec![-10.0, 10.0], vec![1.0; 4]).unwrap());
+        let mu_scale = ribbon_uniform.centerline_mu_scale().expect("grid attached");
+
+        let baseline = qss_lap_sim_3d(&ring_with_tiny_bank(n, r), &params);
+        let via_none = qss_lap_sim_3d_with_grip(&ring_with_tiny_bank(n, r), &params, None);
+        let via_uniform_grid = qss_lap_sim_3d_with_grip(&ribbon_uniform, &params, Some(&mu_scale));
+
+        for (label, other) in [("None", &via_none), ("uniform grid", &via_uniform_grid)] {
+            assert_eq!(
+                baseline.lap_time.to_bits(),
+                other.lap_time.to_bits(),
+                "lap_time mismatch for {label}"
+            );
+            for i in 0..baseline.speeds.len() {
+                assert_eq!(
+                    baseline.speeds[i].to_bits(),
+                    other.speeds[i].to_bits(),
+                    "speed[{i}] mismatch for {label}"
+                );
+            }
+        }
+    }
+
+    // --- sector markers (roadmap 1.2) ---
+
+    #[test]
+    fn explicit_sector_markers_produce_matching_sector_count_and_sum() {
+        let params = CarParams::default();
+        let (op, oc) = oval_track(1000.0, 100.0, 12.0, 400);
+        let mut oval = build_track("oval", &op, oc);
+        // Two interior markers -> 3 sectors, deliberately NOT equal thirds.
+        oval.sector_markers = Some(vec![oval.total_length * 0.2, oval.total_length * 0.6]);
+
+        let result = qss_lap_sim(&oval, &params);
+        assert_eq!(result.sector_times.len(), 3);
+        let sum: f64 = result.sector_times.iter().sum();
+        assert!(
+            (sum - result.lap_time).abs() < 1e-9,
+            "marker sector times {:?} sum to {sum}, lap_time {}",
+            result.sector_times,
+            result.lap_time
+        );
+
+        // Sanity: markers actually changed the split vs. the equal-thirds default.
+        let mut oval_default = build_track("oval", &op, oc);
+        oval_default.sector_markers = None;
+        let default_result = qss_lap_sim(&oval_default, &params);
+        assert_ne!(
+            result.sector_times, default_result.sector_times,
+            "explicit markers should produce a different split than equal thirds"
+        );
     }
 }

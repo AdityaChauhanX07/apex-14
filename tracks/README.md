@@ -71,6 +71,74 @@ v1-compatible output, byte-identical to `export_track_json`.
 }
 ```
 
+### mu_scale grid (Phase 1.4)
+
+An optional `mu_scale_grid` block attaches a `mu_scale(s, n)` grip-multiplier
+grid to a v2 ribbon: a bilinearly-interpolated `(station, lateral)` grid,
+`1.0` = baseline grip. Absent ⇒ uniform `1.0` (no grid at all) — the
+byte-stable default; this ships the **mechanism** only, nothing populates
+real grip-map data yet (a real dirty-line-vs-racing-line dataset is future
+work).
+
+| Field      | Type            | Required | Meaning                                                             |
+|------------|-----------------|----------|----------------------------------------------------------------------|
+| `stations` | array of number | yes      | Arc-length row stations (m), strictly increasing, `stations[0] == 0`. |
+| `lateral`  | array of number | yes      | Lateral column offsets (m), strictly increasing, left-positive (matches the ribbon frame's `n`, `docs/math/track3d.md` §1). |
+| `values`   | array of number | yes      | Grip multiplier at each grid point, row-major (`stations.len() * lateral.len()` entries). |
+
+`apex_track::Ribbon3d::mu_scale_grid` carries the parsed grid;
+`apex_track::MuScaleGrid::mu_at(s, n, total_length, closed)` samples it
+(`s` wraps cyclically on a closed ribbon; `n` clamps to the grid's lateral
+extent). **QSS never reads this field directly** — see
+`apex_physics::qss_lap_sim_3d_with_grip`'s docs: a driven-line run must
+sample the *original* ribbon's grid at the driven path's own `(s, n)`, not
+whatever ribbon QSS happens to be running on, so the multiplier vector is
+always baked by the caller (centerline: `Ribbon3d::centerline_mu_scale`;
+driven line: `apex_correlate::driven`).
+
+```json
+{
+    "version": 2,
+    "name": "Dirty vs racing line",
+    "closed": true,
+    "mu_scale_grid": {
+        "stations": [0.0, 500.0, 1000.0],
+        "lateral": [-6.0, 0.0, 6.0],
+        "values": [
+            0.85, 1.05, 0.85,
+            0.85, 1.05, 0.85,
+            0.85, 1.05, 0.85
+        ]
+    },
+    "points": [
+        { "x": 0.0,   "y": 0.0 },
+        { "x": 500.0, "y": 0.0 },
+        { "x": 500.0, "y": 500.0 }
+    ]
+}
+```
+
+### Sector markers (Phase 1.2)
+
+An optional `sector_markers` field (top-level, available at v1 or v2 — same
+as `metadata`) lists ascending arc-length stations marking the start of
+each sector *after* the first (the first sector always starts at `s = 0`),
+so `n_sectors = sector_markers.len() + 1`. Absent ⇒ the classic
+equal-arc-length-thirds split (`apex_physics::DEFAULT_SECTOR_COUNT`).
+`apex_track::Track`/`Ribbon3d::sector_markers` carry the parsed value;
+`qss_lap_sim`/`qss_lap_sim_3d`/`qss_lap_sim_tire` honor it automatically
+when present via `apex_physics::sector_times_with_markers`.
+
+```json
+{ "name": "...", "closed": true, "sector_markers": [1800.0, 4200.0], "points": [...] }
+```
+
+**Pit lane polyline (deferred).** A `pit_lane_polyline` field is a natural
+future v2 addition (a separate centerline for the pit-entry/exit path), but
+has no consumer today — nothing in the workspace reads a pit lane
+independent of the main track. Deferred until race-sim integration; no
+field exists yet.
+
 ## Minimal example
 
 ```json

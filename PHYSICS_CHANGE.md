@@ -63,6 +63,56 @@ change, not chased as a bug.
 
 ## Log
 
+### 2026-07-07 — Grip-map mechanism + sector markers (Phase 1.4 / 1.2): mu_scale(s,n) grid, marker-aware sectors — **goldens byte-unchanged**
+- **What changed.** Added `apex_track::MuScaleGrid`, a bilinearly-interpolated
+  `(station, lateral)` grip-multiplier grid, as an optional schema v2 block
+  (`mu_scale_grid`, `tracks/README.md`) attached to `Ribbon3d`. The §5.4 grip
+  circle (`docs/math/track3d.md` §5.8) gains a `mu_scale(s, n)` factor:
+  `μN → μ·mu_scale(s,n)·N`. **QSS never reads a ribbon's `mu_scale_grid` field
+  itself** — `qss_lap_sim_3d_with_grip` takes an externally-supplied per-station
+  multiplier vector instead, because a driven-line run passes QSS a
+  reparameterized ribbon whose own `(s, n)` isn't the original centerline's; a
+  QSS-internal lookup on its own ribbon argument would silently sample the
+  wrong grid location. Centerline runs bake the vector via the new
+  `Ribbon3d::centerline_mu_scale()` (`n = 0`); the driven-line pipeline
+  (`apex_correlate::driven`) bakes it from the *original* ribbon at each
+  sample's own projected `(s, n)` (`DrivenGeometry::lateral_offset_per_segment`
+  / `mu_scale`). `qss_lap_sim_3d` itself is now a thin, grid-oblivious wrapper
+  over `qss_lap_sim_3d_with_grip(..., None)`. This mechanism ships empty —
+  nothing populates a real grip map yet (a rubbered-line-vs-dirty-line dataset
+  is future work).
+- **Also landed: sector markers (Phase 1.2 loose end).** `Track`/`Ribbon3d`
+  gained an optional `sector_markers: Option<Vec<f64>>` field (schema v2 JSON,
+  `tracks/README.md`); `apex_physics::sector_times_with_markers` buckets by
+  explicit boundaries when present, and `qss_lap_sim`/`qss_lap_sim_3d`/
+  `qss_lap_sim_tire` honor it automatically, falling back to the existing
+  equal-arc-length-thirds split when absent (unchanged default behavior).
+  `pit_lane_polyline` is deferred (schema note only, no consumer exists).
+- **Flat / grid-absent invariance — no golden change.** Absent grid ⇒ no grid
+  is even constructed, and `params.tire_mu * mu_scale` is only ever multiplied
+  when a caller opts in explicitly; every existing call site (CLI, viewer,
+  golden harness, correlation pipeline) is unchanged and passes no grid, so
+  every existing code path executes identical float ops. An explicit all-`1.0`
+  grid is *also* bitwise-identical: bilinear interpolation of a constant field
+  returns the exact constant (`c + t·(c−c) = c`), and `x * 1.0 == x` is
+  IEEE-754 exact — the same "collapses via exact algebra" discipline as the
+  flat `cosθ=1.0`/`sinθ=0.0` case (§5.6). Proven by
+  `qss::tests::absent_grid_and_explicit_uniform_grid_are_bitwise_equal_to_baseline`.
+  Sector markers are similarly additive: absent (`None`, the default for every
+  existing track file/fixture) reproduces `sector_times` exactly. **Golden
+  lap fixtures untouched — no regeneration needed.**
+- **Validation.** `MuScaleGrid::mu_at` unit tests (corners, edge clamping,
+  wraparound across a closed-ribbon seam, exact-constant round trip);
+  `qss::tests::mu_scale_scales_grip_circle_by_analytic_sqrt_factor` (no
+  downforce ⇒ `v ∝ sqrt(mu_scale)` exactly); `qss::tests::low_grip_patch_slows_qss_by_analytic_grip_circle_factor`
+  (a synthetic ring with a 0.7 patch slows to within 2% of the analytic
+  `sqrt(0.7)` factor); `apex_correlate::driven::tests::driven_line_off_center_hits_low_grip_patch_centerline_does_not`
+  (a grid with *lateral* variation only — a driven line at `n=+3` samples the
+  low-grip side and slows, while the centerline `n=0` and a direct
+  `centerline_mu_scale()` query both read full grip, confirming the
+  grid-external design doesn't leak grid effects onto the wrong line);
+  `qss::tests::explicit_sector_markers_produce_matching_sector_count_and_sum`.
+
 ### 2026-07-07 — 3D point-mass QSS physics (Phase 1.3): grade, vertical-curvature load, banking — **goldens byte-unchanged**
 - **What changed.** Added `qss_lap_sim_3d(&Ribbon3d, &CarParams)` implementing the
   3D point-mass QSS (docs/math/track3d.md §5): the longitudinal grade force
