@@ -89,6 +89,12 @@ enum Commands {
         /// Max deviation (m) a smoothed point may move from its survey point
         #[arg(long, default_value_t = apex_track::DEFAULT_SMOOTH_TOLERANCE_M)]
         smooth_tolerance: f64,
+
+        /// Merge a pre-fetched elevation sidecar (from tools/fetch_elevation.py)
+        /// and write a **v2 3D** track JSON. The input must then be the 2D track
+        /// JSON the sidecar was computed against; no network calls are made here.
+        #[arg(long)]
+        elevation: Option<PathBuf>,
     },
 
     /// Correlate measured telemetry against a QSS sim (deltas, RMSE, corners)
@@ -457,7 +463,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             name,
             no_smooth,
             smooth_tolerance,
-        } => cmd_import_track(input, output, name, !no_smooth, smooth_tolerance),
+            elevation,
+        } => cmd_import_track(input, output, name, !no_smooth, smooth_tolerance, elevation),
         Commands::Correlate {
             telemetry,
             track,
@@ -775,7 +782,11 @@ fn cmd_import_track(
     name: String,
     smooth: bool,
     smooth_tolerance: f64,
+    elevation: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(elev) = elevation {
+        return cmd_import_track_elevation(input, elev, output, name);
+    }
     println!("Importing track '{}' from {}", name, input.display());
     let raw = apex_track::load_tumftm_csv(&input, &name)?;
     println!(
@@ -809,6 +820,96 @@ fn cmd_import_track(
     std::fs::write(&output, json)?;
     println!("Exported to {}", output.display());
 
+    Ok(())
+}
+
+/// Minimal view of a `tools/fetch_elevation.py` sidecar (only the fields the
+/// Rust merge needs). Network/DEM/smoothing all happen in Python; this side is
+/// a deterministic, offline merge.
+#[derive(serde::Deserialize)]
+struct ElevationSidecar {
+    circuit: String,
+    dem_dataset: String,
+    z: Vec<f64>,
+    #[serde(default)]
+    banking_deg: f64,
+    #[serde(default)]
+    elevation_range_m: f64,
+}
+
+/// `import-track --elevation`: merge a pre-fetched elevation sidecar into the 2D
+/// centerline (loaded from the track JSON it was computed against) and write a
+/// **v2 3D** track JSON. Then reload it via `load_ribbon3d_json` and print the
+/// geometry-validation report (the load-and-validate path on real data).
+fn cmd_import_track_elevation(
+    input: PathBuf,
+    elevation: PathBuf,
+    output: PathBuf,
+    name: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "Merging elevation '{}' into '{}' (2D source {})",
+        elevation.display(),
+        name,
+        input.display()
+    );
+    // The sidecar's z is aligned 1:1 to the 2D track JSON's points, so load the
+    // JSON as-is (no re-smoothing, which would desynchronize the indexing).
+    let track = apex_track::load_track_json(&input)?;
+    let sidecar: ElevationSidecar = serde_json::from_str(&std::fs::read_to_string(&elevation)?)?;
+    println!(
+        "  elevation source: {} (DEM {}), range {:.1} m",
+        sidecar.circuit, sidecar.dem_dataset, sidecar.elevation_range_m
+    );
+    if sidecar.z.len() != track.segments.len() {
+        return Err(format!(
+            "elevation sidecar has {} z samples but the track has {} points — \
+             the sidecar must be computed against this exact 2D centerline",
+            sidecar.z.len(),
+            track.segments.len()
+        )
+        .into());
+    }
+
+    // Assemble the 3D centerline (x, y, z) and build a Ribbon3d (bank = 0).
+    let pts: Vec<[f64; 3]> = track
+        .segments
+        .iter()
+        .zip(&sidecar.z)
+        .map(|(seg, &z)| [seg.x, seg.y, z])
+        .collect();
+    let bank = vec![sidecar.banking_deg.to_radians(); pts.len()];
+    let wl: Vec<f64> = track.segments.iter().map(|s| s.width_left).collect();
+    let wr: Vec<f64> = track.segments.iter().map(|s| s.width_right).collect();
+    let ribbon =
+        apex_track::Ribbon3d::from_centerline_3d(&name, &pts, &bank, &wl, &wr, track.is_closed);
+
+    let json = apex_track::export_ribbon3d_json(&ribbon)?;
+    std::fs::write(&output, &json)?;
+    println!("Exported v2 3D track to {}", output.display());
+
+    // Load-and-validate the written file (round-trip through load_ribbon3d_json).
+    let reloaded = apex_track::load_ribbon3d_json(&output)?;
+    let v = reloaded.validate();
+    let len_2d = track.total_length;
+    println!("  validation (reloaded via load_ribbon3d_json):");
+    println!("    stations:          {}  closed={}", v.n, v.is_closed);
+    println!("    all finite:        {}", v.all_finite);
+    println!(
+        "    frame ortho error: {:.2e} (0 = perfect orthonormality)",
+        v.max_ortho_error
+    );
+    println!(
+        "    length 2D -> 3D:   {:.1} m -> {:.1} m  (+{:.1} m)",
+        len_2d,
+        v.length_3d,
+        v.length_3d - len_2d
+    );
+    println!("    elevation range:   {:.1} m", v.elevation_range);
+    println!(
+        "    |Omega_y| p95/max: {:.5} / {:.5} 1/m   |Omega_z| p95: {:.5} 1/m",
+        v.omega_y_p95, v.omega_y_max, v.omega_z_p95
+    );
     Ok(())
 }
 

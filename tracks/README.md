@@ -105,6 +105,42 @@ Per-point widths override the uniform default:
 - `test_circle.json` - 36 points around a 50 m-radius circle (10° spacing), width 10 m.
 - `oval_simple.json` - an oval with 500 m straights and 80 m-radius corners, width 12 m.
 
+## 3D elevation workflow (Phase 1.2)
+
+Real 3D track files are produced from the (georeference-less) TUMFTM centerline
+plus external elevation data. **All of it stays local / gitignored** (TUMFTM is
+LGPL-3.0; OSM is ODbL; DEM tiles have their own terms). The network lives only in
+the Python tools; the Rust side is a deterministic, offline merge.
+
+```bash
+# 1. Georeference local metres -> WGS84 by shape-matching the centerline to the
+#    OSM raceway outline (Overpass). Writes tracks/<c>.georef.json (+ residual RMS).
+python tools/georef.py spa
+
+# 2. Sample a DEM along the georeferenced centerline, smooth z(s), write the
+#    elevation sidecar + profile SVG. Caches DEM/OSM responses (zero-cost re-runs).
+python tools/fetch_elevation.py spa
+
+# 3. Merge z(s) into the 2D centerline and write a v2 3D track (Rust, no network).
+apex-14 import-track --input tracks/spa.json --elevation tracks/spa.elevation.json \
+    --output tracks/spa_3d.json --name spa
+```
+
+- **Georeferencing.** TUMFTM CSVs carry no georeference (header is only
+  `x_m,y_m,w_tr_right_m,w_tr_left_m`). `tools/georef.py` fits a 2D similarity from
+  our centerline onto the OSM `highway=raceway` ways (point-to-segment trimmed
+  ICP). Reported accuracy: Spa ≈ 4.9 m coverage-RMS (98 % within 30 m),
+  Silverstone ≈ 4.4 m (92 %) — both well under the 15 m sub-DEM-cell target.
+- **DEM.** The task named Copernicus **GLO-30**; OpenTopoData's free tier does not
+  serve it, so we use **EU-DEM 25 m** (`eudem25m`, also a Copernicus Land
+  Monitoring Service product, finer posting, Europe-only) with `srtm30m` then
+  Open-Elevation as fallbacks.
+- **Banking** stays `0`: a 25–30 m DEM cannot resolve camber across a ~14 m track
+  width. The `banking_deg` field is the manual per-corner override mechanism,
+  populated later if a physics slice needs it.
+- **Determinism.** With a warm cache the elevation sidecar (and thus the v2 file)
+  is byte-reproducible; `APEX_REPRO_TIMESTAMP` pins any timestamp.
+
 ## Importing Real Track Data
 
 Apex-14 can import tracks from the

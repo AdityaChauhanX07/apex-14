@@ -27,7 +27,7 @@ pub use parser::{
     load_ribbon3d_json, load_track_json, load_tumftm_csv, parse_ribbon3d_json, parse_track_json,
     parse_tumftm_csv, TrackFileJson, TrackMetaJson, TrackPointJson,
 };
-pub use ribbon3d::{Frame, Ribbon3d, RibbonStation, DEFAULT_MU_SCALE};
+pub use ribbon3d::{Frame, Ribbon3d, RibbonStation, RibbonValidation, DEFAULT_MU_SCALE};
 pub use smoothing::{smooth_points, smooth_track, SmoothingReport, DEFAULT_SMOOTH_TOLERANCE_M};
 pub use track_gen::{extract_features, generate_track_batch, random_spline_track, TrackFeatures};
 pub use types::{processed_track_hash, raw_track_hash, Track, TrackPoint, TrackSegment};

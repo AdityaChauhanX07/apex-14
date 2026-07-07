@@ -734,6 +734,72 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
     }
 
     #[test]
+    fn synthetic_3d_load_and_validate_smoke() {
+        // A tilted closed ring (z varies sinusoidally): a genuine 3D loop built
+        // from SYNTHETIC data only — CI never sees the real gitignored circuits.
+        // Exercises the same load_ribbon3d_json -> validate path as real data.
+        let n = 360;
+        let r = 250.0;
+        let amp = 12.0;
+        let mut pts = Vec::new();
+        let mut len2d = 0.0;
+        let mut prev: Option<(f64, f64)> = None;
+        for i in 0..n {
+            let u = 2.0 * PI * (i as f64) / (n as f64);
+            let (x, y) = (r * u.cos(), r * u.sin());
+            if let Some((px, py)) = prev {
+                len2d += ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+            }
+            prev = Some((x, y));
+            pts.push(TrackPointJson {
+                x,
+                y,
+                width_left: Some(6.0),
+                width_right: Some(6.0),
+                z: Some(amp * u.sin()),
+                banking_deg: Some(0.0),
+            });
+        }
+        let file = TrackFileJson {
+            version: Some(2),
+            name: "synth3d".into(),
+            closed: true,
+            width: None,
+            metadata: None,
+            points: pts,
+        };
+        let json = serde_json::to_string(&file).unwrap();
+
+        let ribbon = parse_ribbon3d_json(&json).expect("load synthetic 3D");
+        let v = ribbon.validate();
+        assert_eq!(v.n, n);
+        assert!(v.is_closed);
+        assert!(v.all_finite, "all coords/curvatures must be finite");
+        // Frame orthonormality holds on the 3D ring.
+        assert!(
+            v.max_ortho_error < 1e-9,
+            "frame ortho error {}",
+            v.max_ortho_error
+        );
+        // Ω_y (pitch rate) is finite and bounded.
+        assert!(v.omega_y_max.is_finite() && v.omega_y_p95 >= 0.0);
+        // 3D arc length exceeds the 2D loop (elevation adds length).
+        assert!(
+            v.length_3d > len2d,
+            "3D length {} must exceed 2D length {}",
+            v.length_3d,
+            len2d
+        );
+        // Elevation range ≈ 2·amp.
+        assert!(
+            (v.elevation_range - 2.0 * amp).abs() < 0.5,
+            "elevation range {} vs {}",
+            v.elevation_range,
+            2.0 * amp
+        );
+    }
+
+    #[test]
     fn legacy_track_parser_still_ignores_3d_fields() {
         // The 2D parse_track_json path is unchanged: a v2 file still loads as a
         // flat 2D Track (3D fields ignored), so existing consumers are untouched.

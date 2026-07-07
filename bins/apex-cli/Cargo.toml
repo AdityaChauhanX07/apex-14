@@ -20,7 +20,7 @@ apex-optimizer = { path = "../../crates/apex-optimizer" }
 apex-telemetry = { path = "../../crates/apex-telemetry", default-features = false }
 apex-correlate = { path = "../../crates/apex-correlate" }
 apex-race = { path = "../../crates/apex-race" }
-
-[dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]

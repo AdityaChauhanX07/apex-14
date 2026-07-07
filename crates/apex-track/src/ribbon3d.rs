@@ -124,6 +124,29 @@ pub struct Ribbon3d {
     pub is_closed: bool,
 }
 
+/// Geometry-validation report from [`Ribbon3d::validate`].
+#[derive(Debug, Clone)]
+pub struct RibbonValidation {
+    /// Number of stations.
+    pub n: usize,
+    /// Whether the ribbon is closed.
+    pub is_closed: bool,
+    /// Total 3D arc length (m).
+    pub length_3d: f64,
+    /// Elevation range `max z − min z` (m).
+    pub elevation_range: f64,
+    /// Max orthonormality residual over all frames (0 = perfect).
+    pub max_ortho_error: f64,
+    /// 95th-percentile `|Ω_y|` (pitch-rate) magnitude (1/m).
+    pub omega_y_p95: f64,
+    /// Max `|Ω_y|` (1/m).
+    pub omega_y_max: f64,
+    /// 95th-percentile `|Ω_z|` (yaw-curvature) magnitude (1/m).
+    pub omega_z_p95: f64,
+    /// Whether every stored coordinate/curvature is finite.
+    pub all_finite: bool,
+}
+
 /// Build the frame from the three road angles (heading ψ, grade θ, bank φ).
 ///
 /// * `t = (cosθ cosψ, cosθ sinψ, sinθ)` — tangent.
@@ -206,6 +229,58 @@ impl Ribbon3d {
     /// Whether the ribbon has no stations.
     pub fn is_empty(&self) -> bool {
         self.stations.is_empty()
+    }
+
+    /// Validate the geometry: frame orthonormality, generalized-curvature
+    /// finiteness/smoothness, 3D length and elevation range. Used by the
+    /// load-and-validate path (real data + the synthetic smoke test).
+    pub fn validate(&self) -> RibbonValidation {
+        let n = self.stations.len();
+        let mut max_ortho = 0.0_f64;
+        let mut all_finite = true;
+        let mut oy: Vec<f64> = Vec::with_capacity(n);
+        let mut oz: Vec<f64> = Vec::with_capacity(n);
+        let (mut zmin, mut zmax) = (f64::INFINITY, f64::NEG_INFINITY);
+        for st in &self.stations {
+            let f = frame_from_angles(st.heading, st.grade, st.bank);
+            let e = [
+                (norm(f.t) - 1.0).abs(),
+                (norm(f.n) - 1.0).abs(),
+                (norm(f.m) - 1.0).abs(),
+                dot(f.t, f.n).abs(),
+                dot(f.t, f.m).abs(),
+                dot(f.n, f.m).abs(),
+            ];
+            for v in e {
+                max_ortho = max_ortho.max(v);
+            }
+            for v in [st.omega_x, st.omega_y, st.omega_z, st.x, st.y, st.z] {
+                all_finite &= v.is_finite();
+            }
+            oy.push(st.omega_y.abs());
+            oz.push(st.omega_z.abs());
+            zmin = zmin.min(st.z);
+            zmax = zmax.max(st.z);
+        }
+        let p95 = |mut v: Vec<f64>| -> f64 {
+            if v.is_empty() {
+                return 0.0;
+            }
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[((0.95 * (v.len() - 1) as f64).round() as usize).min(v.len() - 1)]
+        };
+        let omega_y_max = oy.iter().cloned().fold(0.0_f64, f64::max);
+        RibbonValidation {
+            n,
+            is_closed: self.is_closed,
+            length_3d: self.total_length,
+            elevation_range: if n > 0 { zmax - zmin } else { 0.0 },
+            max_ortho_error: max_ortho,
+            omega_y_p95: p95(oy),
+            omega_y_max,
+            omega_z_p95: p95(oz),
+            all_finite,
+        }
     }
 
     // --- query surface (mirrors `Track`; flat path is bitwise-identical) ---
