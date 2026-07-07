@@ -91,9 +91,11 @@ entry).
 
 **Pre-registered criterion.** Before re-running Spa on the real 3D track,
 the acceptance bar was set in advance: the fitted `power_scale` (uniquely
-low at 0.833 on the flat model, §5 below) should **rejoin the 1.0–1.16
-cross-circuit pack**, and the flat model's uniquely negative fitted lap
-delta (−4.06 s) should be **eliminated**, once gravity is correctly modeled.
+low at 0.833 on the flat model — see the 5-circuit table and parameter-scatter
+analysis in [`correlation_summary.md`](correlation_summary.md#the-5-circuit-table))
+should **rejoin the 1.0–1.16 cross-circuit pack**, and the flat model's
+uniquely negative fitted lap delta (−4.06 s) should be **eliminated**, once
+gravity is correctly modeled.
 
 **Outcome: criterion NOT met.**
 
@@ -127,17 +129,45 @@ and the preset residual peak sits exactly at the Raidillon climb (below).
    **14.3 → 17.8 m/s**. The point-mass QSS free-wheels downhill faster than
    the energy-managed real car, and that over-carry is what keeps the fit
    de-powered.
-3. **Measured-throttle evidence.** Diagnostic throttle-channel analysis of
-   the aligned telemetry shows the real driver's **descent median throttle
-   is 0.71**, against **1.00 (full throttle) on the climb** — the real car
-   is *managing* the descent (lifting, coasting, light braking to control
-   entry speed for the next corner), not free-wheeling it. The point-mass
-   QSS has no such driver model: it always takes the maximum speed the
-   grip/power envelope allows, so on a descent with reserve grip it
-   necessarily overspeeds relative to a driver who is deliberately not
-   using all of it. This is direct, model-external confirmation that the
-   over-carry is a genuine driver/energy-management gap, not a
-   georeferencing or physics-sign error.
+3. **Measured-throttle evidence — reproducible via `tools/grade_throttle_stats.py`.**
+   The diagnostic bins each aligned telemetry sample by the **local track
+   grade at that sample's own projected station** (`dz/ds`, computed by
+   central difference at the 3D track's native point spacing — the same
+   discretization `Ribbon3d::from_centerline_3d` uses), not by a fixed
+   station range — climb/descent/flat sub-segments are otherwise mixed
+   together and the result becomes highly sensitive to the exact boundary
+   chosen. At a **±2% grade threshold**:
+
+   ```
+   python tools/grade_throttle_stats.py telemetry/spa_2024_Q_aligned.csv tracks/spa_3d.json --threshold 0.02
+   ```
+
+   | bin | n | throttle p50 | full-throttle frac (`>0.95`) | any-brake frac |
+   |---|---|---|---|---|
+   | climb (`grade > +2%`) | 307 | **1.00** | 0.723 | 0.075 |
+   | descent (`grade < −2%`) | 370 | **0.71** | 0.470 | 0.178 |
+   | flat | 167 | 1.00 | 0.587 | 0.216 |
+
+   Stable across nearby thresholds (1.5%–2.5%: descent p50 pinned at exactly
+   0.71, full-throttle frac 0.470–0.472; climb p50 pinned at 1.00 throughout).
+   The real driver is *managing* the descent (partial throttle almost half
+   the time, braking on 18% of descent samples) rather than free-wheeling it
+   the way the point-mass QSS does. This is direct, model-external
+   confirmation that the over-carry is a genuine driver/energy-management
+   gap, not a georeferencing or physics-sign error.
+
+   **Silverstone control** (`--threshold 0.003`, since its elevation range is
+   ~20× smaller): climb/descent/flat medians are all **1.00**, full-throttle
+   fractions 0.61–0.76 with no climb-vs-descent gap — no throttle-management
+   signature, as expected on a track with no meaningful grade to manage.
+
+   *Provenance note:* an earlier adversarial audit pass attempted to
+   reproduce this claim using contiguous **station-window** binning (e.g. "s
+   in [4400, 4900) = descent") and got wildly threshold-sensitive,
+   non-reproducing numbers — that was a **methodology mismatch**, not a
+   sign the underlying claim was wrong. Per-sample grade binning (above) is
+   the correct reconstruction of the original method and reproduces it
+   cleanly.
 
 **Verdict: (b), an intended and correctly-implemented physics change with an
 honest negative result** — not a bug to chase. The grade force, 3D normal
@@ -169,10 +199,32 @@ real track, not just plausible-looking.
 
 ## 4. Silverstone — the control
 
-Silverstone has negligible elevation range (~10.7 m) relative to Spa's
-~106 m. Every fitted parameter moved **< 1%** when switching from the flat
-to the 3D model — exactly what a control should do: a track with almost no
-elevation should be almost unaffected by elevation physics. This is the
+Silverstone has negligible elevation range (**10.710 m**, confirmed via
+`Ribbon3d::validate`) relative to Spa's ~106 m. Every fitted parameter moved
+**< 1%** when switching from the flat to the 3D model — exactly what a
+control should do: a track with almost no elevation should be almost
+unaffected by elevation physics.
+
+**Demonstrated, not just asserted.** Running `qss_lap_sim` (flat) and
+`qss_lap_sim_3d` (3D) side by side on the same Silverstone centerline
+(calibrated car), lap time moves **112.0924 s → 112.0989 s** (6.5 ms, 0.006%)
+and the three largest, non-adjacent `|Δv|` station-level speed-trace
+differences are:
+
+| station `s` | `|Δv|` (flat vs. 3D) |
+|---|---|
+| ≈ 3596 m | 0.328 m/s |
+| ≈ 285 m | 0.275 m/s |
+| ≈ 255 m | 0.257 m/s |
+
+All three are **sub-1 m/s**, an order of magnitude below anything the Spa
+analysis calls a residual "feature" (14–18 m/s swings at Raidillon and
+Pouhon–Stavelot). This is the honest answer to a "speed-trace differences
+at known elevation features" ask for Silverstone: **there is no
+feature-level signal to tabulate, and this is a demonstrated null result,
+not an absence of analysis** — a 10.7 m elevation range simply doesn't
+produce corner-scale grade/load effects large enough to separate from
+numerical noise in the QSS pass structure. This is the
 implementation-correctness evidence that the 3D QSS isn't introducing a
 systematic bias independent of terrain; it responds to *how much elevation
 there is*, not to being turned on.

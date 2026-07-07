@@ -1,11 +1,13 @@
 # 3D curved-ribbon track geometry
 
-**Status: STARTED (Phase 1.1 — geometry plumbing).** This document defines the
-3D ribbon geometry and its moving frame. The *physics* that consumes the
-generalized curvatures (grade force, banking, load transfer in 3D) lands in a
-later Phase 1 slice; until then the fields are computed and plumbed but the
-solvers read only the flat projections. This file is completed when that physics
-lands.
+**Status: COMPLETE for the QSS/point-mass fidelity (Phase 1.1–1.4).** This
+document defines the 3D ribbon geometry, its moving frame, the 3D point-mass
+QSS physics that consumes the generalized curvatures (grade force, banking,
+vertical-curvature load — §5), and the `mu_scale(s, n)` grip-scaling grid
+(§5.8). Higher fidelities (single-track / four-wheel / 14-DOF) do not yet
+consume any of this — see §5.9 Deferrals, and `PHYSICS_CHANGE.md`, for what's
+scoped out and why. This file is extended, not "completed," as later
+fidelities and Phase 3's dynamic OCP formulation pick up the deferred items.
 
 Implementation: [`apex_track::ribbon3d`](../../crates/apex-track/src/ribbon3d.rs).
 
@@ -88,6 +90,36 @@ the exact 2D `curvature` values in `Ω_z` and reuses the identical interpolation
 arithmetic, so a flat ribbon reproduces the legacy 2D queries **bitwise**
 (`ribbon3d::tests::flat_exact_*`). This is what keeps the golden fixtures
 byte-stable while the 3D fields are unused.
+
+**Why an additive `Ribbon3d`, not a `Track` rewrite.** Two migration
+strategies were available for 3D: (a) extend `Track`/`TrackSegment` in place
+with `z`/`grade`/`bank` fields, or (b) add a new, parallel `Ribbon3d` type and
+leave `Track` untouched. (b) was chosen, for two concrete reasons, not just
+caution:
+
+1. **`TrackSegment` carries a `ContentHash` impl that destructures the struct
+   by name** (`apex_math::ContentHash for TrackSegment`, `crates/apex-track/src/types.rs`)
+   specifically so that adding a field is a *compile error* until the hash
+   function is updated — a forcing function against silently changing what
+   `processed_track_hash` covers. Extending `TrackSegment` in place would
+   mean every 3D field either joins the geometry hash domain (changing the
+   hash of every existing 2D track, a breaking change to anything pinning a
+   hash) or is deliberately excluded (a judgment call repeated per field,
+   with no structural reason to get it right). A separate `Ribbon3d` sidesteps
+   the question entirely: the hash domain stays exactly what it was.
+2. **`Track`'s fields are public and read directly across a dozen crates**
+   (QSS, the optimizer, the viewer, `apex-correlate`, …) with no accessor
+   layer. A facade/rewrite would need every one of those call sites to either
+   keep compiling against 2D semantics (defeating the point of a real 3D
+   type) or be migrated in lockstep (a large, high-blast-radius change with
+   no way to prove each call site was updated correctly). Additive `Ribbon3d`
+   means existing call sites are simply unaffected — proven, not assumed, by
+   the bitwise `flat_exact_*`/`qss::flat_ribbon_qss_bitwise_matches_track`
+   tests above and in §5.6.
+
+Both reasons are really the same shape: (b) makes "did I break anything"
+machine-checkable (compile error, or a bitwise test), where (a) would have
+made it a matter of careful review.
 
 ## 4. Analytic check cases
 
@@ -243,3 +275,20 @@ exact constant regardless of the interpolation fraction
   grid mechanism (§5.8); real grip-map *data* (rubbered line vs. dirty line)
   is still future work — §5.8 ships the mechanism, nothing populates a real
   grid yet.
+- **Extended `(1 − n·Ω_z)`-style 3D road-coordinate kinematics are not derived
+  here.** The classic curvilinear arc-length relation `ds/dt = v·cosα / (1 −
+  n·κ)` — a car's true ground speed along the track differs from its
+  along-centerline speed by a factor that depends on lateral offset `n` and
+  curvature `κ` — already exists in this codebase (`apex_physics::point_mass`,
+  `apex_optimizer::collocation`), but only in its flat 2D form: it consumes
+  `Track`'s scalar `κ`, never `Ribbon3d`, and has no lateral state at all in
+  the 3D point-mass QSS (§5 throughout treats `n = 0` implicitly — see §5.8's
+  note on `qss_lap_sim_3d`'s line-supplied grip sampling for the same
+  no-lateral-state fact in a different guise). A fully 3D version — replacing
+  `κ` with `Ω_z` and accounting for the banked/pitched frame's effect on the
+  `(1 − n·Ω_z)` factor and on `dn/dt` — is **not needed by the centerline
+  point-mass QSS** (it has no `n` to integrate), but **is required by Phase
+  3's dynamic optimal-control-problem formulation**, which does carry `n` as
+  a state. This is deferred-to-Phase-3 groundwork, not an oversight: deriving
+  it now, with no consumer to validate it against, would be unverified math
+  sitting idle. Recorded here so the gap is a decision, not a silence.

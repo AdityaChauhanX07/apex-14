@@ -199,6 +199,13 @@ apex-14 import-track --input tracks/spa.json --elevation tracks/spa.elevation.js
   our centerline onto the OSM `highway=raceway` ways (point-to-segment trimmed
   ICP). Reported accuracy: Spa ≈ 4.9 m coverage-RMS (98 % within 30 m),
   Silverstone ≈ 4.4 m (92 %) — both well under the 15 m sub-DEM-cell target.
+  **This target is machine-checked, not prose-only:** `georef.py`'s sidecar
+  (`tracks/<circuit>.georef.json`) carries `coverage_rms_m`, `residual_rms_m`,
+  and `scale`; `import-track --elevation` reads that sidecar (if present next
+  to the elevation sidecar) and prints it, **hard-warning to stderr**
+  (non-fatal — you may knowingly proceed) if `coverage_rms_m` exceeds 15 m or
+  `scale` falls outside `[0.95, 1.05]`. Absent sidecar ⇒ silently skipped (a
+  synthetic or hand-authored track has no georeferencing step to gate).
 - **DEM.** The task named Copernicus **GLO-30**; OpenTopoData's free tier does not
   serve it, so we use **EU-DEM 25 m** (`eudem25m`, also a Copernicus Land
   Monitoring Service product, finer posting, Europe-only) with `srtm30m` then

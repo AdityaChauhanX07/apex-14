@@ -859,6 +859,73 @@ struct ElevationSidecar {
     elevation_range_m: f64,
 }
 
+/// Minimal view of a `tools/georef.py` sidecar (only the quality metrics the
+/// Rust merge gates on). Optional: absent if the elevation sidecar wasn't
+/// itself derived through the georeferencing step (e.g. a synthetic track).
+#[derive(serde::Deserialize)]
+struct GeorefSidecar {
+    scale: f64,
+    coverage_rms_m: f64,
+    residual_rms_m: f64,
+}
+
+/// Coverage-RMS target used as a soft quality gate (tracks/README.md's
+/// "sub-DEM-cell target"): a 25-30 m DEM cell can't usefully resolve
+/// georeferencing error above this.
+const GEOREF_COVERAGE_RMS_TARGET_M: f64 = 15.0;
+/// Acceptable similarity-transform scale range (near-1:1 local-metres ->
+/// real-world; large deviations indicate a bad fit, e.g. wrong bbox or units).
+const GEOREF_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.95..=1.05;
+
+/// Load the georef sidecar next to the elevation sidecar (same convention as
+/// `fetch_elevation.py`/`georef.py`: `tracks/<circuit>.georef.json`), and
+/// **hard-warn** (stderr, non-fatal) if its quality metrics miss the
+/// documented targets. Silently does nothing if the file isn't present —
+/// georeferencing is optional groundwork, not a hard requirement of the
+/// elevation merge.
+fn warn_on_georef_quality(elevation_path: &std::path::Path, circuit: &str) {
+    let dir = elevation_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let georef_path = dir.join(format!("{circuit}.georef.json"));
+    let Ok(contents) = std::fs::read_to_string(&georef_path) else {
+        return;
+    };
+    let sidecar: GeorefSidecar = match serde_json::from_str(&contents) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "WARNING: found '{}' but couldn't parse it ({e}) — skipping georef quality gate",
+                georef_path.display()
+            );
+            return;
+        }
+    };
+    println!(
+        "  georef quality: coverage_rms={:.1} m, full_rms={:.1} m, scale={:.5}",
+        sidecar.coverage_rms_m, sidecar.residual_rms_m, sidecar.scale
+    );
+    if sidecar.coverage_rms_m > GEOREF_COVERAGE_RMS_TARGET_M {
+        eprintln!(
+            "WARNING: georef coverage_rms {:.1} m exceeds the {:.0} m sub-DEM-cell target \
+             ({}) — the georeferencing fit may be unreliable for this circuit",
+            sidecar.coverage_rms_m,
+            GEOREF_COVERAGE_RMS_TARGET_M,
+            georef_path.display()
+        );
+    }
+    if !GEOREF_SCALE_RANGE.contains(&sidecar.scale) {
+        eprintln!(
+            "WARNING: georef scale {:.5} is outside the expected [{:.2}, {:.2}] range \
+             ({}) — check the OSM bbox / units",
+            sidecar.scale,
+            GEOREF_SCALE_RANGE.start(),
+            GEOREF_SCALE_RANGE.end(),
+            georef_path.display()
+        );
+    }
+}
+
 /// `import-track --elevation`: merge a pre-fetched elevation sidecar into the 2D
 /// centerline (loaded from the track JSON it was computed against) and write a
 /// **v2 3D** track JSON. Then reload it via `load_ribbon3d_json` and print the
@@ -883,6 +950,7 @@ fn cmd_import_track_elevation(
         "  elevation source: {} (DEM {}), range {:.1} m",
         sidecar.circuit, sidecar.dem_dataset, sidecar.elevation_range_m
     );
+    warn_on_georef_quality(&elevation, &sidecar.circuit);
     if sidecar.z.len() != track.segments.len() {
         return Err(format!(
             "elevation sidecar has {} z samples but the track has {} points — \

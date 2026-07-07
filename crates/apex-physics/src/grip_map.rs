@@ -1,5 +1,13 @@
 //! Spatially varying grip across the track surface (rubbered racing line,
 //! off-line marbles), sampled on a (distance, lateral offset) grid.
+//!
+//! This is a runtime-only, non-serializable grid built from a `Track` for
+//! weather/rubber-buildup simulation. It is distinct from
+//! `apex_track::MuScaleGrid` (`crates/apex-track/src/grip_grid.rs`), the
+//! schema-attached `mu_scale(s, n)` grid that round-trips through track v2
+//! JSON and feeds QSS via an externally-supplied multiplier vector — same
+//! bilinear-interpolation shape, different data ownership and lifecycle. A
+//! future consolidation could unify them; not attempted here.
 
 /// Spatially varying grip multiplier across the track surface.
 ///

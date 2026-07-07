@@ -13,6 +13,13 @@
 //! plus half-widths `w_l(s), w_r(s)` and a `mu_scale(s)` placeholder (defaults
 //! `1.0`, unused by physics for now).
 //!
+//! `Ribbon3d` is an **additive** type alongside [`Track`](crate::Track), not
+//! an in-place extension of it — see `docs/math/track3d.md` §3 ("Why an
+//! additive `Ribbon3d`, not a `Track` rewrite") for the two concrete reasons
+//! (the `ContentHash` forcing function on `TrackSegment`, and `Track`'s
+//! public fields being read directly across a dozen crates with no accessor
+//! layer).
+//!
 //! # Flat degenerate case — byte-exact
 //!
 //! A **flat** ribbon has `z = 0`, `grade = 0`, `bank = 0`, `Ω_x = Ω_y = 0`, and
