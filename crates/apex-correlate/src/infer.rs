@@ -19,7 +19,7 @@ use apex_physics::CarParams;
 use apex_telemetry::ChannelId;
 use apex_track::Track;
 
-use crate::driven::{build_driven_geometry, DrivenLineMode};
+use crate::driven::DrivenLineMode;
 use crate::error::CorrelateError;
 use crate::metrics::resample_linear;
 use crate::telemetry::{GridKind, Telemetry};
@@ -92,6 +92,27 @@ pub fn infer_channels(
     car: &CarParams,
     cfg: &InferConfig,
 ) -> Inferred {
+    let zeros = vec![0.0; v.len()];
+    infer_channels_3d(s, v, kappa, &zeros, &zeros, &zeros, closed, car, cfg)
+}
+
+/// [`infer_channels`] with the 3D road terms — grade `θ`, bank `φ`, and vertical
+/// curvature `κ_v` per sample. The friction-circle grip uses the 3D normal load
+/// `N = m(g·cosθ·cosφ + v²κ·sinφ + v²κ_v) + F_df`, and the longitudinal tyre
+/// force picks up the grade term `m·g·sinθ` (so tractive/braking power includes
+/// the gravity contribution). Exactly inverts [`apex_physics::qss_lap_sim_3d`].
+#[allow(clippy::too_many_arguments)]
+pub fn infer_channels_3d(
+    s: &[f64],
+    v: &[f64],
+    kappa: &[f64],
+    grade: &[f64],
+    bank: &[f64],
+    kappa_v: &[f64],
+    closed: bool,
+    car: &CarParams,
+    cfg: &InferConfig,
+) -> Inferred {
     let n = v.len();
     let total_length = if n >= 2 {
         s[n - 1] - s[0] + (s[1] - s[0]).max(0.0)
@@ -146,10 +167,16 @@ pub fn infer_channels(
         out.fz_front[i] = fzf;
         out.fz_rear[i] = fzr;
 
-        // Friction-circle occupancy on the TOTAL grip (as the QSS enforces it).
-        let f_lat = m * a_lat;
-        let f_x = m * a_long + drag + rolling; // + = drive tyre force, − = brake
-        let f_grip = car.max_grip_force(vi); // μ·(mg+DF)
+        // Friction-circle occupancy on the 3D normal load (as the 3D QSS
+        // enforces it). θ/φ/κ_v are 0 in the flat case ⇒ this reduces exactly to
+        // μ·(mg+DF) and f_lat = m·v²κ.
+        let (theta, phi, kv) = (grade[i], bank[i], kappa_v[i]);
+        let f_lat = m * (vi * vi * ki * phi.cos() - G * phi.sin());
+        // Longitudinal tyre force incl. the grade term (+ = drive, − = brake).
+        let f_x = m * a_long + drag + rolling + m * G * theta.sin();
+        let normal =
+            m * (G * theta.cos() * phi.cos() + vi * vi * ki * phi.sin() + vi * vi * kv) + df;
+        let f_grip = car.tire_mu * normal; // μ·N_3d
         out.grip_util[i] = if f_grip > 0.0 {
             (f_lat * f_lat + f_x * f_x).sqrt() / f_grip
         } else {
@@ -226,6 +253,24 @@ fn local_linear_deriv(
     out
 }
 
+/// Vertical (pitch) curvature `κ_v = dθ/ds` by central differences (periodic).
+fn grade_rate(s: &[f64], grade: &[f64], total_length: f64) -> Vec<f64> {
+    let n = s.len();
+    let mut kv = vec![0.0; n];
+    for (i, kvi) in kv.iter_mut().enumerate() {
+        let im = (i + n - 1) % n;
+        let ip = (i + 1) % n;
+        let mut ds = s[ip] - s[im];
+        if ds <= 0.0 {
+            ds += total_length;
+        }
+        if ds > 0.0 {
+            *kvi = (grade[ip] - grade[im]) / ds;
+        }
+    }
+    kv
+}
+
 /// Centered periodic moving average with the given half-width (in samples).
 fn moving_average_periodic(v: &[f64], half: usize) -> Vec<f64> {
     let n = v.len();
@@ -271,7 +316,22 @@ pub fn infer_on_driven(
     mode: DrivenLineMode,
     cfg: &InferConfig,
 ) -> Result<InferResult, CorrelateError> {
-    let geom = build_driven_geometry(centerline, aligned, mode)?;
+    infer_on_driven_3d(centerline, aligned, car, mode, cfg, None)
+}
+
+/// [`infer_on_driven`] with an optional 3D centerline `elevation`. When `Some`,
+/// the driven line is elevated and the inferred load/grip/power channels pick up
+/// the 3D terms (compression in dips, the grade force in power). When `None`,
+/// behavior is identical to [`infer_on_driven`].
+pub fn infer_on_driven_3d(
+    centerline: &Track,
+    aligned: &Telemetry,
+    car: &CarParams,
+    mode: DrivenLineMode,
+    cfg: &InferConfig,
+    elevation: Option<&apex_track::Ribbon3d>,
+) -> Result<InferResult, CorrelateError> {
+    let geom = crate::driven::build_driven_geometry_3d(centerline, aligned, mode, elevation)?;
     let n = geom.track.segments.len();
 
     // Output grid = driven arc length s (for the derivative) with the centerline
@@ -301,7 +361,19 @@ pub fn infer_on_driven(
     };
     let v = resample(ChannelId::Speed).ok_or(CorrelateError::MissingAxis("speed"))?;
 
-    let inferred = infer_channels(&s_driven, &v, &kappa, true, car, cfg);
+    // 3D terms from the elevated driven ribbon (grade θ, bank φ, vertical
+    // curvature κ_v = dθ/ds). Absent ⇒ flat inference (all zero).
+    let inferred = match &geom.driven_ribbon {
+        Some(r) => {
+            let grade: Vec<f64> = r.stations.iter().map(|st| st.grade).collect();
+            let bank: Vec<f64> = r.stations.iter().map(|st| st.bank).collect();
+            let kappa_v = grade_rate(&s_driven, &grade, geom.driven_length);
+            infer_channels_3d(
+                &s_driven, &v, &kappa, &grade, &bank, &kappa_v, true, car, cfg,
+            )
+        }
+        None => infer_channels(&s_driven, &v, &kappa, true, car, cfg),
+    };
 
     // Assemble output channels: s (station) + carried inputs + inferred.
     let mut channels: std::collections::BTreeMap<ChannelId, Vec<f64>> = Default::default();
@@ -579,5 +651,60 @@ mod tests {
         // NaN there too, while a_lat/downforce stay finite away from the gap.
         assert!(inf.downforce[0].is_finite());
         assert!(inf.grip_util[20 + 5].is_nan() || inf.grip_util[0].is_finite());
+    }
+
+    /// 3D closed-loop: the 3D QSS on a synthetic **banked ring** is inverted by
+    /// `infer_channels_3d` — constant speed ⇒ `a_long ≈ 0`, and the friction
+    /// circle (on the 3D banked load) sits at the limit (grip util ≈ 1). This is
+    /// the 3D analogue of `closed_loop_circle`.
+    #[test]
+    fn closed_loop_banked_ring_3d() {
+        use apex_physics::qss_lap_sim_3d;
+        use apex_track::Ribbon3d;
+        use std::f64::consts::PI;
+
+        // A tight ring keeps the corner grip-limited (not drag-limited), so the
+        // banked cornering limit is a clean constant speed the inverter recovers.
+        let car = CarParams::f1_2024_calibrated();
+        let (n, r, beta) = (720usize, 55.0, 0.10_f64);
+        let pts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let u = 2.0 * PI * i as f64 / n as f64;
+                [r * u.cos(), r * u.sin(), 0.0]
+            })
+            .collect();
+        let bankv = vec![beta; n];
+        let w = vec![6.0; n];
+        let ribbon = Ribbon3d::from_centerline_3d("banked", &pts, &bankv, &w, &w, true);
+        let sim = qss_lap_sim_3d(&ribbon, &car);
+
+        let s: Vec<f64> = ribbon.stations.iter().map(|st| st.s).collect();
+        let kappa: Vec<f64> = ribbon.stations.iter().map(|st| st.omega_z.abs()).collect();
+        let grade: Vec<f64> = ribbon.stations.iter().map(|st| st.grade).collect();
+        let bank: Vec<f64> = ribbon.stations.iter().map(|st| st.bank).collect();
+        let kv = grade_rate(&s, &grade, ribbon.total_length);
+        let inf = infer_channels_3d(
+            &s,
+            &sim.speeds,
+            &kappa,
+            &grade,
+            &bank,
+            &kv,
+            true,
+            &car,
+            &InferConfig::default(),
+        );
+        for i in 0..n {
+            assert!(
+                inf.longitudinal_g[i].abs() < 1e-2,
+                "a_long {} at {i}",
+                inf.longitudinal_g[i]
+            );
+            assert!(
+                (0.97..1.07).contains(&inf.grip_util[i]),
+                "grip_util {} at {i}",
+                inf.grip_util[i]
+            );
+        }
     }
 }

@@ -268,6 +268,247 @@ pub fn qss_lap_sim(track: &Track, params: &CarParams) -> QssResult {
 }
 
 // ---------------------------------------------------------------------------
+// 3D point-mass QSS: grade force, vertical-curvature load, banking.
+// See docs/math/track3d.md §5. Flat tracks delegate to `qss_lap_sim` bitwise.
+// ---------------------------------------------------------------------------
+
+use apex_track::Ribbon3d;
+
+/// 3D normal (surface-perpendicular) load `N` at a segment (docs §5.1):
+/// `N = m(g·cosθ·cosφ + v²·κ·sinφ + v²·κ_v) + F_df(v)`.
+fn normal_load_3d(
+    params: &CarParams,
+    v: f64,
+    kappa: f64,
+    theta: f64,
+    phi: f64,
+    kappa_v: f64,
+) -> f64 {
+    params.mass * (GRAVITY * theta.cos() * phi.cos() + v * v * kappa * phi.sin() + v * v * kappa_v)
+        + params.downforce(v)
+}
+
+/// 3D in-surface lateral force demand (docs §5.2):
+/// `F_lat = m(v²·κ·cosφ − g·sinφ)`.
+fn lateral_demand_3d(params: &CarParams, v: f64, kappa: f64, phi: f64) -> f64 {
+    params.mass * (v * v * kappa * phi.cos() - GRAVITY * phi.sin())
+}
+
+/// Cornering-limited speed with 3D load: largest `v` with `μN ≥ |F_lat|`
+/// (bisection; both sides scale with `v²`). Reduces to the flat closed form.
+fn cornering_speed_3d(params: &CarParams, kappa: f64, theta: f64, phi: f64, kappa_v: f64) -> f64 {
+    if kappa < 1e-9 && phi.abs() < 1e-12 {
+        return V_CAP;
+    }
+    let feasible = |v: f64| -> bool {
+        let n = normal_load_3d(params, v, kappa, theta, phi, kappa_v);
+        params.tire_mu * n >= lateral_demand_3d(params, v, kappa, phi).abs()
+    };
+    if feasible(V_CAP) {
+        return V_CAP;
+    }
+    let (mut lo, mut hi) = (0.0, V_CAP);
+    for _ in 0..48 {
+        let mid = 0.5 * (lo + hi);
+        if feasible(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo.max(V_FLOOR)
+}
+
+/// Longitudinal grip headroom `F_x,max = sqrt((μN)² − F_lat²)` at `(v, κ, …)`.
+fn f_lon_max_3d(params: &CarParams, v: f64, kappa: f64, theta: f64, phi: f64, kappa_v: f64) -> f64 {
+    let grip = params.tire_mu * normal_load_3d(params, v, kappa, theta, phi, kappa_v);
+    let f_lat = lateral_demand_3d(params, v, kappa, phi).abs();
+    if f_lat >= grip {
+        0.0
+    } else {
+        (grip * grip - f_lat * f_lat).sqrt()
+    }
+}
+
+/// Forward (accel) speed one step ahead, with the grade force `−m·g·sinθ`.
+fn forward_speed_3d(
+    params: &CarParams,
+    v: f64,
+    kappa: f64,
+    theta: f64,
+    phi: f64,
+    kappa_v: f64,
+    ds: f64,
+) -> f64 {
+    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v);
+    let f_accel = f_lon.min(params.max_drive_force)
+        - params.drag_force(v)
+        - params.rolling_resistance_force()
+        - params.mass * GRAVITY * theta.sin();
+    let a = f_accel / params.mass;
+    (v * v + 2.0 * a * ds).max(V_FLOOR * V_FLOOR).sqrt()
+}
+
+/// Backward (braking) speed one step behind; climbing (`θ>0`) aids the decel.
+fn backward_speed_3d(
+    params: &CarParams,
+    v: f64,
+    kappa: f64,
+    theta: f64,
+    phi: f64,
+    kappa_v: f64,
+    ds: f64,
+) -> f64 {
+    let f_lon = f_lon_max_3d(params, v, kappa, theta, phi, kappa_v);
+    let a_decel = (f_lon.min(params.max_brake_force)
+        + params.drag_force(v)
+        + params.rolling_resistance_force()
+        + params.mass * GRAVITY * theta.sin())
+        / params.mass;
+    (v * v + 2.0 * a_decel * ds).max(V_FLOOR * V_FLOOR).sqrt()
+}
+
+/// Vertical (pitch) curvature `κ_v = dθ/ds` by central differences (periodic on
+/// closed tracks). This is the elevation term, distinct from the raw Darboux
+/// `Ω_y` (docs §5).
+fn vertical_curvature(s: &[f64], theta: &[f64], closed: bool, total_length: f64) -> Vec<f64> {
+    let n = s.len();
+    let mut kv = vec![0.0; n];
+    for (i, kvi) in kv.iter_mut().enumerate() {
+        let (im, ip, ds) = if closed {
+            let im = (i + n - 1) % n;
+            let ip = (i + 1) % n;
+            let mut ds = s[ip] - s[im];
+            if ds <= 0.0 {
+                ds += total_length;
+            }
+            (im, ip, ds)
+        } else if i == 0 {
+            (0, 1, s[1] - s[0])
+        } else if i == n - 1 {
+            (n - 2, n - 1, s[n - 1] - s[n - 2])
+        } else {
+            (i - 1, i + 1, s[i + 1] - s[i - 1])
+        };
+        if ds > 0.0 {
+            *kvi = (theta[ip] - theta[im]) / ds;
+        }
+    }
+    kv
+}
+
+/// Run the QSS lap simulation on a **3D ribbon** with grade, vertical-curvature
+/// load, and banking (docs/math/track3d.md §5). A geometrically flat ribbon
+/// short-circuits to the untouched 2D [`qss_lap_sim`] on its projection, so flat
+/// tracks are **bitwise-identical** and cost nothing extra.
+pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
+    if ribbon.is_flat() {
+        return qss_lap_sim(&ribbon.to_track_2d(), params);
+    }
+    let n = ribbon.stations.len();
+    let closed = ribbon.is_closed;
+    let total_length = ribbon.total_length;
+
+    let s: Vec<f64> = ribbon.stations.iter().map(|st| st.s).collect();
+    let kappa: Vec<f64> = ribbon.stations.iter().map(|st| st.omega_z.abs()).collect();
+    let theta: Vec<f64> = ribbon.stations.iter().map(|st| st.grade).collect();
+    let phi: Vec<f64> = ribbon.stations.iter().map(|st| st.bank).collect();
+    let kappa_v = vertical_curvature(&s, &theta, closed, total_length);
+
+    let ds_next = |i: usize| -> f64 {
+        if i + 1 < n {
+            s[i + 1] - s[i]
+        } else {
+            total_length - s[n - 1]
+        }
+    };
+
+    // Step 1: cornering-limited speed.
+    let mut speeds: Vec<f64> = (0..n)
+        .map(|i| cornering_speed_3d(params, kappa[i], theta[i], phi[i], kappa_v[i]))
+        .collect();
+    if !closed {
+        speeds[0] = speeds[0].min(V_FLOOR);
+    }
+
+    // Step 2: forward pass.
+    let fwd_passes = if closed { 2 } else { 1 };
+    for _ in 0..fwd_passes {
+        let steps = if closed { n } else { n - 1 };
+        for i in 0..steps {
+            let j = if i + 1 < n { i + 1 } else { 0 };
+            let cand = forward_speed_3d(
+                params,
+                speeds[i],
+                kappa[i],
+                theta[i],
+                phi[i],
+                kappa_v[i],
+                ds_next(i),
+            );
+            if cand < speeds[j] {
+                speeds[j] = cand;
+            }
+        }
+    }
+
+    // Step 3: backward pass.
+    let bwd_passes = if closed { 2 } else { 1 };
+    for _ in 0..bwd_passes {
+        if closed {
+            for i in (0..n).rev() {
+                let p = if i == 0 { n - 1 } else { i - 1 };
+                let ds = if i == 0 {
+                    total_length - s[n - 1]
+                } else {
+                    s[i] - s[i - 1]
+                };
+                let cand = backward_speed_3d(
+                    params, speeds[i], kappa[i], theta[i], phi[i], kappa_v[i], ds,
+                );
+                if cand < speeds[p] {
+                    speeds[p] = cand;
+                }
+            }
+        } else {
+            for i in (1..n).rev() {
+                let ds = s[i] - s[i - 1];
+                let cand = backward_speed_3d(
+                    params, speeds[i], kappa[i], theta[i], phi[i], kappa_v[i], ds,
+                );
+                if cand < speeds[i - 1] {
+                    speeds[i - 1] = cand;
+                }
+            }
+        }
+    }
+
+    // Step 4: lap time, sectors, accelerations (kinematic, unchanged formulas).
+    let (lap_time, sector_times) =
+        integrate_lap_and_sectors(&s, &speeds, total_length, closed, DEFAULT_SECTOR_COUNT);
+    let lateral_gs: Vec<f64> = (0..n)
+        .map(|i| speeds[i] * speeds[i] * kappa[i] / GRAVITY)
+        .collect();
+    let mut longitudinal_gs = vec![0.0; n];
+    for i in 0..n.saturating_sub(1) {
+        let ds = s[i + 1] - s[i];
+        if ds > 0.0 {
+            longitudinal_gs[i] =
+                (speeds[i + 1] * speeds[i + 1] - speeds[i] * speeds[i]) / (2.0 * ds) / GRAVITY;
+        }
+    }
+
+    QssResult {
+        speeds,
+        lap_time,
+        distances: s,
+        lateral_gs,
+        longitudinal_gs,
+        sector_times,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tire-aware QSS: Pacejka load-sensitive grip instead of the grip circle.
 // ---------------------------------------------------------------------------
 
@@ -770,5 +1011,153 @@ mod tests {
             "reduction {} should be 5-20%",
             reduction
         );
+    }
+
+    // --- 3D QSS: flat byte-invariance + synthetic validation (Phase 1.3) ---
+
+    use apex_track::Ribbon3d;
+    use std::f64::consts::PI;
+
+    /// The 3D QSS on a FLAT ribbon must be bitwise-identical to the 2D QSS.
+    fn assert_qss_bitwise(track: &apex_track::Track, params: &CarParams) {
+        let ribbon = track.to_ribbon3d();
+        assert!(ribbon.is_flat());
+        let a = qss_lap_sim(track, params);
+        let b = qss_lap_sim_3d(&ribbon, params);
+        assert_eq!(a.lap_time.to_bits(), b.lap_time.to_bits(), "lap_time");
+        assert_eq!(a.speeds.len(), b.speeds.len());
+        for i in 0..a.speeds.len() {
+            assert_eq!(a.speeds[i].to_bits(), b.speeds[i].to_bits(), "speed[{i}]");
+        }
+        for i in 0..a.sector_times.len() {
+            assert_eq!(
+                a.sector_times[i].to_bits(),
+                b.sector_times[i].to_bits(),
+                "sector[{i}]"
+            );
+        }
+    }
+
+    #[test]
+    fn flat_ribbon_qss_bitwise_matches_track() {
+        let params = CarParams::f1_2024_calibrated();
+        let (op, oc) = oval_track(1000.0, 100.0, 12.0, 400);
+        assert_qss_bitwise(&build_track("oval", &op, oc), &params);
+        let (cp, cc) = circle_track(100.0, 12.0, 200);
+        assert_qss_bitwise(&build_track("circle", &cp, cc), &params);
+        let (sp, sc) = apex_track::silverstone_circuit();
+        assert_qss_bitwise(&build_track("Silverstone", &sp, sc), &params);
+    }
+
+    #[test]
+    fn banked_ring_cornering_matches_analytic() {
+        // No downforce ⇒ the classic banked-turn closed form applies exactly.
+        let params = CarParams {
+            lift_coeff: 0.0,
+            ..CarParams::default()
+        };
+        let (r, phi) = (120.0, 0.18_f64);
+        let mu = params.tire_mu;
+        let kappa = 1.0 / r;
+        let v = cornering_speed_3d(&params, kappa, 0.0, phi, 0.0);
+        let v2 = GRAVITY * r * (phi.sin() + mu * phi.cos()) / (phi.cos() - mu * phi.sin());
+        let v_analytic = v2.sqrt();
+        assert!(
+            (v - v_analytic).abs() < 1e-4,
+            "banked v {v} vs analytic {v_analytic}"
+        );
+        // Banking raises the limit above the unbanked corner.
+        let v_flat = cornering_speed_3d(&params, kappa, 0.0, 0.0, 0.0);
+        assert!(v > v_flat, "banked {v} should exceed flat {v_flat}");
+    }
+
+    #[test]
+    fn vertical_curvature_load_matches_analytic() {
+        let params = CarParams::default();
+        let v = 65.0;
+        let kappa_v = 0.0025; // a dip (compression)
+        let n_dip = normal_load_3d(&params, v, 0.0, 0.0, 0.0, kappa_v);
+        let n_flat = normal_load_3d(&params, v, 0.0, 0.0, 0.0, 0.0);
+        // ΔN = m·v²·κ_v exactly.
+        assert!(((n_dip - n_flat) - params.mass * v * v * kappa_v).abs() < 1e-9);
+        // Flat load is m·g + downforce.
+        assert!((n_flat - (params.mass * GRAVITY + params.downforce(v))).abs() < 1e-9);
+        // A crest (κ_v<0) unloads.
+        let n_crest = normal_load_3d(&params, v, 0.0, 0.0, 0.0, -kappa_v);
+        assert!(n_crest < n_flat);
+    }
+
+    /// A straight climbing at constant grade θ.
+    fn grade_straight(theta: f64, n: usize, dx: f64) -> Ribbon3d {
+        let pts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let x = i as f64 * dx;
+                [x, 0.0, x * theta.tan()]
+            })
+            .collect();
+        let w = vec![5.0; n];
+        let bank = vec![0.0; n];
+        Ribbon3d::from_centerline_3d("grade", &pts, &bank, &w, &w, false)
+    }
+
+    #[test]
+    fn constant_grade_shifts_terminal_speed() {
+        let params = CarParams::default();
+        let k = 0.5 * params.air_density * params.drag_coeff * params.frontal_area;
+        let terminal = |theta: f64| {
+            ((params.max_drive_force
+                - params.rolling_resistance_force()
+                - params.mass * GRAVITY * theta.sin())
+                / k)
+                .sqrt()
+        };
+        // Long climb / descent so the QSS reaches terminal.
+        let climb = qss_lap_sim_3d(&grade_straight(0.05, 8000, 1.0), &params);
+        let descent = qss_lap_sim_3d(&grade_straight(-0.05, 8000, 1.0), &params);
+        let vt_climb = terminal(0.05);
+        let vt_desc = terminal(-0.05);
+        let last = |r: &QssResult| *r.speeds.last().unwrap();
+        assert!(
+            (last(&climb) - vt_climb).abs() / vt_climb < 0.02,
+            "climb terminal {} vs {}",
+            last(&climb),
+            vt_climb
+        );
+        assert!(
+            (last(&descent) - vt_desc).abs() / vt_desc < 0.02,
+            "descent terminal {} vs {}",
+            last(&descent),
+            vt_desc
+        );
+        // Descending is faster than climbing (gravity assists).
+        assert!(last(&descent) > last(&climb));
+    }
+
+    #[test]
+    fn gravity_work_closes_on_closed_lap() {
+        // Tilted closed ring: net elevation change is zero, so gravity does zero
+        // net work per lap — Σ m·g·Δz telescopes to machine precision.
+        let (n, r, amp) = (720usize, 200.0, 15.0);
+        let pts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let u = 2.0 * PI * i as f64 / n as f64;
+                [r * u.cos(), r * u.sin(), amp * u.sin()]
+            })
+            .collect();
+        let w = vec![6.0; n];
+        let bank = vec![0.0; n];
+        let ribbon = Ribbon3d::from_centerline_3d("ring", &pts, &bank, &w, &w, true);
+        let params = CarParams::default();
+        let mut work = 0.0;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            work += params.mass * GRAVITY * (ribbon.stations[j].z - ribbon.stations[i].z);
+        }
+        assert!(work.abs() < 1e-6, "net gravity work {work} should be ~0");
+
+        // The 3D QSS produces a valid periodic profile on the elevation-varying ring.
+        let res = qss_lap_sim_3d(&ribbon, &params);
+        assert!(res.speeds.iter().all(|&v| v > 0.0 && v < V_CAP));
+        assert!(res.lap_time > 0.0);
     }
 }

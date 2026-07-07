@@ -41,6 +41,9 @@
 /telemetry/*.csv
 # Alignment sidecars (derived from measured telemetry; stay local).
 /telemetry/*.align.toml
+# Scratch fitted-car overlays produced by `identify` runs on measured data
+# (derived-from-measured; the canonical committed fitted cars live in cars/).
+/telemetry/*.toml
 # Estimator diagnostic sidecars (derived from measured telemetry; stay local).
 /telemetry/*.diag.json
 # Correlation report output (report.md + SVGs) — derived from measured data,

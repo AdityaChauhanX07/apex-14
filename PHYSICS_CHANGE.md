@@ -63,6 +63,44 @@ change, not chased as a bug.
 
 ## Log
 
+### 2026-07-07 — 3D point-mass QSS physics (Phase 1.3): grade, vertical-curvature load, banking — **goldens byte-unchanged**
+- **What changed.** Added `qss_lap_sim_3d(&Ribbon3d, &CarParams)` implementing the
+  3D point-mass QSS (docs/math/track3d.md §5): the longitudinal grade force
+  `−m·g·sinθ`, the 3D normal load `N = m(g·cosθ·cosφ + v²κ·sinφ + v²κ_v) + F_df`
+  (compression in dips, unloading over crests, banking support), the grip circle
+  on `μN`, and the banked cornering limit. The correlate pipeline
+  (`driven`/`identify`/`infer`) gained optional-elevation 3D variants; the tire
+  QSS and single-track/four-wheel/14-DOF models are **not** touched.
+- **Flat invariance — no golden change.** `qss_lap_sim` (2D) is **untouched**.
+  `qss_lap_sim_3d` short-circuits a geometrically flat ribbon (`Ribbon3d::is_flat`)
+  straight to `qss_lap_sim` on the 2D projection, so flat tracks execute the
+  identical float ops. For `θ=φ=κ_v=0`, `cos=1.0`/`sin=0.0` exactly, so every 3D
+  expression collapses to the flat model even on the non-flat code path. Proven by
+  `qss::tests::flat_ribbon_qss_bitwise_matches_track` (bitwise on oval / circle /
+  Silverstone). **`golden_oval_qss` lap-time Δ = 0.000 s, speed-RMSE Δ = 0.000 —
+  byte-identical.** No fixture regenerated.
+- **Fidelity deferral.** Higher-fidelity models (single-track / four-wheel /
+  14-DOF) get the same 3D terms in a **follow-up task** — the correlation pipeline
+  runs on QSS, so QSS is first. Banking is plumbed + unit-tested but `0` in the
+  current GLO-30/EU-DEM-derived data (a 25–30 m DEM cannot resolve camber across a
+  ~14 m track); `banking_deg` is the manual per-corner override for later.
+- **Validation.** Synthetic unit tests pass: banked-ring cornering vs the classic
+  closed form (< 1e-4), vertical-curvature load `ΔN = m·v²·κ_v` (< 1e-9), constant-
+  grade terminal-speed offset (< 2%), closed-lap gravity work = 0 (< 1e-6), and the
+  3D closed-loop inference on a banked ring.
+- **Spa result — honest, mixed (acceptance criterion NOT met).** See
+  `docs/validation/correlation_spa_2024q.md` (flat-vs-3D section). 3D helps the
+  aggregate (preset lap delta +1.841→+1.700 s, RMSE 9.32→8.73; fitted lap delta
+  **−4.06→−2.86 s**) but the re-fit `power_scale` did **not** rejoin the pack
+  (0.833→**0.802**, slightly worse). Silverstone control (10.7 m range) moved <1%
+  on every parameter, as designed. Hypothesis: on a closed lap the grade force is
+  conservative (net-zero work) so it cannot shift a lap-wide power multiplier, and
+  3D introduces a descent over-carry (max Δv migrates to the Pouhon→Stavelot
+  descent, 14→18 m/s) that keeps the point-mass fit de-powered — i.e. Spa's
+  de-powering is not primarily an elevation artifact and points to the deferred
+  higher-fidelity / energy-management work. **No parameter was tuned to force the
+  criterion.**
+
 ### 2026-07-05 — Golden-lap harness closeout (0.1): converging circle optimize golden + formal Phase-3 deferral
 - **(a) New `golden_circle_optimize` fixture.** Added the first converging
   optimize-mode golden: constant-curvature circle (`circle_track(100.0, 12.0,

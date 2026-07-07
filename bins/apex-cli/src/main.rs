@@ -107,6 +107,12 @@ enum Commands {
         #[arg(long)]
         track: PathBuf,
 
+        /// Optional v2 **3D** track JSON (elevation). When given, the QSS runs in
+        /// 3D (grade / vertical-curvature load / banking) and `--track` is
+        /// ignored (the 2D centerline is taken from the 3D file).
+        #[arg(long)]
+        track_3d: Option<PathBuf>,
+
         /// Use calibrated F1 2024 parameters
         #[arg(long, default_value_t = false)]
         calibrated: bool,
@@ -185,6 +191,11 @@ enum Commands {
         #[arg(long)]
         track: PathBuf,
 
+        /// Optional v2 **3D** track JSON. When given, every LM iteration runs the
+        /// 3D QSS on the elevated driven line; `--track` is ignored.
+        #[arg(long)]
+        track_3d: Option<PathBuf>,
+
         /// Use calibrated F1 2024 parameters as the base
         #[arg(long, default_value_t = false)]
         calibrated: bool,
@@ -228,6 +239,11 @@ enum Commands {
         /// Track file (smoothed Apex-14 JSON or TUMFTM CSV)
         #[arg(long)]
         track: PathBuf,
+
+        /// Optional v2 **3D** track JSON. When given, the inferred load/grip/power
+        /// channels pick up the 3D terms (compression, grade); `--track` ignored.
+        #[arg(long)]
+        track_3d: Option<PathBuf>,
 
         /// Fitted car TOML (overlay applied on the calibrated preset)
         #[arg(long)]
@@ -468,6 +484,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Correlate {
             telemetry,
             track,
+            track_3d,
             calibrated,
             car,
             grid_step,
@@ -481,6 +498,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => cmd_correlate(
             telemetry,
             track,
+            track_3d,
             calibrated,
             car,
             grid_step,
@@ -502,6 +520,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Identify {
             telemetry,
             track,
+            track_3d,
             calibrated,
             car,
             free,
@@ -513,6 +532,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => cmd_identify(
             telemetry,
             track,
+            track_3d,
             calibrated,
             car,
             free,
@@ -525,6 +545,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Commands::Infer {
             telemetry,
             track,
+            track_3d,
             car,
             out,
             driven_line,
@@ -533,6 +554,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => cmd_infer(
             telemetry,
             track,
+            track_3d,
             car,
             out,
             driven_line,
@@ -974,6 +996,7 @@ fn driven_line_mode(
 fn cmd_correlate(
     telemetry: PathBuf,
     track: PathBuf,
+    track_3d: Option<PathBuf>,
     calibrated: bool,
     car: Option<PathBuf>,
     grid_step: f64,
@@ -985,23 +1008,41 @@ fn cmd_correlate(
     #[cfg(feature = "parquet")] parquet: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use apex_correlate::report::{correlate, write_report, CorrelationConfig, SimTrace};
-    use apex_correlate::{driven_sim_trace, import_telemetry, Mapping};
+    use apex_correlate::{driven_sim_trace_3d, import_telemetry, Mapping};
 
     // 1. Measured telemetry (aligned, standard format → identity mapping).
     let measured = import_telemetry(&telemetry, &Mapping::identity())?;
-    // 2. Track + car.
-    let trk = load_track_from_path(&track)?;
+    // 2. Track (+ optional 3D elevation) + car.
+    let ribbon = match &track_3d {
+        Some(p) => Some(apex_track::load_ribbon3d_json(p)?),
+        None => None,
+    };
+    if let Some(r) = &ribbon {
+        let v = r.validate();
+        println!(
+            "3D track: {} stations, elevation range {:.1} m, 3D length {:.1} m — QSS runs in 3D",
+            v.n, v.elevation_range, v.length_3d
+        );
+    }
+    let trk = match &ribbon {
+        Some(r) => r.to_track_2d(),
+        None => load_track_from_path(&track)?,
+    };
+    let elevation = ribbon.as_ref();
     let params = load_car_params(car, calibrated)?;
 
     // 3. Build the sim trace on the requested line.
     let trace = match line.as_str() {
         "centerline" => {
-            let sim = apex_physics::qss_lap_sim(&trk, &params);
+            let sim = match elevation {
+                Some(r) => apex_physics::qss_lap_sim_3d(r, &params),
+                None => apex_physics::qss_lap_sim(&trk, &params),
+            };
             SimTrace::from_qss(&sim)
         }
         "measured" => {
             let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
-            let dr = driven_sim_trace(&trk, &measured, &params, mode)?;
+            let dr = driven_sim_trace_3d(&trk, &measured, &params, mode, elevation)?;
             println!(
                 "Driven line: length {:.1} m (centerline {:.1} m, {:+.1} m); {}",
                 dr.driven_length,
@@ -1272,6 +1313,7 @@ fn write_correlation_parquet(
 fn cmd_identify(
     telemetry: PathBuf,
     track: PathBuf,
+    track_3d: Option<PathBuf>,
     calibrated: bool,
     car: Option<PathBuf>,
     free: String,
@@ -1281,10 +1323,21 @@ fn cmd_identify(
     driven_smooth_tolerance: f64,
     grid_step: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use apex_correlate::{identify, import_telemetry, parse_free_param, Mapping};
+    use apex_correlate::{identify_3d, import_telemetry, parse_free_param, Mapping};
 
     let measured = import_telemetry(&telemetry, &Mapping::identity())?;
-    let trk = load_track_from_path(&track)?;
+    let ribbon = match &track_3d {
+        Some(p) => Some(apex_track::load_ribbon3d_json(p)?),
+        None => None,
+    };
+    if ribbon.is_some() {
+        println!("Fitting in 3D (grade / vertical-curvature load / banking).");
+    }
+    let trk = match &ribbon {
+        Some(r) => r.to_track_2d(),
+        None => load_track_from_path(&track)?,
+    };
+    let elevation = ribbon.as_ref();
     let base = load_car_params(car, calibrated)?;
     let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
 
@@ -1308,7 +1361,15 @@ fn cmd_identify(
     // --- Headline fit ---
     println!("=== Identify (headline fit) ===");
     println!("Driven line: {}", mode_label(&driven_line));
-    let res = identify(&trk, &measured, &base, free_params.clone(), mode, grid_step)?;
+    let res = identify_3d(
+        &trk,
+        &measured,
+        &base,
+        free_params.clone(),
+        mode,
+        grid_step,
+        elevation,
+    )?;
     print_fit_report(&res);
     println!(
         "  runtime: {:.3} s total, {:.4} s/iter ({} iterations, {} grid points)",
@@ -1345,7 +1406,7 @@ fn cmd_identify(
         println!("\n=== Diagnostic fit (μ also free) ===");
         let mut diag = free_params.clone();
         diag.push(parse_free_param("tires.mu", &base)?);
-        let dres = identify(&trk, &measured, &base, diag, mode, grid_step)?;
+        let dres = identify_3d(&trk, &measured, &base, diag, mode, grid_step, elevation)?;
         print_fit_report(&dres);
         let mu_idx = dres.free.iter().position(|f| f.path == "tires.mu").unwrap();
         let mu_fit = dres.lm.params[mu_idx];
@@ -1514,6 +1575,7 @@ fn fitted_car_toml(
 fn cmd_infer(
     telemetry: PathBuf,
     track: PathBuf,
+    track_3d: Option<PathBuf>,
     car: PathBuf,
     out: PathBuf,
     driven_line: String,
@@ -1521,19 +1583,36 @@ fn cmd_infer(
     driven_smooth_tolerance: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use apex_correlate::{
-        import_telemetry, infer_on_driven, write_telemetry_csv, InferConfig, Mapping,
+        import_telemetry, infer_on_driven_3d, write_telemetry_csv, InferConfig, Mapping,
     };
     use apex_telemetry::ChannelId;
 
     const INFER_VERSION: &str = "1.0.0";
 
     let measured = import_telemetry(&telemetry, &Mapping::identity())?;
-    let trk = load_track_from_path(&track)?;
+    let ribbon = match &track_3d {
+        Some(p) => Some(apex_track::load_ribbon3d_json(p)?),
+        None => None,
+    };
+    if ribbon.is_some() {
+        println!("Inferring in 3D (grade / vertical-curvature load / grade-power).");
+    }
+    let trk = match &ribbon {
+        Some(r) => r.to_track_2d(),
+        None => load_track_from_path(&track)?,
+    };
     // Fitted TOML is an overlay on the calibrated preset.
     let params = load_car_params(Some(car.clone()), true)?;
     let mode = driven_line_mode(&driven_line, n_filter, driven_smooth_tolerance)?;
 
-    let mut res = infer_on_driven(&trk, &measured, &params, mode, &InferConfig::default())?;
+    let mut res = infer_on_driven_3d(
+        &trk,
+        &measured,
+        &params,
+        mode,
+        &InferConfig::default(),
+        ribbon.as_ref(),
+    )?;
 
     // Descriptive provenance + the effective-parameter caveat (derived-from-
     // measured: no RunMetadata sim block; see docs/telemetry_format.md).

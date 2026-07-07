@@ -51,6 +51,18 @@ below). All five passed every hygiene check (event match, align scale ∈
 [0.95, 1.05], align RMS < 8 m, s_proj within 2% of TUMFTM length, corner count
 3–12); none required attention.
 
+> **Phase 1.3 update (3D elevation physics, 2026-07-07).** Re-running Spa on the
+> real 3D track with the 3D point-mass QSS improves the fitted lap delta
+> **−4.06 → −2.86 s** and preset RMSE (9.32 → 8.73), but **`power_scale` does NOT
+> rejoin the pack (0.833 → 0.802)** — the pre-registered acceptance criterion is
+> **not met**, and cross-circuit `power_scale` scatter *grows* (CoV 12.2 % → ~13.5 %,
+> Spa moving further from the pack). Silverstone (control) moves < 1 %. So Spa's
+> de-powering is **not primarily an elevation artifact**; correct gravity is
+> conservative on a closed lap and a new point-mass descent over-carry keeps the
+> fit de-powered. Full analysis + hypotheses:
+> [`correlation_spa_2024q.md` § Phase 1.3](correlation_spa_2024q.md#phase-13-flat-vs-3d-elevation-physics--an-honest-mixed-result).
+> No parameter was tuned to force the criterion; higher-fidelity models are deferred.
+
 ## Parameter scatter — the key analysis
 
 | param | values (Sil, Mon, Spa, Spi, Cat) | mean | std | CoV | mean std-err | scatter ÷ std-err |

@@ -30,11 +30,11 @@
 use std::time::Instant;
 
 use apex_math::lm::{levenberg_marquardt, LmConfig, LmResult, ResidualProvider};
-use apex_physics::{qss_lap_sim, CarParams};
+use apex_physics::{qss_lap_sim, qss_lap_sim_3d, CarParams};
 use apex_telemetry::ChannelId;
-use apex_track::Track;
+use apex_track::{Ribbon3d, Track};
 
-use crate::driven::{build_driven_geometry, DrivenLineMode};
+use crate::driven::{build_driven_geometry_3d, DrivenLineMode};
 use crate::error::CorrelateError;
 use crate::metrics::{resample_linear, resample_periodic};
 use crate::telemetry::Telemetry;
@@ -115,6 +115,9 @@ pub fn apply_params(base: &CarParams, free: &[FreeParam], values: &[f64]) -> Car
 /// driven line, as a function of the free parameters.
 struct SpeedResidual<'a> {
     track: &'a Track,
+    /// Driven line as a 3D ribbon when running in 3D (QSS then uses the grade /
+    /// vertical-curvature / banking terms); `None` runs the flat 2D QSS.
+    driven_ribbon: Option<&'a Ribbon3d>,
     base: &'a CarParams,
     free: &'a [FreeParam],
     l: f64,
@@ -129,7 +132,10 @@ struct SpeedResidual<'a> {
 impl ResidualProvider for SpeedResidual<'_> {
     fn residuals(&self, values: &[f64]) -> Vec<f64> {
         let car = apply_params(self.base, self.free, values);
-        let sim = qss_lap_sim(self.track, &car);
+        let sim = match self.driven_ribbon {
+            Some(r) => qss_lap_sim_3d(r, &car),
+            None => qss_lap_sim(self.track, &car),
+        };
         let speed_sorted: Vec<f64> = self.order.iter().map(|&i| sim.speeds[i]).collect();
         let sim_v = resample_periodic(self.station_sorted, &speed_sorted, self.l, self.grid);
         (0..self.grid.len())
@@ -176,10 +182,26 @@ pub fn identify(
     mode: DrivenLineMode,
     grid_step: f64,
 ) -> Result<IdentifyResult, CorrelateError> {
+    identify_3d(centerline, aligned, base, free, mode, grid_step, None)
+}
+
+/// [`identify`] with an optional 3D centerline `elevation`. When `Some`, every LM
+/// iteration runs the **3D** QSS on the elevated driven line (grade / vertical
+/// curvature / banking); when `None`, behavior is identical to [`identify`].
+#[allow(clippy::too_many_arguments)]
+pub fn identify_3d(
+    centerline: &Track,
+    aligned: &Telemetry,
+    base: &CarParams,
+    free: Vec<FreeParam>,
+    mode: DrivenLineMode,
+    grid_step: f64,
+    elevation: Option<&Ribbon3d>,
+) -> Result<IdentifyResult, CorrelateError> {
     if free.is_empty() {
         return Err(CorrelateError::AlignFailed("no free parameters given"));
     }
-    let geom = build_driven_geometry(centerline, aligned, mode)?;
+    let geom = build_driven_geometry_3d(centerline, aligned, mode, elevation)?;
     let l = geom.centerline_length;
 
     // Measured speed on a common uniform-s grid.
@@ -222,6 +244,7 @@ pub fn identify(
     let initial: Vec<f64> = free.iter().map(|f| f.initial).collect();
     let provider = SpeedResidual {
         track: &geom.track,
+        driven_ribbon: geom.driven_ribbon.as_ref(),
         base,
         free: &free,
         l,

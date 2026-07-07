@@ -50,3 +50,47 @@ Overlay: `cars/spa_2024q_fitted.toml` (committed).
 ## Notes
 
 **Spa is the elevation outlier** and the Phase-1 business case — see the [campaign summary](correlation_summary.md#spa--the-elevation-business-case) for the full story. In short: our flat 2-D QSS ignores gravity, so on the sport's biggest elevation change the fit is forced into a physically wrong **de-powered** regime (`power_scale` 0.833, uniquely low) and produces the **only negative fitted lap delta (−4.06 s)** — the sim ends up faster than the real car because it never pays the climb. Preset residuals peak at **s ≈ 1140 m (top of Raidillon / Kemmel-straight entry)**; after fitting, the worst error migrates to the **Pouhon → Stavelot** descent/climb (s ≈ 3890–4570 m). Every corner apex has the sim carrying too much speed.
+
+## Phase 1.3: flat vs 3D elevation physics — an honest, mixed result
+
+With the real 106 m Spa elevation profile (georeferenced + EU-DEM 25 m sampled)
+now driving the **3D point-mass QSS** (grade force, vertical-curvature load,
+banking), we re-ran the identical pipeline. The **acceptance criterion set in
+advance — `power_scale` rejoins the ~1.0–1.16 pack and the negative lap delta is
+eliminated — is NOT met.** No parameter was tuned to force it.
+
+| quantity | flat 2-D | 3-D | verdict |
+|---|---|---|---|
+| preset lap delta | +1.841 s | **+1.700 s** | small improvement |
+| preset speed RMSE | 9.32 m/s | **8.73 m/s** | improved |
+| **fitted lap delta** | −4.064 s | **−2.856 s** | **improved ~30% (toward 0) but still negative** |
+| fitted speed RMSE | 4.28 m/s | 4.31 m/s | ~unchanged |
+| **fitted `power_scale`** | 0.833 | **0.802** | **did NOT rejoin the pack (slightly lower)** |
+| fitted `lift_coeff` | 4.915 | 4.884 | ~unchanged |
+| fitted `drag_coeff` | 1.239 | 1.161 | dropped |
+| Eau Rouge grip_util p50 (s 700–1150) | 0.185 | 0.166 | **fell (compression adds *capacity*, not demand)** |
+
+**What 3D got right.** The lap-time sign improved (−4.06 → −2.86 s) and preset
+RMSE dropped — elevation *is* a real factor, and the Raidillon climb sits exactly
+at the s ≈ 1140 m residual peak the flat model couldn't explain. Silverstone
+(10.7 m range) moved < 1 % on every parameter, as a proper control should.
+
+**Why `power_scale` did not recover (hypotheses, not tuning).**
+1. **Grade is conservative on a closed lap.** `∮ m g sinθ ds = 0`, so the grade
+   force redistributes *where* speed is won/lost but cannot shift a **lap-wide
+   power multiplier** — `power_scale` is largely blind to it.
+2. **3D introduces a descent over-carry.** The fitted max |Δv| migrates to the
+   **Pouhon → Stavelot descent** (s ≈ 4680 m) and *grows* (14.3 → 17.8 m/s): the
+   point-mass QSS free-wheels downhill faster than the real, energy-managed car,
+   which keeps the fit de-powered.
+3. **Eau Rouge is a vertical-load, not a lateral-grip, event.** Its low curvature
+   means lateral demand is already small; compression adds normal-load *capacity*,
+   so inferred grip_util *falls* rather than rising toward the limit.
+
+**Conclusion.** Spa's de-powering is **not primarily an elevation artifact** — the
+Phase-2 hypothesis is falsified. Correct 3D elevation physics helps the aggregate
+but the residual points elsewhere (the low-downforce Spa aero a single fixed car
+can't match, tyre thermal, or transient descent/energy-management behaviour) — the
+domain of the **deferred single-track / four-wheel / 14-DOF work** (PHYSICS_CHANGE
+2026-07-07). The committed `cars/spa_2024q_fitted.toml` is left at the flat fit;
+the 3D fit is not "better" and was not promoted.

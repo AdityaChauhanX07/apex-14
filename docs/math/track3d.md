@@ -116,10 +116,96 @@ a turning curve; the centerline itself stays flat. This is a body-frame
 generalized curvature, not a literal elevation gradient — the two coincide only
 in the small-angle / straight regime.)
 
-## 5. To be completed when physics lands
+## 5. 3D point-mass QSS physics (Phase 1.3)
 
-- Grade force `−m g \sin\theta` along `t`, and the normal-load modulation by
-  `\cos\theta`.
-- Banking contribution to lateral grip (component of gravity into the surface).
-- `mu_scale(s)` semantics (currently a plumbed placeholder defaulting to `1.0`).
-- Whether the vehicle models consume `Ω` directly or the road angles `(ψ, θ, φ)`.
+The QSS/point-mass lap model (`apex_physics::qss_lap_sim_3d`) consumes the road
+angles `(θ, φ)` and the **vertical (pitch) curvature** `κ_v ≡ dθ/ds` — computed
+directly from the grade channel, **not** the raw Darboux `Ω_y` (which conflates
+banking-on-a-curve, §4). On the zero-bank real data `κ_v` and `Ω_y` coincide in
+magnitude; on a banked flat turn `κ_v = 0` correctly while `Ω_y ≠ 0`. Let
+`κ = |Ω_z|` be the horizontal curvature and `sin θ = dz/ds` the grade.
+
+### 5.1 Normal load (surface-normal force balance)
+
+Resolving gravity and the centripetal reaction along the surface normal `m`
+(using `ẑ·m = cosθ cosφ` from §1):
+
+$$
+N = m\left(g\cos\theta\cos\phi \;+\; v^2\kappa\,\sin\phi \;+\; v^2\kappa_v\right) + F_\text{df}(v)
+$$
+
+- `m g cosθ cosφ` — gravity's component onto the surface (grade + bank reduce it),
+- `m v^2 κ sinφ` — **banking** support: the horizontal centripetal reaction
+  projected onto the tilted normal (raises load in a banked turn),
+- `m v^2 κ_v` — **vertical curvature**: compression in dips (`κ_v>0`), unloading
+  over crests (`κ_v<0`) — the Eau Rouge / Raidillon term,
+- `F_df` — aerodynamic downforce (along the normal).
+
+### 5.2 In-surface lateral demand
+
+$$
+F_\text{lat} = m\left(v^2\kappa\cos\phi \;-\; g\sin\phi\right)
+$$
+
+the horizontal centripetal projected into the surface plane, less the in-plane
+gravity component that **banking** contributes toward the turn.
+
+### 5.3 Tangential (longitudinal) balance — the grade force
+
+$$
+m\,a = F_x - F_\text{drag} - F_\text{roll} - \underbrace{m g \sin\theta}_{\text{grade}}
+$$
+
+Climbing (`θ>0`) costs drive force; descending adds it. The associated power term
+is `m g (dz/ds) v = m g v \sin\theta`.
+
+### 5.4 Grip circle on the 3D normal load
+
+The friction budget is `μN` with `N` from §5.1 (so grip rises under compression,
+falls when light), split between lateral and longitudinal:
+
+$$
+F_{x,\max} = \sqrt{\max(0,\;(\mu N)^2 - F_\text{lat}^2)}
+$$
+
+- **Cornering limit:** the largest `v` with `μN \ge |F_\text{lat}|`. Both sides
+  scale with `v^2`, so it is solved by bisection. For `θ=φ=κ_v=0` this reduces to
+  the flat closed form `μ(mg+F_\text{df}) = m v^2 κ`.
+- **Forward:** `a = (\min(F_{x,\max},F_\text{drive}) - F_\text{drag} - F_\text{roll} - m g\sin\theta)/m`.
+- **Backward (braking):** `a_\text{dec} = (\min(F_{x,\max},F_\text{brake}) + F_\text{drag} + F_\text{roll} + m g\sin\theta)/m`
+  (climbing helps you slow; descending hurts).
+
+### 5.5 Banked steady-state cornering (analytic check)
+
+With `θ=κ_v=0`, `F_\text{df}=0`, the cornering limit `μN = F_\text{lat}` gives the
+classic banked-turn maximum speed, which the synthetic banked-ring test matches:
+
+$$
+v_\max^2 = \frac{gR\,(\sin\phi + \mu\cos\phi)}{\cos\phi - \mu\sin\phi}, \qquad R = 1/\kappa
+$$
+
+### 5.6 Flat byte-invariance
+
+For `θ=φ=κ_v=0`: `cosθ=cosφ=1.0` and `sinθ=sinφ=0.0` **exactly**, so `N = mg +
+F_\text{df}`, `F_\text{lat} = m v^2 κ`, and the grade force is `0` — every 3D
+expression collapses to the flat model. To guarantee **bitwise** golden stability,
+`qss_lap_sim_3d` short-circuits a fully-flat ribbon (`Ribbon3d::is_flat`) straight
+to the untouched `qss_lap_sim` on the 2D projection, so flat tracks execute the
+identical float ops (and cost nothing extra). A dedicated test asserts
+`qss_lap_sim_3d(flat) == qss_lap_sim` bit-for-bit on oval/circle/Silverstone.
+
+### 5.7 Energy closure
+
+`Σ_i m g \sin\theta_i\,ds_i = m g Σ_i dz_i = m g\,\Delta z_\text{lap} = 0` on a
+closed track — the gravity term does zero net work per lap (asserted to machine
+precision).
+
+### 5.8 Deferrals
+
+- **Higher fidelities** (single-track / four-wheel / 14-DOF) get the same 3D
+  terms in a **follow-up task** — the correlation pipeline runs on QSS, so QSS is
+  first. Recorded in `PHYSICS_CHANGE.md`.
+- **Banking** is plumbed and unit-tested but `0` in the current GLO-30-derived
+  data (a 25–30 m DEM cannot resolve camber across a ~14 m track). The
+  `banking_deg` field is the manual per-corner override for later.
+- **`mu_scale(s)`** remains a plumbed placeholder (`1.0`), unused by physics.

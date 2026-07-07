@@ -43,8 +43,9 @@ mod writer;
 
 pub use align::{fit_alignment, AlignConfig, AlignResult, Similarity};
 pub use driven::{
-    build_driven_geometry, driven_sim_trace, geometry_to_trace, DrivenGeometry, DrivenLineMode,
-    DrivenResult, DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M, DEFAULT_N_FILTER_WINDOW_M,
+    build_driven_geometry, build_driven_geometry_3d, driven_sim_trace, driven_sim_trace_3d,
+    geometry_to_trace, run_qss_on_driven, DrivenGeometry, DrivenLineMode, DrivenResult,
+    DEFAULT_DRIVEN_SMOOTH_TOLERANCE_M, DEFAULT_N_FILTER_WINDOW_M,
 };
 pub use error::CorrelateError;
 pub use estimator::{
@@ -52,10 +53,13 @@ pub use estimator::{
     SmootherResult,
 };
 pub use identify::{
-    apply_params, identify, parse_free_param, FreeParam, IdentifyResult, ParamKind,
+    apply_params, identify, identify_3d, parse_free_param, FreeParam, IdentifyResult, ParamKind,
 };
 pub use importer::import_telemetry;
-pub use infer::{infer_channels, infer_on_driven, InferConfig, InferResult, Inferred};
+pub use infer::{
+    infer_channels, infer_channels_3d, infer_on_driven, infer_on_driven_3d, InferConfig,
+    InferResult, Inferred,
+};
 pub use mapping::{ColumnMap, Mapping, UnknownColumns};
 pub use project::{closest_point, project_to_track, ProjectStats, Projection};
 pub use report::{correlate, CorrelationConfig, CorrelationResult, SimTrace};

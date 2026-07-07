@@ -31,7 +31,9 @@ pub use drivetrain::{Engine, Gearbox, Powertrain};
 pub use fourteen_dof::FourteenDofModel;
 pub use grip_map::GripMap;
 pub use point_mass::PointMassModel;
-pub use qss::{qss_lap_sim, qss_lap_sim_tire, sector_times, QssResult, DEFAULT_SECTOR_COUNT};
+pub use qss::{
+    qss_lap_sim, qss_lap_sim_3d, qss_lap_sim_tire, sector_times, QssResult, DEFAULT_SECTOR_COUNT,
+};
 pub use sensitivity::{
     f1_parameter_set, monte_carlo_sensitivity, oat_sensitivity, tornado_chart_svg,
     MonteCarloResult, OatResult, ParameterDef,

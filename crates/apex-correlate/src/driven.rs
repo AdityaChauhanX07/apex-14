@@ -19,9 +19,9 @@
 //!   reproduces the driver's actual radius at speed (e.g. Abbey), so it is the
 //!   default.
 
-use apex_physics::{qss_lap_sim, CarParams, DEFAULT_SECTOR_COUNT};
+use apex_physics::{qss_lap_sim, qss_lap_sim_3d, CarParams, DEFAULT_SECTOR_COUNT};
 use apex_telemetry::ChannelId;
-use apex_track::{build_track, smooth_points, Track, TrackPoint};
+use apex_track::{build_track, smooth_points, Ribbon3d, Track, TrackPoint};
 
 use crate::error::CorrelateError;
 use crate::metrics::measured_sector_times;
@@ -65,6 +65,11 @@ pub struct DrivenResult {
 pub struct DrivenGeometry {
     /// The driven path (arc length + curvature), a closed track.
     pub track: Track,
+    /// The driven path as a **3D ribbon** (z assigned from the centerline's
+    /// elevation at each projected station), present only when the pipeline is
+    /// run with a 3D centerline. When `Some`, the QSS runs on it in 3D; when
+    /// `None`, the flat `track` is used and behavior is unchanged.
+    pub driven_ribbon: Option<Ribbon3d>,
     /// Continuous centerline station (m, monotone) of each driven segment, so a
     /// speed profile on this line can be mapped back to centerline coordinates.
     pub station_per_segment: Vec<f64>,
@@ -88,8 +93,21 @@ pub fn driven_sim_trace(
     car: &CarParams,
     mode: DrivenLineMode,
 ) -> Result<DrivenResult, CorrelateError> {
-    let geom = build_driven_geometry(centerline, aligned, mode)?;
-    let sim = qss_lap_sim(&geom.track, car);
+    driven_sim_trace_3d(centerline, aligned, car, mode, None)
+}
+
+/// [`driven_sim_trace`] with an optional 3D centerline `elevation`. When `Some`,
+/// the driven line is elevated (z from the centerline's `elevation_at`) and the
+/// QSS runs in 3D; when `None`, behavior is identical to [`driven_sim_trace`].
+pub fn driven_sim_trace_3d(
+    centerline: &Track,
+    aligned: &Telemetry,
+    car: &CarParams,
+    mode: DrivenLineMode,
+    elevation: Option<&Ribbon3d>,
+) -> Result<DrivenResult, CorrelateError> {
+    let geom = build_driven_geometry_3d(centerline, aligned, mode, elevation)?;
+    let sim = run_qss_on_driven(&geom, car);
     let trace = geometry_to_trace(&geom, &sim);
     Ok(DrivenResult {
         trace,
@@ -99,16 +117,66 @@ pub fn driven_sim_trace(
     })
 }
 
-/// Build the car-independent driven-line geometry for `mode`.
+/// Run the QSS on a driven geometry: 3D when the driven ribbon is present
+/// (elevated centerline), else the flat 2D QSS on the driven track.
+pub fn run_qss_on_driven(geom: &DrivenGeometry, car: &CarParams) -> apex_physics::QssResult {
+    match &geom.driven_ribbon {
+        Some(ribbon) => qss_lap_sim_3d(ribbon, car),
+        None => qss_lap_sim(&geom.track, car),
+    }
+}
+
+/// Build the car-independent driven-line geometry for `mode` (2D).
 pub fn build_driven_geometry(
     centerline: &Track,
     aligned: &Telemetry,
     mode: DrivenLineMode,
 ) -> Result<DrivenGeometry, CorrelateError> {
-    match mode {
+    build_driven_geometry_3d(centerline, aligned, mode, None)
+}
+
+/// Build the driven-line geometry, optionally assigning elevation from a 3D
+/// centerline `elevation` ribbon (z at each projected station; the cross-track
+/// elevation difference over a ~14 m track is sub-metre and unresolvable, so the
+/// driven line's elevation is taken as the centerline's at the same station).
+pub fn build_driven_geometry_3d(
+    centerline: &Track,
+    aligned: &Telemetry,
+    mode: DrivenLineMode,
+    elevation: Option<&Ribbon3d>,
+) -> Result<DrivenGeometry, CorrelateError> {
+    let mut geom = match mode {
         DrivenLineMode::Offset(window) => geom_offset(centerline, aligned, window),
         DrivenLineMode::Direct(tol) => geom_direct(centerline, aligned, tol),
+    }?;
+    if let Some(elev) = elevation {
+        geom.driven_ribbon = Some(elevate_driven(&geom, elev));
     }
+    Ok(geom)
+}
+
+/// Build the 3D driven ribbon: the driven `(x, y)` path with `z` sampled from
+/// the centerline `elevation` at each segment's continuous station.
+fn elevate_driven(geom: &DrivenGeometry, elevation: &Ribbon3d) -> Ribbon3d {
+    let l = elevation.total_length;
+    let pts: Vec<[f64; 3]> = geom
+        .track
+        .segments
+        .iter()
+        .zip(&geom.station_per_segment)
+        .map(|(seg, &st)| [seg.x, seg.y, elevation.elevation_at(st.rem_euclid(l))])
+        .collect();
+    let bank = vec![0.0; pts.len()];
+    let wl: Vec<f64> = geom.track.segments.iter().map(|s| s.width_left).collect();
+    let wr: Vec<f64> = geom.track.segments.iter().map(|s| s.width_right).collect();
+    Ribbon3d::from_centerline_3d(
+        &geom.track.name,
+        &pts,
+        &bank,
+        &wl,
+        &wr,
+        geom.track.is_closed,
+    )
 }
 
 /// Convert a QSS result on a [`DrivenGeometry`] into a centerline-station
@@ -213,6 +281,7 @@ fn geom_offset(
         centerline_length: l,
         detail: format!("offset mode, n filter ±{n_filter_window_m:.0} m, peak |n| {n_peak:.2} m"),
         label: "measured line (offset)".to_string(),
+        driven_ribbon: None,
         track,
         station_per_segment,
     })
@@ -295,6 +364,7 @@ fn geom_direct(
             "direct mode, smooth tol {smooth_tolerance_m:.2} m, max deviation {max_dev:.3} m"
         ),
         label: "measured line (direct)".to_string(),
+        driven_ribbon: None,
         track,
         station_per_segment: stations_cont,
     })

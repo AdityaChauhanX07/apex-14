@@ -209,6 +209,33 @@ impl Ribbon3d {
         }
     }
 
+    /// The flat 2D [`Track`] projection of this ribbon: each station's
+    /// `x, y, s, heading, curvature (= Ω_z), width_l/r` copied verbatim, `z`
+    /// dropped. For a flat ribbon built by [`Ribbon3d::from_flat`] this exactly
+    /// reconstructs the source `Track`, so running the 2D `qss_lap_sim` on it is
+    /// bitwise-identical — the byte-stable flat fast path for the 3D QSS.
+    pub fn to_track_2d(&self) -> Track {
+        let segments = self
+            .stations
+            .iter()
+            .map(|st| crate::TrackSegment {
+                s: st.s,
+                x: st.x,
+                y: st.y,
+                heading: st.heading,
+                curvature: st.omega_z,
+                width_left: st.width_left,
+                width_right: st.width_right,
+            })
+            .collect();
+        Track {
+            name: self.name.clone(),
+            segments,
+            total_length: self.total_length,
+            is_closed: self.is_closed,
+        }
+    }
+
     /// `true` if this ribbon is geometrically flat: every station has
     /// `z = grade = bank = Ω_x = Ω_y = 0`.
     pub fn is_flat(&self) -> bool {
