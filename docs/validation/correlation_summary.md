@@ -11,6 +11,16 @@ fastf1_export.py → import-track (smoothed) → telemetry-align
 ```
 driven by `tools/correlate_campaign.py --spec tools/campaign.toml`.
 
+The `import-track (smoothed)` step uses `apex_track::smoothing`, a **pulled-forward
+slice of Phase 1.1**, brought in early so the QSS runs on real imported centerlines
+without phantom-curvature slowdowns.
+
+> **DTW deferred.** The roadmap named DTW on the speed traces as a fallback for
+> poor-GPS sources. Arc-length-anchored similarity alignment achieved **2.47–6.76 m
+> align RMS** across all five circuits (see the table) with every hygiene check
+> passing, so DTW was not needed and is deferred until a GPS source bad enough to
+> require it appears (its likely home is the multi-lap slicing work).
+
 > **Derived summary only.** Raw FastF1 telemetry, the FastF1 cache, and
 > TUMFTM-derived track JSON stay local (gitignored). The committed artifacts are
 > the fitted-car overlays (`cars/<circuit>_2024q_fitted.toml`) and these docs.

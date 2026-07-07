@@ -10,6 +10,10 @@
 //! This module fits a smooth centerline that minimizes curvature roughness
 //! subject to a hard cap on how far any point may move from its survey point.
 //!
+//! Scope note: this is a **pulled-forward slice of Phase 1.1** — it was needed
+//! early so Phase 2 telemetry correlation could run the QSS on real (noisy)
+//! imported centerlines without phantom-curvature slowdowns.
+//!
 //! # Method (regularized least squares, 2D only)
 //!
 //! For each coordinate independently we solve

@@ -427,3 +427,51 @@ fn diagnostics_json_is_well_formed() {
         "unbalanced braces in diagnostics JSON"
     );
 }
+
+#[test]
+fn attach_estimated_channels_appends_all_five() {
+    use crate::telemetry::GridKind;
+    use std::collections::BTreeMap;
+
+    let car = CarParams::f1_2024_calibrated();
+    let tire = PacejkaTire::f1_default();
+    let n = 60;
+    let tp = TruthParams {
+        n_epochs: n,
+        pos_noise: 1.0,
+        speed_noise: 0.3,
+        q_delta: Q_DELTA_TRUE,
+        q_fdrive: Q_FDRIVE_TRUE,
+        seed: 0x5A5A,
+    };
+    let (t, _truth, _td, _tf, x, y, speed) = make_synthetic(&car, &tire, tp);
+    let mut res =
+        smooth_states(&t, &x, &y, &speed, &car, &tire, &synthetic_config(1.0, 0.3)).unwrap();
+    // Force a "no value" NaN into one slip sample to check it survives the append.
+    res.slip_front[7] = f64::NAN;
+
+    // An aligned telemetry with n rows; attach must not change the row count.
+    let mut channels: BTreeMap<ChannelId, Vec<f64>> = BTreeMap::new();
+    channels.insert(ChannelId::Time, t.clone());
+    channels.insert(ChannelId::Speed, speed.clone());
+    let aligned = Telemetry {
+        grid: GridKind::T,
+        channels,
+        metadata: Vec::new(),
+    };
+
+    let out = attach_estimated_channels(&aligned, &res);
+
+    // All five dynamic channels present, each length == input row count.
+    for id in OUTPUT_CHANNELS {
+        let c = out
+            .channel(*id)
+            .unwrap_or_else(|| panic!("channel {} not appended", id.name()));
+        assert_eq!(c.len(), n, "channel {} length", id.name());
+    }
+    // The forced NaN propagated; a neighbouring finite sample is untouched.
+    assert!(out.channel(ChannelId::SlipAngleFront).unwrap()[7].is_nan());
+    assert!(out.channel(ChannelId::SlipAngleFront).unwrap()[8].is_finite());
+    // A state-derived channel (yaw_rate) is finite through the run.
+    assert!(out.channel(ChannelId::YawRate).unwrap()[30].is_finite());
+}

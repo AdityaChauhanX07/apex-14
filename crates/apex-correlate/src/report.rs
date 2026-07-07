@@ -1,6 +1,12 @@
 //! Correlation report generation: runs the metrics against a measured lap and a
 //! QSS sim, and renders SVG overlays + a deterministic markdown report.
 //!
+//! **Markdown-only (roadmap deviation).** The roadmap said "HTML/markdown
+//! report"; we build markdown only. Markdown renders natively on GitHub, diffs
+//! cleanly in review, and is byte-reproducible under `APEX_REPRO_TIMESTAMP`
+//! (embedded SVGs carry the visuals). HTML output is deferred until a consumer
+//! actually needs it.
+//!
 //! Sector splits use the workspace's **equal-arc-length thirds** convention
 //! (`apex_physics::sector_times`), which is **NOT** the official F1 sector
 //! layout — every output labels this.
@@ -825,5 +831,63 @@ mod tests {
         assert!(svg.contains("<metadata>"));
         assert!(svg.contains("measured-source"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A synthetic-oval measured lap for the reproducibility test.
+    fn synthetic_measured(sim: &apex_physics::QssResult) -> Telemetry {
+        let n = sim.distances.len();
+        let mut t = vec![0.0; n];
+        for i in 1..n {
+            let ds = sim.distances[i] - sim.distances[i - 1];
+            let v = 0.5 * (sim.speeds[i] + sim.speeds[i - 1]);
+            t[i] = t[i - 1] + if v > 0.0 { ds / v } else { 0.0 };
+        }
+        let mut channels: BTreeMap<ChannelId, Vec<f64>> = BTreeMap::new();
+        channels.insert(ChannelId::S, sim.distances.clone());
+        channels.insert(ChannelId::Speed, sim.speeds.clone());
+        channels.insert(ChannelId::Time, t);
+        Telemetry {
+            grid: crate::GridKind::S,
+            channels,
+            metadata: vec![
+                ("session".into(), "Q".into()),
+                ("driver".into(), "SIM".into()),
+                ("year".into(), "2024".into()),
+            ],
+        }
+    }
+
+    #[test]
+    fn report_md_byte_identical_with_pinned_timestamp() {
+        use std::sync::Mutex;
+        // Serialize env mutation within this crate's test binary (no other
+        // apex-correlate test touches APEX_REPRO_TIMESTAMP, but be safe).
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("APEX_REPRO_TIMESTAMP", "2026-07-05T00:00:00Z");
+
+        let (pts, closed) = oval_track(500.0, 90.0, 12.0, 400);
+        let track = build_track("Oval", &pts, closed);
+        let sim = qss_lap_sim(&track, &CarParams::default());
+        let measured = synthetic_measured(&sim);
+        let trace = SimTrace::from_qss(&sim);
+        let result = correlate(&measured, &track, &trace, CorrelationConfig::default()).unwrap();
+
+        // Two independent RunMetadata builds + report writes, both under the pin.
+        let dir_a = std::env::temp_dir().join("apex_report_repro_a");
+        let dir_b = std::env::temp_dir().join("apex_report_repro_b");
+        let pa = write_report(&dir_a, &result, &measured, &test_meta(), &track).unwrap();
+        let pb = write_report(&dir_b, &result, &measured, &test_meta(), &track).unwrap();
+
+        std::env::remove_var("APEX_REPRO_TIMESTAMP");
+
+        let a = std::fs::read(&pa).expect("read report a");
+        let b = std::fs::read(&pb).expect("read report b");
+        assert_eq!(
+            a, b,
+            "report.md must be byte-identical across writes under a pinned timestamp"
+        );
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
     }
 }
