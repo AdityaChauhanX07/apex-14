@@ -10,6 +10,7 @@ pub mod generators;
 pub mod layout;
 pub mod parser;
 pub mod query;
+pub mod ribbon3d;
 pub mod smoothing;
 pub mod track_gen;
 pub mod types;
@@ -22,10 +23,11 @@ pub use layout::{
     is_valid_layout, point_in_polygon, track_within_boundary, ControlPoint, TrackLayout,
 };
 pub use parser::{
-    export_track_json, export_track_json_with_meta, export_tumftm_csv, load_track_json,
-    load_tumftm_csv, parse_track_json, parse_tumftm_csv, TrackFileJson, TrackMetaJson,
-    TrackPointJson,
+    export_ribbon3d_json, export_track_json, export_track_json_with_meta, export_tumftm_csv,
+    load_ribbon3d_json, load_track_json, load_tumftm_csv, parse_ribbon3d_json, parse_track_json,
+    parse_tumftm_csv, TrackFileJson, TrackMetaJson, TrackPointJson,
 };
+pub use ribbon3d::{Frame, Ribbon3d, RibbonStation, DEFAULT_MU_SCALE};
 pub use smoothing::{smooth_points, smooth_track, SmoothingReport, DEFAULT_SMOOTH_TOLERANCE_M};
 pub use track_gen::{extract_features, generate_track_batch, random_spline_track, TrackFeatures};
 pub use types::{processed_track_hash, raw_track_hash, Track, TrackPoint, TrackSegment};

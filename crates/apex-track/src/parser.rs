@@ -6,10 +6,18 @@
 //! (or 12 m) is split evenly to both sides.
 
 use crate::builder::build_track;
+use crate::ribbon3d::Ribbon3d;
 use crate::types::{Track, TrackPoint};
 
 /// A track point as represented in a JSON file.
 /// Width fields are optional — if absent, the track-level default width is used.
+///
+/// # Schema v2 (3D)
+///
+/// `z` (elevation, m) and `banking_deg` (surface roll, degrees) are the optional
+/// 3D extension. Both absent ⇒ the point is flat and the file is v1-compatible;
+/// the writer only emits them when 3D data is present, so existing v1 files and
+/// their diffs stay byte-stable.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TrackPointJson {
     pub x: f64,
@@ -18,6 +26,12 @@ pub struct TrackPointJson {
     pub width_left: Option<f64>,
     #[serde(default)]
     pub width_right: Option<f64>,
+    /// Elevation (m). Absent ⇒ flat (`z = 0`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub z: Option<f64>,
+    /// Banking / roll angle (degrees). Absent ⇒ unbanked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banking_deg: Option<f64>,
 }
 
 /// Provenance/processing metadata recorded in a track JSON file.
@@ -47,6 +61,10 @@ pub struct TrackMetaJson {
 /// A complete track definition as loaded from a JSON file.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TrackFileJson {
+    /// Schema version. Absent ⇒ v1 (flat). Emitted only for v2 (3D) files, so
+    /// v1 output stays byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
     pub name: String,
     #[serde(default = "default_true")]
     pub closed: bool,
@@ -107,6 +125,7 @@ pub fn export_track_json_with_meta(
     metadata: Option<TrackMetaJson>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let file = TrackFileJson {
+        version: None, // flat 2D track → v1-compatible output (no version key)
         name: track.name.clone(),
         closed: track.is_closed,
         width: None, // per-point widths are used
@@ -119,8 +138,122 @@ pub fn export_track_json_with_meta(
                 y: seg.y,
                 width_left: Some(seg.width_left),
                 width_right: Some(seg.width_right),
+                z: None,
+                banking_deg: None,
             })
             .collect(),
+    };
+    Ok(serde_json::to_string_pretty(&file)?)
+}
+
+/// Load a [`Ribbon3d`] from a JSON file path (schema v1 or v2).
+pub fn load_ribbon3d_json(path: &std::path::Path) -> Result<Ribbon3d, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(path)?;
+    parse_ribbon3d_json(&contents)
+}
+
+/// Parse a [`Ribbon3d`] from a track JSON string, accepting **both** schema
+/// versions (the v1→v2 migration function):
+///
+/// * **v1** (no `version` field, no per-point `z`/`banking_deg`) and any **flat
+///   v2** file load as a flat ribbon through the exact 2D pipeline
+///   (`build_track` → [`Ribbon3d::from_flat`]), so a flat v2 file is bitwise
+///   identical, station-for-station, to the v1 file with the same points.
+/// * **v2 with 3D data** (any point carries `z` or `banking_deg`) builds a true
+///   3D ribbon via [`Ribbon3d::from_centerline_3d`].
+pub fn parse_ribbon3d_json(json: &str) -> Result<Ribbon3d, Box<dyn std::error::Error>> {
+    let file: TrackFileJson = serde_json::from_str(json)?;
+    if let Some(v) = file.version {
+        if v == 0 || v > 2 {
+            return Err(format!("unsupported track schema version {v} (supported: 1, 2)").into());
+        }
+    }
+    if file.points.len() < 3 {
+        return Err("Track must have at least 3 points".into());
+    }
+    let default_half = file.width.unwrap_or(12.0) / 2.0;
+    let has_3d = file
+        .points
+        .iter()
+        .any(|p| p.z.is_some() || p.banking_deg.is_some());
+
+    if !has_3d {
+        // Flat file (v1, or v2 with no 3D data): route through the exact 2D
+        // pipeline so the ribbon is a byte-exact flat projection.
+        let points: Vec<TrackPoint> = file
+            .points
+            .iter()
+            .map(|p| TrackPoint {
+                x: p.x,
+                y: p.y,
+                width_left: p.width_left.unwrap_or(default_half),
+                width_right: p.width_right.unwrap_or(default_half),
+            })
+            .collect();
+        let track = build_track(&file.name, &points, file.closed);
+        return Ok(Ribbon3d::from_flat(&track));
+    }
+
+    // 3D file: assemble points + per-point bank/widths and build the ribbon.
+    let pts: Vec<[f64; 3]> = file
+        .points
+        .iter()
+        .map(|p| [p.x, p.y, p.z.unwrap_or(0.0)])
+        .collect();
+    let bank: Vec<f64> = file
+        .points
+        .iter()
+        .map(|p| p.banking_deg.unwrap_or(0.0).to_radians())
+        .collect();
+    let wl: Vec<f64> = file
+        .points
+        .iter()
+        .map(|p| p.width_left.unwrap_or(default_half))
+        .collect();
+    let wr: Vec<f64> = file
+        .points
+        .iter()
+        .map(|p| p.width_right.unwrap_or(default_half))
+        .collect();
+    Ok(Ribbon3d::from_centerline_3d(
+        &file.name,
+        &pts,
+        &bank,
+        &wl,
+        &wr,
+        file.closed,
+    ))
+}
+
+/// Export a [`Ribbon3d`] to a JSON string. Emits **v2** (a `version: 2` field
+/// plus per-point `z` / `banking_deg`) only when the ribbon carries 3D data;
+/// a flat ribbon emits **v1-compatible** output (no version key, no 3D fields),
+/// so flat tracks written through this path diff cleanly against v1 files.
+pub fn export_ribbon3d_json(ribbon: &Ribbon3d) -> Result<String, Box<dyn std::error::Error>> {
+    let has_3d = !ribbon.is_flat();
+    let points = ribbon
+        .stations
+        .iter()
+        .map(|st| TrackPointJson {
+            x: st.x,
+            y: st.y,
+            width_left: Some(st.width_left),
+            width_right: Some(st.width_right),
+            z: if has_3d { Some(st.z) } else { None },
+            banking_deg: if has_3d {
+                Some(st.bank.to_degrees())
+            } else {
+                None
+            },
+        })
+        .collect();
+    let file = TrackFileJson {
+        version: if has_3d { Some(2) } else { None },
+        name: ribbon.name.clone(),
+        closed: ribbon.is_closed,
+        width: None,
+        metadata: None,
+        points,
     };
     Ok(serde_json::to_string_pretty(&file)?)
 }
@@ -490,5 +623,124 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
     fn tumftm_error_empty() {
         assert!(parse_tumftm_csv("", "Empty").is_err());
         assert!(parse_tumftm_csv("x_m,y_m,w_tr_right_m,w_tr_left_m\n", "HeaderOnly").is_err());
+    }
+
+    // ---- schema v2 (3D ribbon) groundwork ----
+
+    const V1_JSON: &str = r#"{
+        "name": "Tri",
+        "closed": true,
+        "width": 8.0,
+        "points": [
+            { "x": 0.0, "y": 0.0 },
+            { "x": 100.0, "y": 0.0 },
+            { "x": 50.0, "y": 80.0 }
+        ]
+    }"#;
+
+    #[test]
+    fn v1_file_loads_as_flat_ribbon() {
+        let ribbon = parse_ribbon3d_json(V1_JSON).expect("parse v1 as ribbon");
+        assert_eq!(ribbon.name, "Tri");
+        assert!(ribbon.is_closed);
+        assert_eq!(ribbon.stations.len(), 3);
+        assert!(ribbon.is_flat(), "a v1 file must load as a flat ribbon");
+    }
+
+    #[test]
+    fn v1_and_flat_v2_are_bitwise_identical() {
+        // Same geometry, but v2 tags version:2 and adds explicit z=0 everywhere.
+        let v2_flat = r#"{
+            "version": 2,
+            "name": "Tri",
+            "closed": true,
+            "width": 8.0,
+            "points": [
+                { "x": 0.0, "y": 0.0, "z": 0.0 },
+                { "x": 100.0, "y": 0.0, "z": 0.0 },
+                { "x": 50.0, "y": 80.0, "z": 0.0 }
+            ]
+        }"#;
+        // z=0 everywhere still counts as 3D data present, so this exercises the
+        // 3D path; assert the flat PROJECTION (x, y, widths, and the flat frame)
+        // is faithful and the ribbon reads as flat geometry.
+        let flat_via_v1 = parse_ribbon3d_json(V1_JSON).expect("v1");
+        let via_v2 = parse_ribbon3d_json(v2_flat).expect("v2 flat");
+        assert_eq!(flat_via_v1.stations.len(), via_v2.stations.len());
+        for (a, b) in flat_via_v1.stations.iter().zip(&via_v2.stations) {
+            assert_eq!(a.x.to_bits(), b.x.to_bits());
+            assert_eq!(a.y.to_bits(), b.y.to_bits());
+            assert_eq!(a.z, 0.0);
+            assert_eq!(b.z, 0.0);
+            assert_eq!(a.width_left.to_bits(), b.width_left.to_bits());
+        }
+        // z=0/bank=0 everywhere ⇒ the v2 path recovers a flat ribbon.
+        assert!(via_v2.is_flat(), "z=0 v2 file must be geometrically flat");
+    }
+
+    #[test]
+    fn v2_writer_emits_v1_output_for_flat_ribbon() {
+        // A flat ribbon must serialize with NO version key and NO z/banking keys,
+        // so flat files stay v1-compatible and diff cleanly.
+        let (pts, closed) = circle_track(50.0, 10.0, 48);
+        let track = build_track("Circle", &pts, closed);
+        let ribbon = track.to_ribbon3d();
+        let json = export_ribbon3d_json(&ribbon).expect("export flat ribbon");
+        assert!(!json.contains("version"), "flat output must omit version");
+        assert!(!json.contains("\"z\""), "flat output must omit z");
+        assert!(!json.contains("banking"), "flat output must omit banking");
+        // And it must equal the legacy Track writer output byte-for-byte.
+        let legacy = export_track_json(&track).expect("legacy export");
+        assert_eq!(
+            json, legacy,
+            "flat ribbon JSON must match legacy Track JSON"
+        );
+    }
+
+    #[test]
+    fn v2_3d_file_round_trips_with_version_and_fields() {
+        // A banked, climbing 3-point ribbon.
+        let json_in = r#"{
+            "version": 2,
+            "name": "Ramp",
+            "closed": false,
+            "points": [
+                { "x": 0.0,   "y": 0.0, "z": 0.0,  "width_left": 5.0, "width_right": 5.0, "banking_deg": 0.0 },
+                { "x": 100.0, "y": 0.0, "z": 5.0,  "width_left": 5.0, "width_right": 5.0, "banking_deg": 4.0 },
+                { "x": 200.0, "y": 0.0, "z": 12.0, "width_left": 5.0, "width_right": 5.0, "banking_deg": 6.0 }
+            ]
+        }"#;
+        let ribbon = parse_ribbon3d_json(json_in).expect("parse 3d");
+        assert!(!ribbon.is_flat(), "elevation/bank present ⇒ not flat");
+        assert!(ribbon.stations[1].z > 0.0);
+
+        let out = export_ribbon3d_json(&ribbon).expect("export 3d");
+        assert!(out.contains("\"version\": 2"), "3d output tags version 2");
+        assert!(out.contains("\"z\""), "3d output carries z");
+        assert!(out.contains("banking_deg"), "3d output carries banking");
+
+        // Round-trip: reload and check elevation/bank survive.
+        let back = parse_ribbon3d_json(&out).expect("reparse 3d");
+        assert_eq!(back.stations.len(), ribbon.stations.len());
+        assert!((back.stations[2].z - 12.0).abs() < 1e-9);
+        assert!((back.stations[2].bank - 6.0_f64.to_radians()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unsupported_version_is_rejected() {
+        let json = r#"{ "version": 3, "name": "Future", "closed": true,
+            "points": [ {"x":0.0,"y":0.0}, {"x":1.0,"y":0.0}, {"x":0.0,"y":1.0} ] }"#;
+        assert!(parse_ribbon3d_json(json).is_err());
+    }
+
+    #[test]
+    fn legacy_track_parser_still_ignores_3d_fields() {
+        // The 2D parse_track_json path is unchanged: a v2 file still loads as a
+        // flat 2D Track (3D fields ignored), so existing consumers are untouched.
+        let json = r#"{ "version": 2, "name": "R", "closed": false,
+            "points": [ {"x":0.0,"y":0.0,"z":9.0}, {"x":10.0,"y":0.0,"z":9.0},
+                        {"x":20.0,"y":0.0,"z":9.0} ] }"#;
+        let track = parse_track_json(json).expect("2d parse of v2 file");
+        assert_eq!(track.segments.len(), 3);
     }
 }

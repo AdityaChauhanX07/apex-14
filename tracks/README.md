@@ -25,6 +25,52 @@ Each point is an object:
 Arc length, heading, and curvature are computed from the points by
 `build_track` at load time; they are not stored in the file.
 
+## Schema v2 (3D ribbon)
+
+Schema **v2** adds an optional 3D extension. It is fully backward-compatible: a
+file with no `version` field and no 3D per-point fields is **v1** (flat), and the
+writer emits v2 markers **only** when 3D data is present, so existing files and
+their diffs stay byte-stable.
+
+| Field     | Type   | Required | Meaning                                                       |
+|-----------|--------|----------|---------------------------------------------------------------|
+| `version` | int    | no       | Schema version. Absent ⇒ v1 (flat). Emitted as `2` only for 3D files. Supported: 1, 2. |
+
+Per-point 3D fields:
+
+| Field         | Type   | Required | Meaning                                                   |
+|---------------|--------|----------|-----------------------------------------------------------|
+| `z`           | number | no       | Elevation (m). Absent ⇒ flat (`z = 0`).                   |
+| `banking_deg` | number | no       | Surface banking / roll angle (degrees). Absent ⇒ unbanked.|
+
+Loading:
+
+- `load_track_json` / `parse_track_json` — the **2D** path, unchanged. Any file
+  (v1 or v2) loads as a flat 2D `Track`; 3D fields are ignored.
+- `load_ribbon3d_json` / `parse_ribbon3d_json` — the **3D** path, returning a
+  [`Ribbon3d`]. A v1 or flat-v2 file loads as a byte-exact flat ribbon (through
+  the same `build_track` pipeline); a file with any `z`/`banking_deg` builds a 3D
+  ribbon (`Ribbon3d::from_centerline_3d`). See `docs/math/track3d.md`.
+
+`export_ribbon3d_json` writes v2 (with `version: 2` and per-point `z` /
+`banking_deg`) only when the ribbon is non-flat; a flat ribbon serializes as
+v1-compatible output, byte-identical to `export_track_json`.
+
+### 3D example (v2)
+
+```json
+{
+    "version": 2,
+    "name": "Banked ramp",
+    "closed": false,
+    "points": [
+        { "x": 0.0,   "y": 0.0, "z": 0.0,  "banking_deg": 0.0 },
+        { "x": 100.0, "y": 0.0, "z": 5.0,  "banking_deg": 4.0 },
+        { "x": 200.0, "y": 0.0, "z": 12.0, "banking_deg": 6.0 }
+    ]
+}
+```
+
 ## Minimal example
 
 ```json
