@@ -2,7 +2,7 @@
 //!
 //! Every command with a stochastic component resolves its RNG seed through
 //! [`resolve_seed`] so the value that will be used is always printed — the
-//! roadmap requires the default seed to be logged, never silent, and to be
+//! design requires the default seed to be logged, never silent, and to be
 //! distinguishable from a user-supplied one. Lives in `apex-math` (the zero-dep
 //! workspace leaf) so `apex-cli`, `train-driver`, and `train-raceline` share one
 //! implementation instead of three drifting copies. Uses only `println!` — no

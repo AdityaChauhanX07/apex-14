@@ -1263,7 +1263,21 @@ fn dynamics_dkappa(car: &CarParams, node: &[f64; 6], kappa: f64) -> [f64; 4] {
 /// Generic grip-circle constraint `(f_drive/F_max)² + (m·v²·curv/F_max)² - 1`,
 /// matching the `f64` formulation in `inequality_constraints`.
 fn grip_constraint_generic<T: Float>(car: &CarParams, v: T, f_drive: T, curvature_cmd: T) -> T {
-    let mg = T::from_f64(car.mass * GRAVITY);
+    grip_constraint_generic_with_gz(car, v, f_drive, curvature_cmd, GRAVITY)
+}
+
+/// [`grip_constraint_generic`] with an imposed vertical acceleration `g_z`
+/// (m/s²) replacing `GRAVITY` in the point-mass normal-load term `mg`. `g_z` is a
+/// plain `f64` (as `GRAVITY` was, before `T::from_f64`), so `g_z == GRAVITY`
+/// reproduces the original bit-for-bit. See the g_z pathway design doc.
+fn grip_constraint_generic_with_gz<T: Float>(
+    car: &CarParams,
+    v: T,
+    f_drive: T,
+    curvature_cmd: T,
+    g_z: f64,
+) -> T {
+    let mg = T::from_f64(car.mass * g_z);
     let aero = T::from_f64(0.5 * car.air_density * car.lift_coeff * car.frontal_area);
     let mu = T::from_f64(car.tire_mu);
     let mass = T::from_f64(car.mass);
@@ -1545,8 +1559,24 @@ fn available_grip_generic<T: Float>(
     lateral_accel: T,
     ax: T,
 ) -> T {
+    available_grip_generic_with_gz(car, tire, speed, lateral_accel, ax, GRAVITY)
+}
+
+/// [`available_grip_generic`] with an imposed vertical acceleration `g_z` (m/s²)
+/// replacing `GRAVITY` in the four-corner static weight. `g_z` enters via the
+/// same `m * T::from_f64(g_z)` product; the lateral/longitudinal transfer terms
+/// keep the vehicle's own `a_y`/`a_x`. `g_z == GRAVITY` reproduces the original
+/// bit-for-bit. See the g_z pathway design doc.
+fn available_grip_generic_with_gz<T: Float>(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    speed: T,
+    lateral_accel: T,
+    ax: T,
+    g_z: f64,
+) -> T {
     let m = T::from_f64(car.mass);
-    let weight = m * T::from_f64(GRAVITY);
+    let weight = m * T::from_f64(g_z);
     let df = T::from_f64(0.5 * car.air_density * car.lift_coeff * car.frontal_area) * speed * speed;
 
     let lf = T::from_f64(car.cog_to_front);
@@ -2040,12 +2070,41 @@ pub fn fourteen_dof_grip_budget(
     lateral_accel: f64,
     longitudinal_accel: f64,
 ) -> f64 {
+    fourteen_dof_grip_budget_with_gz(
+        car,
+        tire,
+        suspension,
+        aero,
+        speed,
+        lateral_accel,
+        longitudinal_accel,
+        GRAVITY,
+    )
+}
+
+/// [`fourteen_dof_grip_budget`] with an imposed vertical acceleration `g_z`
+/// (m/s²). `g_z` enters only through the four-corner static weight (via
+/// [`CarParams::corner_loads_with_gz`]); the suspension/ride-height/aero stages
+/// are unchanged. `g_z == GRAVITY` reproduces the original bit-for-bit. See
+/// `docs/design/envelope-qss/gz-pathway.md`.
+#[allow(clippy::too_many_arguments)]
+pub fn fourteen_dof_grip_budget_with_gz(
+    car: &CarParams,
+    tire: &PacejkaTire,
+    suspension: &SuspensionSystem,
+    aero: &AeroModel,
+    speed: f64,
+    lateral_accel: f64,
+    longitudinal_accel: f64,
+    g_z: f64,
+) -> f64 {
     // (a) four-corner vertical loads (already include the simple speed² downforce)
-    let mut loads = car.corner_loads(
+    let mut loads = car.corner_loads_with_gz(
         speed,
         longitudinal_accel,
         lateral_accel,
         ROLL_STIFFNESS_FRONT,
+        g_z,
     );
 
     // (b) suspension compression that supports those loads
@@ -2212,6 +2271,94 @@ impl NlpEvaluator for FourteenDofEvaluator<'_, '_> {
 mod tests {
     use super::*;
     use apex_track::{build_track, circle_track, oval_track};
+
+    // --- g_z pathway (docs/design/envelope-qss/gz-pathway.md) ---
+
+    /// The default path (`g_z == GRAVITY`) is BIT-IDENTICAL to the preserved
+    /// originals AND to a frozen snapshot captured from the pre-g_z-pathway build
+    /// (default car / f1 tire+susp+aero) — anchoring the optimizer grip budgets,
+    /// which no golden fixture pins on their own.
+    #[test]
+    fn optimizer_budgets_gz_default_bitwise_identical() {
+        let car = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        // (v, ay, ax, seven_bits, fourteen_bits, grip_constraint_bits)
+        // grip_constraint uses f_drive = 3000.0, curv = 0.01.
+        let expected: &[(f64, f64, f64, u64, u64, u64)] = &[
+            (
+                40.0,
+                0.0,
+                0.0,
+                0x40d644988df93a8e,
+                0x40d1c907d76b4f66,
+                0xbfe5520bea6be7b8,
+            ),
+            (
+                60.0,
+                12.0,
+                5.0,
+                0x40dfd6d085e8ab7a,
+                0x40d2c311fca7cf28,
+                0xbfd1b24a335dd924,
+            ),
+            (
+                30.0,
+                -18.0,
+                -9.0,
+                0x40d253be651d2c64,
+                0x40d054b53d68f1eb,
+                0xbfea7e812112c5ad,
+            ),
+        ];
+        for &(v, ay, ax, seven_b, fourteen_b, gc_b) in expected {
+            // 7-DOF grip budget: original == with_gz(GRAVITY) == snapshot
+            let seven = available_grip_generic::<f64>(&car, &tire, v, ay, ax);
+            let seven_gz = available_grip_generic_with_gz::<f64>(&car, &tire, v, ay, ax, GRAVITY);
+            assert_eq!(seven.to_bits(), seven_gz.to_bits());
+            assert_eq!(seven.to_bits(), seven_b, "7-DOF budget drift at v={v}");
+            // 14-DOF grip budget
+            let f14 = fourteen_dof_grip_budget(&car, &tire, &susp, &aero, v, ay, ax);
+            let f14_gz =
+                fourteen_dof_grip_budget_with_gz(&car, &tire, &susp, &aero, v, ay, ax, GRAVITY);
+            assert_eq!(f14.to_bits(), f14_gz.to_bits());
+            assert_eq!(f14.to_bits(), fourteen_b, "14-DOF budget drift at v={v}");
+            // point-mass grip-circle constraint
+            let gc = grip_constraint_generic::<f64>(&car, v, 3000.0, 0.01);
+            let gc_gz = grip_constraint_generic_with_gz::<f64>(&car, v, 3000.0, 0.01, GRAVITY);
+            assert_eq!(gc.to_bits(), gc_gz.to_bits());
+            assert_eq!(gc.to_bits(), gc_b, "grip-constraint drift at v={v}");
+        }
+    }
+
+    /// Physical direction: more imposed g_z ⇒ more normal load ⇒ more available
+    /// grip (both budgets rise), and the point-mass grip-circle constraint slacks
+    /// (larger `F_max` ⇒ smaller normalized demand).
+    #[test]
+    fn optimizer_budgets_respond_to_gz() {
+        let car = CarParams::default();
+        let tire = PacejkaTire::f1_default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        let (v, ay, ax) = (40.0_f64, 0.0_f64, 0.0_f64);
+        let g = GRAVITY;
+
+        let s1 = available_grip_generic_with_gz::<f64>(&car, &tire, v, ay, ax, g);
+        let s2 = available_grip_generic_with_gz::<f64>(&car, &tire, v, ay, ax, 2.0 * g);
+        assert!(s2 > s1, "7-DOF budget should grow with g_z ({s1} -> {s2})");
+
+        let f1 = fourteen_dof_grip_budget_with_gz(&car, &tire, &susp, &aero, v, ay, ax, g);
+        let f2 = fourteen_dof_grip_budget_with_gz(&car, &tire, &susp, &aero, v, ay, ax, 2.0 * g);
+        assert!(f2 > f1, "14-DOF budget should grow with g_z ({f1} -> {f2})");
+
+        let c1 = grip_constraint_generic_with_gz::<f64>(&car, v, 3000.0, 0.01, g);
+        let c2 = grip_constraint_generic_with_gz::<f64>(&car, v, 3000.0, 0.01, 2.0 * g);
+        assert!(
+            c2 < c1,
+            "grip constraint should slacken with g_z ({c1} -> {c2})"
+        );
+    }
 
     fn circle(n_nodes: usize) -> (Track, CarParams, CollocationConfig) {
         let (pts, closed) = circle_track(100.0, 12.0, 200);

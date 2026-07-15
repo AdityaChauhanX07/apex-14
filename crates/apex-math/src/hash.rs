@@ -67,6 +67,14 @@ impl Hash {
         &self.0
     }
 
+    /// Reconstruct a [`Hash`] from its raw 32 bytes — the inverse of
+    /// [`Hash::as_bytes`], for reading a digest back out of a serialized
+    /// artifact (e.g. the envelope cache header). This does not recompute or
+    /// validate anything; it simply wraps the bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Hash {
+        Hash(bytes)
+    }
+
     /// Full lowercase hex (64 characters).
     pub fn to_hex(&self) -> String {
         let mut s = String::with_capacity(64);

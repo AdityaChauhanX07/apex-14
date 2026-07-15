@@ -102,7 +102,7 @@ km/h→m/s, deg→rad, percent→0–1 fraction, ms→s, and identity, all route
 files and lap slicing arrive with the track-alignment work; until then, a lap is
 a whole file and `s`/`t` start at (approximately) zero.
 
-> **DTW alignment deferred.** The roadmap named dynamic time warping (DTW) on the
+> **DTW alignment deferred.** The original design named dynamic time warping (DTW) on the
 > speed traces as a fallback for poor-GPS sources. It was not needed: the
 > arc-length-anchored 2D similarity alignment (`apex_correlate::align`) reached
 > 2.47–6.76 m RMS across all five campaign circuits with clean hygiene checks, so

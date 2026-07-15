@@ -449,7 +449,7 @@ mod tests {
         }
     }
 
-    // Measured-telemetry channels added for the correlation importer (Phase 2).
+    // Measured-telemetry channels added for the correlation importer.
     // Locks their name/unit/quantity so the interchange format can't drift.
     #[test]
     fn measured_telemetry_channels_have_expected_specs() {

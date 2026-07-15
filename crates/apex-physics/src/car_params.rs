@@ -157,7 +157,16 @@ impl CarParams {
     /// Maximum tire grip force at the given speed:
     /// `μ · (m·g + downforce(v))`.
     pub fn max_grip_force(&self, speed: f64) -> f64 {
-        self.tire_mu * (self.mass * GRAVITY + self.downforce(speed))
+        self.max_grip_force_with_gz(speed, GRAVITY)
+    }
+
+    /// [`max_grip_force`](Self::max_grip_force) with an imposed vertical
+    /// acceleration `g_z` (m/s²) replacing `GRAVITY` in the normal-load term:
+    /// `μ · (m·g_z + downforce(v))`. The "g_z pathway" groundwork for envelope
+    /// generation (see `docs/design/envelope-qss/gz-pathway.md`). With
+    /// `g_z == GRAVITY` this is bit-identical to [`max_grip_force`].
+    pub fn max_grip_force_with_gz(&self, speed: f64, g_z: f64) -> f64 {
+        self.tire_mu * (self.mass * g_z + self.downforce(speed))
     }
 
     /// Rolling resistance force: `C_rr · m · g`.
@@ -170,7 +179,16 @@ impl CarParams {
     ///
     /// Returns (F_z_front, F_z_rear) — each is the TOTAL for that axle (both wheels combined).
     pub fn axle_loads(&self, speed: f64, longitudinal_accel: f64) -> (f64, f64) {
-        let weight = self.mass * GRAVITY;
+        self.axle_loads_with_gz(speed, longitudinal_accel, GRAVITY)
+    }
+
+    /// [`axle_loads`](Self::axle_loads) with an imposed vertical acceleration
+    /// `g_z` (m/s²) replacing `GRAVITY` in the static weight term. Only the
+    /// gravitational weight uses `g_z`; the longitudinal-transfer term keeps the
+    /// vehicle's own `a_x`. With `g_z == GRAVITY` this is bit-identical to
+    /// [`axle_loads`]. See `docs/design/envelope-qss/gz-pathway.md`.
+    pub fn axle_loads_with_gz(&self, speed: f64, longitudinal_accel: f64, g_z: f64) -> (f64, f64) {
+        let weight = self.mass * g_z;
         let df = self.downforce(speed);
 
         // Static weight distribution
@@ -206,7 +224,30 @@ impl CarParams {
         lateral_accel: f64,
         roll_stiffness_front_fraction: f64,
     ) -> [f64; 4] {
-        let (front_total, rear_total) = self.axle_loads(speed, longitudinal_accel);
+        self.corner_loads_with_gz(
+            speed,
+            longitudinal_accel,
+            lateral_accel,
+            roll_stiffness_front_fraction,
+            GRAVITY,
+        )
+    }
+
+    /// [`corner_loads`](Self::corner_loads) with an imposed vertical acceleration
+    /// `g_z` (m/s²). `g_z` flows only into the axle static weight (via
+    /// [`axle_loads_with_gz`](Self::axle_loads_with_gz)); the lateral-transfer
+    /// term keeps the vehicle's own `a_y`. With `g_z == GRAVITY` this is
+    /// bit-identical to [`corner_loads`]. See
+    /// `docs/design/envelope-qss/gz-pathway.md`.
+    pub fn corner_loads_with_gz(
+        &self,
+        speed: f64,
+        longitudinal_accel: f64,
+        lateral_accel: f64,
+        roll_stiffness_front_fraction: f64,
+        g_z: f64,
+    ) -> [f64; 4] {
+        let (front_total, rear_total) = self.axle_loads_with_gz(speed, longitudinal_accel, g_z);
 
         // Lateral load transfer per axle (positive a_y -> right wheels gain).
         let dfz_front = self.mass * lateral_accel * self.cog_height * roll_stiffness_front_fraction
@@ -245,7 +286,21 @@ impl CarParams {
     /// [`axle_loads`](Self::axle_loads). Same static + aero + longitudinal-
     /// transfer decomposition, same `.max(0.0)` floor.
     pub fn axle_loads_generic<T: Float>(&self, speed: T, longitudinal_accel: T) -> (T, T) {
-        let weight = self.mass * GRAVITY;
+        self.axle_loads_generic_with_gz(speed, longitudinal_accel, GRAVITY)
+    }
+
+    /// Generic mirror of [`axle_loads_with_gz`](Self::axle_loads_with_gz): the
+    /// imposed vertical acceleration `g_z` (m/s², a plain `f64` scalar, exactly
+    /// as `GRAVITY` was) replaces `GRAVITY` in the static weight. With
+    /// `g_z == GRAVITY` this is bit-identical to
+    /// [`axle_loads_generic`](Self::axle_loads_generic).
+    pub fn axle_loads_generic_with_gz<T: Float>(
+        &self,
+        speed: T,
+        longitudinal_accel: T,
+        g_z: f64,
+    ) -> (T, T) {
+        let weight = self.mass * g_z;
         let df = self.downforce_generic(speed);
 
         let fz_front_static = T::from_f64(weight * self.cog_to_rear / self.wheelbase);
@@ -339,6 +394,128 @@ mod tests {
 
     fn approx(a: f64, b: f64, tol: f64) -> bool {
         (a - b).abs() <= tol
+    }
+
+    // --- g_z pathway (docs/design/envelope-qss/gz-pathway.md) ---
+
+    /// The default path (`g_z == GRAVITY`) must be BIT-IDENTICAL to the
+    /// pre-g_z-pathway forms. Compares each `*_with_gz(.., GRAVITY)` variant to
+    /// the preserved original via raw `to_bits()` on a spread of inputs.
+    #[test]
+    fn gz_default_is_bitwise_identical_to_baseline() {
+        let cars = [CarParams::default(), CarParams::f1_2024_calibrated()];
+        let speeds = [0.0_f64, 12.5, 40.0, 55.0, 88.3];
+        let axs = [0.0_f64, 5.0, -8.5];
+        let ays = [0.0_f64, 9.0, -15.0];
+        let rsfs = [0.5_f64, 0.55];
+        for c in &cars {
+            for &v in &speeds {
+                // max_grip_force
+                assert_eq!(
+                    c.max_grip_force(v).to_bits(),
+                    c.max_grip_force_with_gz(v, GRAVITY).to_bits(),
+                    "max_grip_force drift at v={v}"
+                );
+                for &ax in &axs {
+                    // axle_loads (f64) and its generic mirror
+                    let (f0, r0) = c.axle_loads(v, ax);
+                    let (fg, rg) = c.axle_loads_with_gz(v, ax, GRAVITY);
+                    assert_eq!((f0.to_bits(), r0.to_bits()), (fg.to_bits(), rg.to_bits()));
+                    let (gf0, gr0) = c.axle_loads_generic::<f64>(v, ax);
+                    let (gfg, grg) = c.axle_loads_generic_with_gz::<f64>(v, ax, GRAVITY);
+                    assert_eq!(
+                        (gf0.to_bits(), gr0.to_bits()),
+                        (gfg.to_bits(), grg.to_bits())
+                    );
+                    for &ay in &ays {
+                        for &rsf in &rsfs {
+                            let a = c.corner_loads(v, ax, ay, rsf);
+                            let b = c.corner_loads_with_gz(v, ax, ay, rsf, GRAVITY);
+                            for i in 0..4 {
+                                assert_eq!(
+                                    a[i].to_bits(),
+                                    b[i].to_bits(),
+                                    "corner_loads drift at v={v} ax={ax} ay={ay} rsf={rsf} corner={i}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The normal-load budget is affine in `g_z` with slope `mu*m` (the weight
+    /// term), and, with no downforce (v=0), exactly linear: `mu*m*g_z`.
+    #[test]
+    fn max_grip_force_is_affine_in_gz() {
+        let c = CarParams::default();
+        // v=0 ⇒ downforce 0 ⇒ pure weight grip, exactly linear in g_z.
+        for &g in &[1.0_f64, 4.5, GRAVITY, 19.62] {
+            assert!(approx(
+                c.max_grip_force_with_gz(0.0, g),
+                c.tire_mu * c.mass * g,
+                1e-9
+            ));
+        }
+        // With downforce, the slope in g_z is exactly mu*m regardless of speed.
+        let v = 50.0;
+        let slope = (c.max_grip_force_with_gz(v, 12.0) - c.max_grip_force_with_gz(v, 4.0)) / 8.0;
+        assert!(approx(slope, c.tire_mu * c.mass, 1e-6), "slope {slope}");
+    }
+
+    /// Four-corner loads sum to `m*g_z` at rest (no downforce, no transfer), i.e.
+    /// the total vertical support scales linearly with the imposed g_z.
+    #[test]
+    fn corner_loads_sum_scales_linearly_in_gz() {
+        let c = CarParams::default();
+        for &g in &[2.0_f64, GRAVITY, 15.0] {
+            let loads = c.corner_loads_with_gz(0.0, 0.0, 0.0, 0.5, g);
+            let sum: f64 = loads.iter().sum();
+            assert!(approx(sum, c.mass * g, 1e-6), "sum {sum} vs {}", c.mass * g);
+        }
+    }
+
+    /// Friction-limited max cornering speed on a fixed-radius circle scales as
+    /// sqrt(g_z). Using a zero-downforce car makes the grip budget
+    /// speed-independent (`mu*m*g_z`), so `v_max = sqrt(mu*g_z*R)` exactly.
+    #[test]
+    fn max_corner_speed_scales_as_sqrt_gz() {
+        // no downforce ⇒ grip independent of speed
+        let c = CarParams {
+            lift_coeff: 0.0,
+            ..CarParams::default()
+        };
+        let r = 100.0_f64;
+        // m * v² / R = max_grip = mu * m * g_z  ⇒  v = sqrt(mu * g_z * R)
+        let v_max = |g: f64| (c.tire_mu * g * r).sqrt();
+        // sanity: the analytic v_max saturates the grip budget
+        let g = GRAVITY;
+        let f_lat = c.mass * v_max(g) * v_max(g) / r;
+        assert!(approx(f_lat, c.max_grip_force_with_gz(v_max(g), g), 1e-6));
+        // sqrt scaling: quadrupling g_z doubles v_max
+        assert!(approx(v_max(4.0 * g) / v_max(g), 2.0, 1e-12));
+    }
+
+    /// Zero and negative g_z behave sensibly / documented. At g_z=0 only
+    /// downforce provides grip; at negative g_z the weight term goes negative
+    /// (an "inverted"/upforce operating point) — grip can fall below zero at low
+    /// speed, and axle loads floor at 0. Recorded, not papered over.
+    #[test]
+    fn zero_and_negative_gz_are_sensible() {
+        let c = CarParams::default();
+        // g_z = 0: grip is exactly the downforce contribution.
+        assert!(approx(
+            c.max_grip_force_with_gz(60.0, 0.0),
+            c.tire_mu * c.downforce(60.0),
+            1e-9
+        ));
+        assert!(c.max_grip_force_with_gz(0.0, 0.0).abs() < 1e-12); // no weight, no aero ⇒ 0
+                                                                   // Negative g_z at rest ⇒ negative weight term ⇒ negative "grip" (nonphysical
+                                                                   // budget, but the function is total and does not panic); axle loads floor at 0.
+        assert!(c.max_grip_force_with_gz(0.0, -GRAVITY) < 0.0);
+        let (f, r) = c.axle_loads_with_gz(0.0, 0.0, -GRAVITY);
+        assert_eq!((f, r), (0.0, 0.0), "negative-weight axle loads floor at 0");
     }
 
     #[test]

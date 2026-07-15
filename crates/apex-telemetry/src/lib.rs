@@ -11,6 +11,7 @@ pub mod motec;
 #[cfg(feature = "parquet")]
 pub mod parquet_export;
 pub mod run_metadata;
+pub mod svg_envelope;
 pub mod svg_track;
 
 pub use channels::{ChannelId, ChannelSpec, Quantity, Unit, CHANNELS};
@@ -21,4 +22,5 @@ pub use parquet_export::{
     export_channels_parquet, read_parquet, write_parquet, ParquetColumn, ParquetData, ParquetError,
 };
 pub use run_metadata::{now_rfc3339, settings_hash_for_mode, RunMetadata};
+pub use svg_envelope::{render_envelope_svg, EnvelopeSlicePlot};
 pub use svg_track::render_track_svg;

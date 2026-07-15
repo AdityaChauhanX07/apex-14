@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Telemetry correlation for Apex-14 (Phase 2, task 2.1a).
+//! Telemetry correlation for Apex-14.
 //!
 //! This crate imports **measured** car telemetry — laps from real data sources
 //! such as [FastF1](https://docs.fastf1.dev/) — in the standard *Apex telemetry

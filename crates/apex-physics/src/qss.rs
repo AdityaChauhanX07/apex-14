@@ -479,7 +479,7 @@ pub fn qss_lap_sim_3d(ribbon: &Ribbon3d, params: &CarParams) -> QssResult {
 }
 
 /// [`qss_lap_sim_3d`] with an optional externally-supplied per-station grip
-/// multiplier (Phase 1.4, `mu_scale(s, n)`): `mu_scale[i]` scales `params.tire_mu`
+/// multiplier (`mu_scale(s, n)`): `mu_scale[i]` scales `params.tire_mu`
 /// at station `i` (`None`, or a shorter/longer slice than `ribbon.stations`,
 /// behaves as uniform `1.0` — the byte-stable default).
 ///
@@ -1139,7 +1139,7 @@ mod tests {
         );
     }
 
-    // --- 3D QSS: flat byte-invariance + synthetic validation (Phase 1.3) ---
+    // --- 3D QSS: flat byte-invariance + synthetic validation ---
 
     use apex_track::Ribbon3d;
     use std::f64::consts::PI;
@@ -1399,7 +1399,7 @@ mod tests {
         assert!(res.lap_time > 0.0);
     }
 
-    // --- mu_scale grip grid (Phase 1.4) ---
+    // --- mu_scale grip grid ---
 
     use apex_track::MuScaleGrid;
 
@@ -1540,7 +1540,7 @@ mod tests {
         }
     }
 
-    // --- sector markers (roadmap 1.2) ---
+    // --- sector markers ---
 
     #[test]
     fn explicit_sector_markers_produce_matching_sector_count_and_sum() {

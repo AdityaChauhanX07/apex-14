@@ -79,8 +79,8 @@ pub struct TrackFileJson {
     /// 3D-specific), same as `metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sector_markers: Option<Vec<f64>>,
-    /// Optional `mu_scale(s, n)` grip-multiplier grid block (Phase 1.4,
-    /// schema v2 / 3D-ribbon-only — ignored by the 2D `parse_track_json` path).
+    /// Optional `mu_scale(s, n)` grip-multiplier grid block (schema v2 /
+    /// 3D-ribbon-only — ignored by the 2D `parse_track_json` path).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mu_scale_grid: Option<MuScaleGridJson>,
     pub points: Vec<TrackPointJson>,
@@ -780,7 +780,7 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
         assert!(parse_ribbon3d_json(json).is_err());
     }
 
-    // ---- mu_scale grid (Phase 1.4) ----
+    // ---- mu_scale grid ----
 
     #[test]
     fn mu_scale_grid_round_trips() {
@@ -855,7 +855,7 @@ x_m,y_m,w_tr_right_m,w_tr_left_m
         assert!(parse_ribbon3d_json(json).is_err());
     }
 
-    // ---- sector markers (roadmap 1.2) ----
+    // ---- sector markers ----
 
     #[test]
     fn sector_markers_round_trip_2d_and_3d() {

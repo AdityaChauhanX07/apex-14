@@ -1,4 +1,4 @@
-//! 3D curved-ribbon track geometry (Phase 1.1 — geometry plumbing only).
+//! 3D curved-ribbon track geometry (geometry plumbing only).
 //!
 //! [`Ribbon3d`] generalizes the flat 2D [`Track`](crate::Track) to a 3D ribbon:
 //! a centerline `r(s) = (x, y, z)` carrying an orthonormal moving frame
@@ -130,8 +130,8 @@ pub struct Ribbon3d {
     pub total_length: f64,
     /// `true` if the ribbon forms a closed loop.
     pub is_closed: bool,
-    /// Optional schema v2 `(station, lateral)` grip-multiplier grid (Phase
-    /// 1.4). Presence/absence doesn't affect [`Ribbon3d::is_flat`] — a flat
+    /// Optional schema v2 `(station, lateral)` grip-multiplier grid.
+    /// Presence/absence doesn't affect [`Ribbon3d::is_flat`] — a flat
     /// ribbon carrying a grid still takes the flat QSS fast path, since the
     /// grid is inert there exactly like the per-station `mu_scale`
     /// placeholder. **QSS never reads this field directly** — callers sample

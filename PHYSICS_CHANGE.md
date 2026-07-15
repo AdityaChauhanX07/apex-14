@@ -12,7 +12,7 @@ in the code path it exercises), so any drift in the golden test reflects an
 actual change to the physics or track-generation code — not run-to-run noise.
 The test still compares with tolerance rather than bitwise equality, because
 floating-point results are not portable across compiler version, OS, or
-optimization level, and a multi-OS CI matrix is coming in Phase 0.4. The two
+optimization level, and a multi-OS CI matrix is planned. The two
 tolerances currently in force, defined in `bins/apex-cli/tests/golden_lap.rs`:
 
 - `LAP_TIME_TOL_S = 0.010` (10 ms)
@@ -63,7 +63,7 @@ change, not chased as a bug.
 
 ## Log
 
-### 2026-07-07 — Grip-map mechanism + sector markers (Phase 1.4 / 1.2): mu_scale(s,n) grid, marker-aware sectors — **goldens byte-unchanged**
+### 2026-07-07 — Grip-map mechanism + sector markers: mu_scale(s,n) grid, marker-aware sectors — **goldens byte-unchanged**
 - **What changed.** Added `apex_track::MuScaleGrid`, a bilinearly-interpolated
   `(station, lateral)` grip-multiplier grid, as an optional schema v2 block
   (`mu_scale_grid`, `tracks/README.md`) attached to `Ribbon3d`. The §5.4 grip
@@ -81,7 +81,7 @@ change, not chased as a bug.
   over `qss_lap_sim_3d_with_grip(..., None)`. This mechanism ships empty —
   nothing populates a real grip map yet (a rubbered-line-vs-dirty-line dataset
   is future work).
-- **Also landed: sector markers (Phase 1.2 loose end).** `Track`/`Ribbon3d`
+- **Also landed: sector markers (loose end).** `Track`/`Ribbon3d`
   gained an optional `sector_markers: Option<Vec<f64>>` field (schema v2 JSON,
   `tracks/README.md`); `apex_physics::sector_times_with_markers` buckets by
   explicit boundaries when present, and `qss_lap_sim`/`qss_lap_sim_3d`/
@@ -113,7 +113,7 @@ change, not chased as a bug.
   grid-external design doesn't leak grid effects onto the wrong line);
   `qss::tests::explicit_sector_markers_produce_matching_sector_count_and_sum`.
 
-### 2026-07-07 — 3D point-mass QSS physics (Phase 1.3): grade, vertical-curvature load, banking — **goldens byte-unchanged**
+### 2026-07-07 — 3D point-mass QSS physics: grade, vertical-curvature load, banking — **goldens byte-unchanged**
 - **What changed.** Added `qss_lap_sim_3d(&Ribbon3d, &CarParams)` implementing the
   3D point-mass QSS (docs/math/track3d.md §5): the longitudinal grade force
   `−m·g·sinθ`, the 3D normal load `N = m(g·cosθ·cosφ + v²κ·sinφ + v²κ_v) + F_df`
@@ -151,7 +151,7 @@ change, not chased as a bug.
   higher-fidelity / energy-management work. **No parameter was tuned to force the
   criterion.**
 
-### 2026-07-05 — Golden-lap harness closeout (0.1): converging circle optimize golden + formal Phase-3 deferral
+### 2026-07-05 — Golden-lap harness closeout: converging circle optimize golden + formal interior-point-solver deferral
 - **(a) New `golden_circle_optimize` fixture.** Added the first converging
   optimize-mode golden: constant-curvature circle (`circle_track(100.0, 12.0,
   200)`, R=100 m, L≈628.29 m), `f1_2024_calibrated` car, Hermite-Simpson
@@ -178,7 +178,7 @@ change, not chased as a bug.
   optimize golden feeds it the optimizer's own node stations and per-interval
   `time_steps`. The QSS goldens are byte-unchanged by this refactor (lap-time
   accumulation order preserved; both QSS fixtures still pass untouched).
-- **(b) Formal deferral of the oval / Barcelona optimize goldens to Phase 3.**
+- **(b) Formal deferral of the oval / Barcelona optimize goldens to the interior-point solver work.**
   The fixtureless `#[ignore]`d `golden_oval_optimize` test is **removed**
   (replaced by a comment pointing here). Root cause (see
   `docs/design/gn-solver-bound-deadlock.md`): the Gauss-Newton collocation
@@ -190,11 +190,11 @@ change, not chased as a bug.
   iteration (floors at `eq_violation ≈ 0.2–0.98`, orders of magnitude above
   `constraint_tol`). This is a solver-capability gap, not a tuning issue
   (scaling, warmstart, line-search, and CG precision were all ruled out); the
-  fix is the Phase-3 interior-point solver, which handles active bounds
+  fix is the interior-point solver, which handles active bounds
   natively via a log-barrier. No solver numerics were touched here.
-- **(c) Roadmap substitution.** The roadmap item "Barcelona optimize
+- **(c) Scope substitution.** The planned "Barcelona optimize
   Hermite-Simpson golden" is **consciously substituted** by
-  `golden_circle_optimize` until Phase 3. The circle is the one non-trivial
+  `golden_circle_optimize` until the interior-point solver lands. The circle is the one non-trivial
   track the current solver converges on cleanly, so it is what pins
   optimize-mode output today; the oval/Silverstone/Barcelona optimize goldens
   are revisited when the interior-point solver lands (Barcelona additionally
@@ -281,10 +281,10 @@ change, not chased as a bug.
   does not converge on non-trivial tracks (the default oval, or a random
   spline track) at N=50 — conditioning is fixed, but the solver still
   doesn't reach `constraint_tol` on these cases. The paused `optimize`
-  golden (see Phase 0.1 slice 3) remains paused pending a follow-up
+  golden (see the 2026-07-04 deferral record) remains paused pending a follow-up
   warmstart/mesh-continuation slice; this entry does not unpause it.
 
-### 2026-07-04 — DEFERRAL RECORD: optimize non-convergence root-caused, fix deferred to Phase 3 (no code change)
+### 2026-07-04 — DEFERRAL RECORD: optimize non-convergence root-caused, fix deferred to the interior-point solver work (no code change)
 - This is a deferral record, not a code change — nothing in the solver or
   tests was touched by this entry.
 - Symptom: `optimize --hermite-simpson` converges on constant-curvature
@@ -309,9 +309,9 @@ change, not chased as a bug.
   either).
 - Two known fix paths: (a) add active-set/bound-multiplier logic to the
   current GN solver (pin bound-active variables, solve the reduced
-  free-variable system), or (b) the Phase-3 interior-point solver, which
+  free-variable system), or (b) the interior-point solver, which
   handles active bounds natively via the log-barrier. **Decision: deferred
-  to Phase 3 (option b)**, to avoid building bound-handling solver
+  to the interior-point solver work (option b)**, to avoid building bound-handling solver
   infrastructure twice.
 - Status: `golden_oval_optimize` remains `#[ignore]`d; the `optimize` golden
   fixture is intentionally not generated.

@@ -49,7 +49,24 @@ impl<'a> FourteenDofModel<'a> {
         aero: &'a AeroModel,
         reference_speed: f64,
     ) -> Self {
-        let (z_s_eq, f_z_eq) = solve_trim(params, suspension, aero, reference_speed);
+        Self::new_with_gz(params, tire, suspension, aero, reference_speed, GRAVITY)
+    }
+
+    /// [`new`](Self::new) with an imposed vertical acceleration `g_z` (m/s²)
+    /// used in place of `GRAVITY` when solving the static-trim equilibrium — the
+    /// "g_z pathway" groundwork for envelope generation (see
+    /// `docs/design/envelope-qss/gz-pathway.md`). Only the trim solve consumes
+    /// `g_z`; the dynamics (`derivatives`) still integrate under real `GRAVITY`.
+    /// With `g_z == GRAVITY` the resulting model is bit-identical to [`new`].
+    pub fn new_with_gz(
+        params: &'a CarParams,
+        tire: &'a PacejkaTire,
+        suspension: &'a SuspensionSystem,
+        aero: &'a AeroModel,
+        reference_speed: f64,
+        g_z: f64,
+    ) -> Self {
+        let (z_s_eq, f_z_eq) = solve_trim_with_gz(params, suspension, aero, reference_speed, g_z);
         FourteenDofModel {
             params,
             tire,
@@ -109,18 +126,29 @@ impl<'a> FourteenDofModel<'a> {
     }
 }
 
-/// Solve the symmetric static trim (front/rear suspension travel) at `speed`:
-/// find compressions where the vertical force and pitch moment both vanish, with
-/// ride-height-sensitive aero. Returns (z_s `[4]`, tire loads `[4]`).
-fn solve_trim(
+/// Solve the symmetric static trim (front/rear suspension travel) at `speed`
+/// under an imposed vertical acceleration `g_z` (m/s²): find compressions where
+/// the vertical force and pitch moment both vanish, with ride-height-sensitive
+/// aero. Returns (z_s `[4]`, tire loads `[4]`).
+///
+/// `g_z` is the sole substitution for the former hard-coded `GRAVITY` — every
+/// downstream use of the local `g` is unchanged — so `g_z == GRAVITY` reproduces
+/// the pre-g_z-pathway trim bit-for-bit. See
+/// `docs/design/envelope-qss/gz-pathway.md`.
+///
+/// `pub(crate)` so the operating-point trim (`crate::trim`) can reuse this exact
+/// straight-line solve at the symmetric `(a_x, a_y) = (0, 0)` point rather than
+/// forking a second implementation. See `docs/design/envelope-qss/trim-solver.md`.
+pub(crate) fn solve_trim_with_gz(
     params: &CarParams,
     suspension: &SuspensionSystem,
     aero: &AeroModel,
     speed: f64,
+    g_z: f64,
 ) -> ([f64; 4], [f64; 4]) {
     let m = params.mass;
     let mu = params.unsprung_mass;
-    let g = GRAVITY;
+    let g = g_z;
     let lf = params.cog_to_front;
     let lr = params.cog_to_rear;
 
@@ -369,6 +397,137 @@ mod tests {
     use crate::aero::AeroModel;
     use crate::suspension::SuspensionSystem;
     use apex_integrator::rk4_step;
+
+    // --- g_z pathway (docs/design/envelope-qss/gz-pathway.md) ---
+
+    /// Frozen bit-exact snapshot of `solve_trim` output captured from the
+    /// PRE-g_z-pathway build (default car / f1 suspension+aero). The default path
+    /// `solve_trim_with_gz(.., GRAVITY)` must reproduce it exactly — this anchors
+    /// byte-stability of a path no golden fixture exercises. Layout per row:
+    /// (speed, [z0,z1,z2,z3] bits, [fz0,fz1,fz2,fz3] bits).
+    #[test]
+    fn solve_trim_gz_default_matches_frozen_snapshot() {
+        let car = CarParams::default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        #[allow(clippy::type_complexity)]
+        let expected: &[(f64, [u64; 4], [u64; 4])] = &[
+            (
+                0.0,
+                [
+                    0x3f83842a45a34c0c,
+                    0x3f83842a45a34c0c,
+                    0x3f7ae9f5738a542a,
+                    0x3f7ae9f5738a542a,
+                ],
+                [
+                    0x40a064e1a9fbe76c,
+                    0x40a064e1a9fbe76c,
+                    0x409c5eff3b645a1c,
+                    0x409c5eff3b645a1c,
+                ],
+            ),
+            (
+                40.0,
+                [
+                    0x3f8b701287c8cc7c,
+                    0x3f8b701287c8cc7c,
+                    0x3f830ac2c0211963,
+                    0x3f830ac2c0211963,
+                ],
+                [
+                    0x40a6c8bb26ce7a16,
+                    0x40a6c8bb26ce7a16,
+                    0x40a3b6f97bc68ec8,
+                    0x40a3b6f97bc68ec8,
+                ],
+            ),
+            (
+                80.0,
+                [
+                    0x3f940e4e84920a3b,
+                    0x3f940e4e84920a3b,
+                    0x3f8c0aca90c40a35,
+                    0x3f8c0aca90c40a35,
+                ],
+                [
+                    0x40b0a01e10809ddd,
+                    0x40b0a01e10809ddd,
+                    0x40acc58249a8325c,
+                    0x40acc58249a8325c,
+                ],
+            ),
+        ];
+        for &(v, z_bits, fz_bits) in expected {
+            let (z, fz) = solve_trim_with_gz(&car, &susp, &aero, v, GRAVITY);
+            for i in 0..4 {
+                assert_eq!(z[i].to_bits(), z_bits[i], "z[{i}] drift at v={v}");
+                assert_eq!(fz[i].to_bits(), fz_bits[i], "fz[{i}] drift at v={v}");
+            }
+        }
+    }
+
+    /// At rest (no aero downforce) the trim's total tire load equals `m*g_z`, so
+    /// it scales linearly with the imposed vertical acceleration.
+    #[test]
+    fn solve_trim_load_scales_linearly_in_gz_at_rest() {
+        let car = CarParams::default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        for &g in &[3.0_f64, GRAVITY, 2.0 * GRAVITY] {
+            let (_z, fz) = solve_trim_with_gz(&car, &susp, &aero, 0.0, g);
+            let total: f64 = fz.iter().sum();
+            assert!(
+                (total - car.mass * g).abs() < 1e-6,
+                "total tire load {total} != m*g_z {} at g_z={g}",
+                car.mass * g
+            );
+        }
+        // higher g_z ⇒ more suspension compression (loaded further)
+        let (z_lo, _) = solve_trim_with_gz(&car, &susp, &aero, 0.0, GRAVITY);
+        let (z_hi, _) = solve_trim_with_gz(&car, &susp, &aero, 0.0, 2.0 * GRAVITY);
+        assert!(
+            z_hi[0] > z_lo[0] && z_hi[2] > z_lo[2],
+            "more g_z should compress more"
+        );
+    }
+
+    /// Low / zero / negative g_z: the trim Newton solve stays finite and total
+    /// load tracks `m*g_z` (documented in the design doc). At g_z=0 the car is
+    /// weightless (loads → 0 at rest); at negative g_z the linear balance yields
+    /// negative tire loads (an inverted/upforce operating point) rather than
+    /// diverging — recorded, not papered over.
+    #[test]
+    fn solve_trim_low_and_negative_gz_behaviour() {
+        let car = CarParams::default();
+        let susp = SuspensionSystem::f1_default();
+        let aero = AeroModel::f1_default();
+        for &g in &[0.0_f64, 1.0, -GRAVITY] {
+            let (z, fz) = solve_trim_with_gz(&car, &susp, &aero, 0.0, g);
+            assert!(
+                z.iter().all(|x| x.is_finite()),
+                "trim travel diverged at g_z={g}"
+            );
+            assert!(
+                fz.iter().all(|x| x.is_finite()),
+                "trim load diverged at g_z={g}"
+            );
+            let total: f64 = fz.iter().sum();
+            assert!(
+                (total - car.mass * g).abs() < 1e-6,
+                "at g_z={g}: total {total}"
+            );
+        }
+        // g_z=0 ⇒ essentially unloaded at rest
+        let (_z0, fz0) = solve_trim_with_gz(&car, &susp, &aero, 0.0, 0.0);
+        assert!(fz0.iter().sum::<f64>().abs() < 1e-6);
+        // g_z<0 ⇒ negative (tensile) tire loads
+        let (_zn, fzn) = solve_trim_with_gz(&car, &susp, &aero, 0.0, -GRAVITY);
+        assert!(
+            fzn.iter().sum::<f64>() < 0.0,
+            "negative g_z should give negative net load"
+        );
+    }
 
     struct Rig {
         params: CarParams,

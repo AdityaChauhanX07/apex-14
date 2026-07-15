@@ -1,6 +1,6 @@
-# Track3D validation — Phase 1 close-out
+# Track3D validation — close-out
 
-This is the honest Phase 1 story end to end: the geometry, the physics, and
+This is the honest 3D-track-model story end to end: the geometry, the physics, and
 the headline result (Spa), with the numbers that back each claim and
 pointers to where they're proven. Companion docs: `docs/math/track3d.md`
 (derivations), `tracks/README.md` (schema + elevation workflow),
@@ -81,7 +81,7 @@ across oval/circle/Silverstone by `flat_ribbon_qss_bitwise_matches_track`.
 (`PHYSICS_CHANGE.md`, 2026-07-07 "3D point-mass QSS physics" entry) — no
 fixture regeneration was needed.
 
-The Phase 1.4 grip-map mechanism (mu_scale grid) and the sector-marker
+The grip-map mechanism (mu_scale grid) and the sector-marker
 wiring added after this physics both preserve the same discipline —
 absent-by-default, bitwise-identical to the pre-existing code paths
 (`PHYSICS_CHANGE.md`, 2026-07-07 "Grip-map mechanism + sector markers"
@@ -108,7 +108,7 @@ gravity is correctly modeled.
 | **fitted `power_scale`** | 0.833 | **0.802** | did **NOT** rejoin the pack (slightly lower) |
 | Silverstone control (all params) | — | < 1% movement | control held, as designed |
 
-(Full table and hypotheses: `correlation_spa_2024q.md` § Phase 1.3.)
+(Full table and hypotheses: `correlation_spa_2024q.md` § flat vs 3D elevation physics.)
 
 **What improved.** The lap-time sign moved toward zero (−4.06 → −2.86 s)
 and preset RMSE dropped — elevation *is* a real, correctly-modeled factor,
@@ -236,8 +236,8 @@ there is*, not to being turned on.
 | Banking data | **0** for all real tracks — a 25–30 m DEM cannot resolve camber across a ~14 m track width | `tracks/README.md` § 3D elevation workflow; `docs/math/track3d.md` §5.9 |
 | Banking *mechanism* | plumbed, unit-tested, manual per-corner override exists | `docs/math/track3d.md` §5.5 (banked closed-form test) |
 | Higher-fidelity models (single-track / four-wheel / 14-DOF) | deferred — same 3D terms in a follow-up task | `PHYSICS_CHANGE.md` 2026-07-07 "3D point-mass QSS" entry |
-| Real grip-map data (rubbered vs. dirty line) | **mechanism shipped this phase, no data populated** | `PHYSICS_CHANGE.md` 2026-07-07 "Grip-map mechanism" entry; `tracks/README.md` § mu_scale grid |
+| Real grip-map data (rubbered vs. dirty line) | **mechanism shipped, no data populated** | `PHYSICS_CHANGE.md` 2026-07-07 "Grip-map mechanism" entry; `tracks/README.md` § mu_scale grid |
 | Sector markers | wired (schema + QSS), unpopulated for real tracks | `PHYSICS_CHANGE.md` 2026-07-07 "Grip-map mechanism" entry; `tracks/README.md` § Sector markers |
 | Pit-lane polyline | deferred — no consumer until race-sim integration | `tracks/README.md` § Sector markers (pit lane note) |
 | Multi-lap slicing | deferred | — |
-| Golden lap regeneration | **not needed** — byte-stability held through all of Phase 1 (better-than-planned outcome) | §2 above; `PHYSICS_CHANGE.md` entries |
+| Golden lap regeneration | **not needed** — byte-stability held throughout the 3D track model work (better-than-planned outcome) | §2 above; `PHYSICS_CHANGE.md` entries |

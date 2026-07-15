@@ -844,7 +844,7 @@ mod tests {
         let mut counter = 0;
         let grip_mu = tire_peak_longitudinal_mu(&rg.tire, rg.params.mass * 9.81 / 4.0);
 
-        // Phase 1: full throttle to build speed.
+        // Stage 1: full throttle to build speed.
         let throttle_input = InputPacket {
             throttle: 1.0,
             ..Default::default()
@@ -863,7 +863,7 @@ mod tests {
         }
         let v_brake_point = sim.state[6];
 
-        // Phase 2: full brake, zero throttle.
+        // Stage 2: full brake, zero throttle.
         let brake_input = InputPacket {
             throttle: 0.0,
             brake: 1.0,

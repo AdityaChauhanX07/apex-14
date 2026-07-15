@@ -7,6 +7,7 @@ pub mod car_config;
 pub mod car_params;
 pub mod controller;
 pub mod drivetrain;
+pub mod envelope;
 pub mod fourteen_dof;
 pub mod grip_map;
 pub mod point_mass;
@@ -16,6 +17,7 @@ pub mod seven_dof;
 pub mod strategy;
 pub mod suspension;
 pub mod tire;
+pub mod trim;
 pub mod wake;
 pub mod weather;
 
@@ -28,6 +30,9 @@ pub use car_config::{
 pub use car_params::{car_params_hash, CarParams};
 pub use controller::{solve_care_4x4, LqrController, SpeedController};
 pub use drivetrain::{Engine, Gearbox, Powertrain};
+pub use envelope::{
+    boundary_radius, envelope_key, Envelope, EnvelopeError, EnvelopeGridSpec, ENVELOPE_CODE_VERSION,
+};
 pub use fourteen_dof::FourteenDofModel;
 pub use grip_map::GripMap;
 pub use point_mass::PointMassModel;
@@ -45,6 +50,10 @@ pub use strategy::{
 };
 pub use suspension::{suspension_hash, AntiRollBar, SuspensionParams, SuspensionSystem};
 pub use tire::{pacejka_tire_hash, smooth_min, CombinedSlipResult, PacejkaCoeffs, PacejkaTire};
+pub use trim::{
+    solve_operating_point, InfeasibilityReason, OperatingPoint, OperatingPointError, TrimResult,
+    TrimStatus,
+};
 pub use wake::{MultiCarState, OnTrackCar, WakeModel};
 pub use weather::{
     analyze_tire_change, effective_grip, TireChangeAnalysis, TireType, WeatherState,

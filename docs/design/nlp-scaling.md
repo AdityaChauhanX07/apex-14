@@ -6,7 +6,7 @@ fix" below). Implemented in `crates/apex-optimizer/src/scaling.rs` and
 `build_scaling`, `jacobi_scale`).
 
 This note originally proposed a fix for the Gauss-Newton convergence failure
-characterized in the Phase 0.1 slice-3 diagnosis (oval and
+characterized in the `gn-solver-bound-deadlock.md` diagnosis (oval and
 `random_spline_track(seed=42)` fail to converge at N=50; violation *worsens*
 50→400 nodes; `circle_track` converges cleanly to `7.9e-6`). Root cause:
 raw-SI decision variables span several orders of magnitude in the Jacobian,
@@ -208,7 +208,7 @@ zones) than on the circle (near-constant speed throughout, converges in a
 handful of iterations). **This is a conditioning fix, not a convergence
 fix.** Achieving convergence on non-trivial tracks needs warmstart quality /
 mesh continuation work — a separate, later slice. The `optimize`
-golden (paused since Phase 0.1 slice 3) remains paused until that work
+golden (paused since that diagnosis) remains paused until that work
 lands.
 
 ## A6 — Blast radius (as shipped)

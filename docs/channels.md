@@ -68,7 +68,7 @@ It sits between the `# key: value` metadata lines and the blank `#` separator
 that precedes the header row, so a comment-aware reader
 (`ReaderBuilder::comment(Some(b'#'))`) skips it transparently.
 
-## Measured-telemetry channels (Phase 2 correlation)
+## Measured-telemetry channels (telemetry correlation)
 
 The telemetry-correlation importer (`apex-correlate`, see
 [`docs/telemetry_format.md`](telemetry_format.md)) consumes *measured* car

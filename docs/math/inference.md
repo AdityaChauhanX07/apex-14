@@ -127,7 +127,7 @@ piecewise-optimal speed.
   driven line under-estimates radius (the same limitation as Abbey in the
   correlation work), inflating `a_lat` and pushing `grip_util > 1` at a handful
   of samples. Reported, not hidden.
-- **Missing elevation (the Phase-1 gap).** On hilly circuits (Spa) the flat 2-D
+- **Missing elevation (the 3D-track-model gap).** On hilly circuits (Spa) the flat 2-D
   centerline omits the vertical loading from gradient/compression (Eau
   Rouge/Raidillon, Pouhon). Inferred vertical **loads are under-estimated** there
   (they miss the ~2–3 g compression), the peak `a_lat` at Raidillon is distorted,

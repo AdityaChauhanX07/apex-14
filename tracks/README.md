@@ -71,7 +71,7 @@ v1-compatible output, byte-identical to `export_track_json`.
 }
 ```
 
-### mu_scale grid (Phase 1.4)
+### mu_scale grid
 
 An optional `mu_scale_grid` block attaches a `mu_scale(s, n)` grip-multiplier
 grid to a v2 ribbon: a bilinearly-interpolated `(station, lateral)` grid,
@@ -118,7 +118,7 @@ driven line: `apex_correlate::driven`).
 }
 ```
 
-### Sector markers (Phase 1.2)
+### Sector markers
 
 An optional `sector_markers` field (top-level, available at v1 or v2 — same
 as `metadata`) lists ascending arc-length stations marking the start of
@@ -173,7 +173,7 @@ Per-point widths override the uniform default:
 - `test_circle.json` - 36 points around a 50 m-radius circle (10° spacing), width 10 m.
 - `oval_simple.json` - an oval with 500 m straights and 80 m-radius corners, width 12 m.
 
-## 3D elevation workflow (Phase 1.2)
+## 3D elevation workflow
 
 Real 3D track files are produced from the (georeference-less) TUMFTM centerline
 plus external elevation data. **All of it stays local / gitignored** (TUMFTM is

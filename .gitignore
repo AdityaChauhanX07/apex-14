@@ -18,7 +18,7 @@
 !/tracks/oval_simple.json
 /tracks/*.tumftm.json
 
-# Phase 1.2 elevation groundwork (all DERIVED from TUMFTM + external APIs — stay
+# Elevation/georeferencing groundwork (all DERIVED from TUMFTM + external APIs — stay
 # local, never committed): georeference sidecars, elevation sidecars/profiles,
 # v2 3D track files, and the OSM (Overpass, ODbL) + DEM (OpenTopoData) response
 # caches. `/tracks/*.json` already covers *_3d/.georef/.elevation JSON; these are
@@ -71,6 +71,7 @@ Thumbs.db
 
 # Internal planning docs
 APEX-14_PROJECT_PLAN.md
+apex14_production_roadmap.md
 PROJECT_REPORT.md
 
 # Local scratch / manual test scripts

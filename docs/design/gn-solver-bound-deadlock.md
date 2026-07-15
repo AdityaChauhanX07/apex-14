@@ -1,6 +1,6 @@
 # Diagnosis note: why `optimize --hermite-simpson` doesn't converge on non-trivial tracks
 
-Status: **DEFERRED to Phase 3**. This is a diagnosis record, not a design
+Status: **DEFERRED to the interior-point solver work**. This is a diagnosis record, not a design
 proposal — nothing here is implemented. See `PHYSICS_CHANGE.md` for the
 dated log entry; this note holds the fuller mechanism write-up so it isn't
 duplicated at length there.
@@ -64,15 +64,15 @@ forever — a textbook projected-Newton deadlock, not a tuning problem.
   free-variable system (classical active-set correction). Cheaper than (b)
   but is new solver infrastructure that would likely be superseded once (b)
   lands.
-- **(b) Phase-3 interior-point solver**: handles active bounds natively via
+- **(b) interior-point solver**: handles active bounds natively via
   a log-barrier, which produces the correct implicit multiplier and avoids
   the projection deadlock by construction.
 
-**Decision: deferred to Phase 3 (option b)**, to avoid building bound-handling
+**Decision: deferred to the interior-point solver work (option b)**, to avoid building bound-handling
 solver infrastructure twice.
 
 ## Current state
 
 `golden_oval_optimize` (`bins/apex-cli/tests/golden_lap.rs`) remains
 `#[ignore]`d; the `optimize` golden fixture is intentionally not generated.
-Revisit this note when Phase-3 IP-solver work begins.
+Revisit this note when the interior-point solver work begins.

@@ -10,9 +10,9 @@
 //! This module fits a smooth centerline that minimizes curvature roughness
 //! subject to a hard cap on how far any point may move from its survey point.
 //!
-//! Scope note: this is a **pulled-forward slice of Phase 1.1** — it was needed
-//! early so Phase 2 telemetry correlation could run the QSS on real (noisy)
-//! imported centerlines without phantom-curvature slowdowns.
+//! Scope note: this is a **pulled-forward slice of the 3D track model work** —
+//! it was needed early so the telemetry correlation work could run the QSS on
+//! real (noisy) imported centerlines without phantom-curvature slowdowns.
 //!
 //! # Method (regularized least squares, 2D only)
 //!
@@ -35,8 +35,9 @@
 //! whose maximum point deviation stays within the tolerance — smoothing exactly
 //! as hard as the deviation budget allows.
 //!
-//! This is a pulled-forward minimal slice of roadmap **Phase 1.1** ("smoothing
-//! (regularized least squares) to kill GPS/LiDAR noise"): 2D `(x, y)` only, no
+//! This is a pulled-forward minimal slice of the **3D track model work**
+//! ("smoothing (regularized least squares) to kill GPS/LiDAR noise"): 2D
+//! `(x, y)` only, no
 //! elevation, no width smoothing.
 
 use crate::builder::build_track;

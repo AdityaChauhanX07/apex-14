@@ -1,5 +1,5 @@
 //! Schema-attached `(station, lateral)` grip-multiplier grid — the
-//! `mu_scale(s, n)` mechanism (Phase 1.4).
+//! `mu_scale(s, n)` mechanism.
 //!
 //! [`MuScaleGrid`] is track **schema** data: it round-trips through the v2
 //! JSON file and lives on a [`crate::Ribbon3d`]. This is distinct from

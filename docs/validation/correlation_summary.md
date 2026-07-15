@@ -2,8 +2,8 @@
 
 Apex-14's QSS simulator, correlated against a real 2024 qualifying lap on five
 circuits, then per-circuit **parameter identification** (μ fixed, free =
-`{lift_coeff, drag_coeff, power_scale}`, direct driven line). This is the M1
-"≥5 real circuits" deliverable. Pipeline per circuit:
+`{lift_coeff, drag_coeff, power_scale}`, direct driven line). This is the
+"≥5 real circuits" validation deliverable. Pipeline per circuit:
 
 ```
 fastf1_export.py → import-track (smoothed) → telemetry-align
@@ -12,10 +12,10 @@ fastf1_export.py → import-track (smoothed) → telemetry-align
 driven by `tools/correlate_campaign.py --spec tools/campaign.toml`.
 
 The `import-track (smoothed)` step uses `apex_track::smoothing`, a **pulled-forward
-slice of Phase 1.1**, brought in early so the QSS runs on real imported centerlines
+slice of the 3D track model work**, brought in early so the QSS runs on real imported centerlines
 without phantom-curvature slowdowns.
 
-> **DTW deferred.** The roadmap named DTW on the speed traces as a fallback for
+> **DTW deferred.** The original design named DTW on the speed traces as a fallback for
 > poor-GPS sources. Arc-length-anchored similarity alignment achieved **2.47–6.76 m
 > align RMS** across all five circuits (see the table) with every hygiene check
 > passing, so DTW was not needed and is deferred until a GPS source bad enough to
@@ -51,7 +51,7 @@ below). All five passed every hygiene check (event match, align scale ∈
 [0.95, 1.05], align RMS < 8 m, s_proj within 2% of TUMFTM length, corner count
 3–12); none required attention.
 
-> **Phase 1.3 update (3D elevation physics, 2026-07-07).** Re-running Spa on the
+> **3D elevation physics update (2026-07-07).** Re-running Spa on the
 > real 3D track with the 3D point-mass QSS improves the fitted lap delta
 > **−4.06 → −2.86 s** and preset RMSE (9.32 → 8.73), but **`power_scale` does NOT
 > rejoin the pack (0.833 → 0.802)** — the pre-registered acceptance criterion is
@@ -65,8 +65,8 @@ below). All five passed every hygiene check (event match, align scale ∈
 > intended physics change with an honest negative result** — elevation physics is
 > real, correctly implemented, and necessary, but not sufficient for Spa-class
 > terrain without dynamic/driver modeling. Full analysis + hypotheses:
-> [`correlation_spa_2024q.md` § Phase 1.3](correlation_spa_2024q.md#phase-13-flat-vs-3d-elevation-physics--an-honest-mixed-result);
-> the complete Phase 1 validation story (geometry, physics, this finding, scope
+> [`correlation_spa_2024q.md` § flat vs 3D elevation physics](correlation_spa_2024q.md#flat-vs-3d-elevation-physics--an-honest-mixed-result);
+> the complete 3D-track-model validation story (geometry, physics, this finding, scope
 > ledger): [`track3d.md`](track3d.md).
 > No parameter was tuned to force the criterion; higher-fidelity models are deferred.
 
@@ -106,7 +106,7 @@ shows up in drag, not lift. Honest partial-confirmation.
 
 ### Spa — the elevation business case
 
-**Spa is the outlier, and it is the Phase 1 (elevation) business case.** Our QSS
+**Spa is the outlier, and it is the 3D-track-model (elevation) business case.** Our QSS
 is 2-D: the imported centerline is flat, so gravity's assist on descents and cost
 on climbs is invisible. Spa has the sport's biggest elevation change
 (Eau Rouge/Raidillon climb, the Pouhon → Stavelot descent/climb). The fingerprint:
@@ -129,7 +129,7 @@ on climbs is invisible. Spa has the sport's biggest elevation change
 
 Spa's *RMSE* (4.28) is mid-pack — the elevation error hides in the **parameters
 and the lap-time sign**, not the raw speed RMSE. **This is the quantified case for
-adding elevation (Phase 1):** a flat QSS forces Spa's fit into a physically wrong
+adding elevation (3D track model work):** a flat QSS forces Spa's fit into a physically wrong
 low-power regime and cannot match its lap time, while the same car+method matches
 the flat(ter) circuits to within ±2.4 s.
 

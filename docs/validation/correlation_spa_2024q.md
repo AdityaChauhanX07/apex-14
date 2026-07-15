@@ -49,9 +49,9 @@ Overlay: `cars/spa_2024q_fitted.toml` (committed).
 
 ## Notes
 
-**Spa is the elevation outlier** and the Phase-1 business case — see the [campaign summary](correlation_summary.md#spa--the-elevation-business-case) for the full story. In short: our flat 2-D QSS ignores gravity, so on the sport's biggest elevation change the fit is forced into a physically wrong **de-powered** regime (`power_scale` 0.833, uniquely low) and produces the **only negative fitted lap delta (−4.06 s)** — the sim ends up faster than the real car because it never pays the climb. Preset residuals peak at **s ≈ 1140 m (top of Raidillon / Kemmel-straight entry)**; after fitting, the worst error migrates to the **Pouhon → Stavelot** descent/climb (s ≈ 3890–4570 m). Every corner apex has the sim carrying too much speed.
+**Spa is the elevation outlier** and the 3D-track-model business case — see the [campaign summary](correlation_summary.md#spa--the-elevation-business-case) for the full story. In short: our flat 2-D QSS ignores gravity, so on the sport's biggest elevation change the fit is forced into a physically wrong **de-powered** regime (`power_scale` 0.833, uniquely low) and produces the **only negative fitted lap delta (−4.06 s)** — the sim ends up faster than the real car because it never pays the climb. Preset residuals peak at **s ≈ 1140 m (top of Raidillon / Kemmel-straight entry)**; after fitting, the worst error migrates to the **Pouhon → Stavelot** descent/climb (s ≈ 3890–4570 m). Every corner apex has the sim carrying too much speed.
 
-## Phase 1.3: flat vs 3D elevation physics — an honest, mixed result
+## Flat vs 3D elevation physics — an honest, mixed result
 
 With the real 106 m Spa elevation profile (georeferenced + EU-DEM 25 m sampled)
 now driving the **3D point-mass QSS** (grade force, vertical-curvature load,
@@ -88,7 +88,7 @@ at the s ≈ 1140 m residual peak the flat model couldn't explain. Silverstone
    so inferred grip_util *falls* rather than rising toward the limit.
 
 **Conclusion.** Spa's de-powering is **not primarily an elevation artifact** — the
-Phase-2 hypothesis is falsified. Correct 3D elevation physics helps the aggregate
+elevation-artifact hypothesis is falsified. Correct 3D elevation physics helps the aggregate
 but the residual points elsewhere (the low-downforce Spa aero a single fixed car
 can't match, tyre thermal, or transient descent/energy-management behaviour) — the
 domain of the **deferred single-track / four-wheel / 14-DOF work** (PHYSICS_CHANGE

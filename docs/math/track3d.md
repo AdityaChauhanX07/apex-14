@@ -1,13 +1,13 @@
 # 3D curved-ribbon track geometry
 
-**Status: COMPLETE for the QSS/point-mass fidelity (Phase 1.1–1.4).** This
+**Status: COMPLETE for the QSS/point-mass fidelity (3D track model work).** This
 document defines the 3D ribbon geometry, its moving frame, the 3D point-mass
 QSS physics that consumes the generalized curvatures (grade force, banking,
 vertical-curvature load — §5), and the `mu_scale(s, n)` grip-scaling grid
 (§5.8). Higher fidelities (single-track / four-wheel / 14-DOF) do not yet
 consume any of this — see §5.9 Deferrals, and `PHYSICS_CHANGE.md`, for what's
 scoped out and why. This file is extended, not "completed," as later
-fidelities and Phase 3's dynamic OCP formulation pick up the deferred items.
+fidelities and the dynamic OCP formulation pick up the deferred items.
 
 Implementation: [`apex_track::ribbon3d`](../../crates/apex-track/src/ribbon3d.rs).
 
@@ -148,7 +148,7 @@ a turning curve; the centerline itself stays flat. This is a body-frame
 generalized curvature, not a literal elevation gradient — the two coincide only
 in the small-angle / straight regime.)
 
-## 5. 3D point-mass QSS physics (Phase 1.3)
+## 5. 3D point-mass QSS physics
 
 The QSS/point-mass lap model (`apex_physics::qss_lap_sim_3d`) consumes the road
 angles `(θ, φ)` and the **vertical (pitch) curvature** `κ_v ≡ dθ/ds` — computed
@@ -232,7 +232,7 @@ identical float ops (and cost nothing extra). A dedicated test asserts
 closed track — the gravity term does zero net work per lap (asserted to machine
 precision).
 
-### 5.8 Spatial grip scaling (`mu_scale` grid, Phase 1.4)
+### 5.8 Spatial grip scaling (`mu_scale` grid)
 
 The per-station scalar `mu_scale(s)` placeholder (§5.9, historically `1.0`
 and unused) is superseded by a bilinearly-interpolated `(s, n)` grid,
@@ -287,8 +287,8 @@ exact constant regardless of the interpolation fraction
   no-lateral-state fact in a different guise). A fully 3D version — replacing
   `κ` with `Ω_z` and accounting for the banked/pitched frame's effect on the
   `(1 − n·Ω_z)` factor and on `dn/dt` — is **not needed by the centerline
-  point-mass QSS** (it has no `n` to integrate), but **is required by Phase
-  3's dynamic optimal-control-problem formulation**, which does carry `n` as
-  a state. This is deferred-to-Phase-3 groundwork, not an oversight: deriving
+  point-mass QSS** (it has no `n` to integrate), but **is required by the
+  dynamic optimal-control-problem formulation**, which does carry `n` as
+  a state. This is deferred groundwork for that work, not an oversight: deriving
   it now, with no consumer to validate it against, would be unverified math
   sitting idle. Recorded here so the gap is a decision, not a silence.

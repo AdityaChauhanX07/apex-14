@@ -1,4 +1,4 @@
-//! Golden-lap regression harness (Phase 0.1, slices 1-3).
+//! Golden-lap regression harness.
 //!
 //! Guards simulation/optimization output for pinned baseline scenarios on
 //! the default oval track. See PHYSICS_CHANGE.md at the repo root for the
@@ -15,7 +15,7 @@
 //!
 //! Both compare with tolerance, not bitwise equality, because floating-point
 //! results aren't portable across compiler version, OS, or optimization
-//! level, and a multi-OS CI matrix is coming in Phase 0.4.
+//! level, and a multi-OS CI matrix is planned.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -83,7 +83,7 @@ const CIRCLE_OPTIMIZE_FIXTURE_PATH: &str =
     "tests/fixtures/golden/f1_2024_calibrated__circle__optimize_hermite_simpson.json";
 
 // Tolerances (not bitwise) are used deliberately because FP results aren't
-// portable across compiler/OS/opt-level, and multi-OS CI is coming in Phase 0.4.
+// portable across compiler/OS/opt-level, and multi-OS CI is planned.
 const LAP_TIME_TOL_S: f64 = 0.010;
 const SPEED_RMSE_TOL_MS: f64 = 0.1;
 
@@ -93,7 +93,7 @@ const SPEED_RMSE_TOL_MS: f64 = 0.1;
 /// `GaussNewtonConfig::default().constraint_tol = 1e-4`, in far fewer than the
 /// 100-iteration budget) and matches the in-crate `hs_optimization_circle_converges`
 /// baseline. The bound-binding oval/Silverstone optimize goldens are deferred
-/// to the Phase-3 interior-point solver — see PHYSICS_CHANGE.md and
+/// to the interior-point solver work — see PHYSICS_CHANGE.md and
 /// docs/design/gn-solver-bound-deadlock.md.
 const CIRCLE_OPTIMIZE_NODES: usize = 30;
 
@@ -412,8 +412,8 @@ fn golden_silverstone_qss() {
 // Gauss-Newton collocation solver deadlocks on those bound-binding problems
 // (`f_drive` saturates `max_drive_force` on the straights, projected-Newton
 // clips the step to ~zero forever). Root-caused and formally deferred to the
-// Phase-3 interior-point solver — see the deferral entry in PHYSICS_CHANGE.md
-// and docs/design/gn-solver-bound-deadlock.md. Until Phase 3, the converging
+// interior-point solver work — see the deferral entry in PHYSICS_CHANGE.md
+// and docs/design/gn-solver-bound-deadlock.md. Until that lands, the converging
 // `golden_circle_optimize` below stands in as the optimize-mode golden.
 
 /// Converging optimize-mode golden. Fails (does not skip) if the optimizer
@@ -437,7 +437,7 @@ fn golden_circle_optimize() {
     // offset_trace_10m is captured for forward-compat but not asserted on: the
     // circle's optimal line is the centerline by symmetry, so it carries no
     // information for a lateral-offset tolerance. Deferred to a track with a
-    // varied racing line, alongside the Phase-3 solver work.
+    // varied racing line, alongside the interior-point solver work.
 }
 
 /// The optimize path must be bitwise-deterministic for the golden to mean

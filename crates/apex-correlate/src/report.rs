@@ -1,8 +1,8 @@
 //! Correlation report generation: runs the metrics against a measured lap and a
 //! QSS sim, and renders SVG overlays + a deterministic markdown report.
 //!
-//! **Markdown-only (roadmap deviation).** The roadmap said "HTML/markdown
-//! report"; we build markdown only. Markdown renders natively on GitHub, diffs
+//! **Markdown-only (design deviation).** The original design called for an
+//! "HTML/markdown report"; we build markdown only. Markdown renders natively on GitHub, diffs
 //! cleanly in review, and is byte-reproducible under `APEX_REPRO_TIMESTAMP`
 //! (embedded SVGs carry the visuals). HTML output is deferred until a consumer
 //! actually needs it.

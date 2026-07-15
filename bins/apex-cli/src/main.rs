@@ -446,6 +446,37 @@ enum Commands {
         #[arg(long)]
         svg: Option<PathBuf>,
     },
+
+    /// Generate the g-g-g performance envelope over (theta, v, g_z) and cache it
+    Envelope {
+        /// Car configuration file (TOML)
+        #[arg(short, long)]
+        car: Option<PathBuf>,
+
+        /// Use calibrated F1 2024 parameters
+        #[arg(long, default_value_t = false)]
+        calibrated: bool,
+
+        /// Speed range (m/s) as MIN:MAX
+        #[arg(long, default_value = "5:90")]
+        v_range: String,
+
+        /// Vertical-acceleration range (m/s²) as MIN:MAX
+        #[arg(long, default_value = "8:14")]
+        gz_range: String,
+
+        /// Grid resolution as THETA:V:GZ (angle:speed:g_z samples)
+        #[arg(long, default_value = "24:10:6")]
+        resolution: String,
+
+        /// Cache directory for the versioned envelope binary
+        #[arg(long, default_value = ".apex-cache/envelope")]
+        cache_dir: PathBuf,
+
+        /// Export a g-g diagram SVG (boundary polygons at selected slices)
+        #[arg(long)]
+        svg: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -614,7 +645,39 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             seed,
             svg,
         } => cmd_sensitivity(track, car, calibrated, oat_samples, mc_samples, seed, svg),
+        Commands::Envelope {
+            car,
+            calibrated,
+            v_range,
+            gz_range,
+            resolution,
+            cache_dir,
+            svg,
+        } => cmd_envelope(
+            car, calibrated, v_range, gz_range, resolution, cache_dir, svg,
+        ),
     }
+}
+
+/// Parse a `MIN:MAX` float pair.
+fn parse_range(s: &str, what: &str) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let (a, b) = s
+        .split_once(':')
+        .ok_or_else(|| format!("{what} must be MIN:MAX, got '{s}'"))?;
+    Ok((a.trim().parse()?, b.trim().parse()?))
+}
+
+/// Parse a `THETA:V:GZ` usize triple.
+fn parse_resolution(s: &str) -> Result<(usize, usize, usize), Box<dyn std::error::Error>> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return Err(format!("resolution must be THETA:V:GZ, got '{s}'").into());
+    }
+    Ok((
+        parts[0].trim().parse()?,
+        parts[1].trim().parse()?,
+        parts[2].trim().parse()?,
+    ))
 }
 
 // --- shared helpers ---
@@ -753,6 +816,124 @@ fn cmd_qss(
             )?;
             println!("SVG exported to {}", svg_path.display());
         }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_envelope(
+    car: Option<PathBuf>,
+    calibrated: bool,
+    v_range: String,
+    gz_range: String,
+    resolution: String,
+    cache_dir: PathBuf,
+    svg: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_physics::{Envelope, EnvelopeGridSpec};
+
+    let params = load_car_params(car, calibrated)?;
+    // Tire / suspension / aero models: the operating-point trim needs all four;
+    // the car TOML carries CarParams, the rest use the F1 model defaults.
+    let tire = apex_physics::PacejkaTire::f1_default();
+    let suspension = apex_physics::SuspensionSystem::f1_default();
+    let aero = apex_physics::AeroModel::f1_default();
+
+    let (v_min, v_max) = parse_range(&v_range, "v-range")?;
+    let (gz_min, gz_max) = parse_range(&gz_range, "gz-range")?;
+    let (theta_res, v_res, gz_res) = parse_resolution(&resolution)?;
+
+    let spec = EnvelopeGridSpec {
+        theta_res,
+        v_min,
+        v_max,
+        v_res,
+        gz_min,
+        gz_max,
+        gz_res,
+        ..Default::default()
+    };
+    spec.validate()?;
+
+    println!(
+        "Envelope grid: theta={} x v={} x g_z={}  ({} operating points)",
+        theta_res,
+        v_res,
+        gz_res,
+        spec.total()
+    );
+    println!("  v in [{v_min}, {v_max}] m/s,  g_z in [{gz_min}, {gz_max}] m/s^2");
+
+    let t0 = std::time::Instant::now();
+    let (env, from_cache) =
+        Envelope::generate_cached(&params, &tire, &suspension, &aero, spec, &cache_dir)?;
+    let elapsed = t0.elapsed();
+
+    let path = cache_dir.join(format!("{}.apexenv", env.key().to_hex()));
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
+    if from_cache {
+        println!(
+            "Loaded cached envelope in {:.1} ms",
+            elapsed.as_secs_f64() * 1e3
+        );
+    } else {
+        println!(
+            "Generated envelope in {:.1} ms",
+            elapsed.as_secs_f64() * 1e3
+        );
+    }
+    println!("  key:  {}", env.key().to_hex());
+    println!("  file: {} ({} bytes)", path.display(), size);
+
+    // Report a couple of sample boundary radii for a quick sanity read.
+    let mid_v = 0.5 * (v_min + v_max);
+    let gz_ref = if (gz_min..=gz_max).contains(&9.81) {
+        9.81
+    } else {
+        gz_min
+    };
+    println!(
+        "  rho @ v={mid_v:.0}, g_z={gz_ref:.2}:  lateral={:.1}  brake={:.1}  drive={:.1} m/s^2",
+        env.rho(std::f64::consts::FRAC_PI_2, mid_v, gz_ref),
+        env.rho(std::f64::consts::PI, mid_v, gz_ref),
+        env.rho(0.0, mid_v, gz_ref),
+    );
+
+    if let Some(svg_path) = svg {
+        let meta = apex_telemetry::RunMetadata::new(
+            apex_physics::car_params_hash(&params),
+            apex_telemetry::settings_hash_for_mode("envelope.no-track"),
+            env.key(),
+            None,
+        );
+        // Three speed slices at the reference g_z; sample the boundary finely.
+        let speeds = [v_min, mid_v, v_max];
+        let slices: Vec<apex_telemetry::EnvelopeSlicePlot> = speeds
+            .iter()
+            .map(|&v| {
+                let n = 128;
+                let boundary: Vec<(f64, f64)> = (0..=n)
+                    .map(|i| {
+                        let theta = i as f64 / n as f64 * std::f64::consts::TAU;
+                        let r = env.rho(theta, v, gz_ref);
+                        (r * theta.sin(), r * theta.cos()) // (a_y, a_x)
+                    })
+                    .collect();
+                apex_telemetry::EnvelopeSlicePlot {
+                    label: format!("v={v:.0} m/s, g_z={gz_ref:.1}"),
+                    boundary,
+                }
+            })
+            .collect();
+        apex_telemetry::render_envelope_svg(
+            &svg_path,
+            &meta,
+            &slices,
+            &format!("g-g envelope ({} kg)", params.mass as i32),
+        )?;
+        println!("SVG exported to {}", svg_path.display());
     }
 
     Ok(())

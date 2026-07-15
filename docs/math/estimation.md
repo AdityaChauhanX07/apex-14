@@ -273,7 +273,7 @@ rotation) that the point-mass QSS inference structurally cannot represent.
 
 ## 9. Scope and limitations (honest notes)
 
-- **Why RTS, not MHE.** The roadmap named moving-horizon estimation (MHE) as the
+- **Why RTS, not MHE.** The original design named moving-horizon estimation (MHE) as the
   alternative. This is an *offline, fixed-interval* problem — the whole lap is
   available at once — so the linear-Gaussian smoother (EKF forward + exact RTS
   backward recursion) is the natural fit: it uses every sample for every estimate
