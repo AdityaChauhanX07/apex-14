@@ -153,6 +153,24 @@ pub struct IpmConfig {
     pub rho_eq: f64,
     /// Cap on the augmented-Lagrangian penalty.
     pub rho_max: f64,
+    /// Multiplicative growth applied to the AL penalty `rho` each time the
+    /// equalities fail to contract by 4x at a schedule advance. The default
+    /// `10.0` drives feasibility aggressively (good for pure feasibility /
+    /// deadlock solves); optimization problems whose *objective* must reshape
+    /// the primal (e.g. a racing line migrating to the track edge) need a
+    /// gentler ramp so `rho` does not reach `rho_max` and freeze the iterate
+    /// before the objective has done its work.
+    pub rho_growth: f64,
+    /// Contraction factor gating the augmented-Lagrangian multiplier update: at
+    /// a schedule advance the equality multipliers are updated (`y += rho·c`)
+    /// only if the equality infeasibility has fallen to `al_contract` of its
+    /// value at the last update; otherwise `rho` is grown. The default `0.25`
+    /// is a conservative Hestenes–Powell threshold. Problems where feasibility
+    /// contracts slowly (large stiff periodic OCPs) converge far better with a
+    /// looser value (e.g. `0.9`), which favours multiplier updates over penalty
+    /// growth and so reaches feasibility at a moderate `rho` instead of racing
+    /// `rho` to `rho_max` and freezing.
+    pub al_contract: f64,
     /// How far to push the initial point strictly inside its bounds.
     pub bound_push: f64,
     /// Verbosity: `0` silent, `>0` prints the iteration log.
@@ -177,6 +195,8 @@ impl Default for IpmConfig {
             obj_weight: 1.0,
             rho_eq: 1.0,
             rho_max: 1e8,
+            rho_growth: 10.0,
+            al_contract: 0.25,
             bound_push: 1e-2,
             verbose: 0,
         }
@@ -201,6 +221,8 @@ impl apex_math::ContentHash for IpmConfig {
             obj_weight,
             rho_eq,
             rho_max,
+            rho_growth,
+            al_contract,
             bound_push,
             verbose: _, // cosmetic
         } = self;
@@ -219,6 +241,8 @@ impl apex_math::ContentHash for IpmConfig {
         w.f64(*obj_weight);
         w.f64(*rho_eq);
         w.f64(*rho_max);
+        w.f64(*rho_growth);
+        w.f64(*al_contract);
         w.f64(*bound_push);
     }
 }
@@ -444,11 +468,23 @@ fn solve_ipm_core(
     let mut status = IpmStatus::MaxIter;
     let mut iterations = 0;
     let mut iters_at_mu = 0usize;
-    // Best (least-infeasible) iterate seen, returned regardless of where the
-    // iteration stops — the merit path can drift slightly after reaching
-    // feasibility once the AL penalty is large.
+    // Best iterate seen, returned regardless of where the iteration stops. The
+    // selection is objective-aware, not merely least-infeasible: among iterates
+    // feasible to `constraint_tol` we keep the LOWEST-objective one (so a genuine
+    // optimization run returns its optimized point, not the near-warm-start
+    // iterate that happens to have the smallest defect); only if no iterate is
+    // yet feasible do we fall back to least-infeasible.
     let mut x_best = x.clone();
     let mut best_infeas = f64::INFINITY;
+    let mut best_obj = f64::INFINITY;
+    let mut have_feasible = false;
+    // Relative size of the last accepted primal step, in scaled space. Used to
+    // gate the barrier-floor acceptance: the AL path leaves a large residual
+    // dual infeasibility that is *not* the acceptance criterion, but we must
+    // still not accept while the primal iterate is genuinely travelling toward
+    // its optimum (e.g. an OCP whose racing line is migrating to the track
+    // edge). Initialised to +inf so the very first iteration cannot accept.
+    let mut last_rel_step = f64::INFINITY;
 
     for iter in 0..config.max_iterations {
         iterations = iter + 1;
@@ -527,9 +563,16 @@ fn solve_ipm_core(
             c
         };
 
-        // track the best feasible-so-far iterate
+        // track the best iterate (objective-aware among feasible points)
         let infeas = primal_eq_inf.max(primal_ineq_inf);
-        if infeas < best_infeas {
+        if infeas <= config.constraint_tol {
+            let obj = eval.objective(&x);
+            if !have_feasible || obj < best_obj {
+                best_obj = obj;
+                x_best = x.clone();
+                have_feasible = true;
+            }
+        } else if !have_feasible && infeas < best_infeas {
             best_infeas = infeas;
             x_best = x.clone();
         }
@@ -550,7 +593,7 @@ fn solve_ipm_core(
         // infeasibility that is NOT the acceptance criterion. For pure
         // bound/inequality problems feasibility is trivial, so genuine
         // optimality must come from KKT stationarity.
-        let barrier_annealed = n_eq > 0 && mu <= config.mu_min;
+        let barrier_annealed = n_eq > 0 && mu <= config.mu_min && last_rel_step <= config.opt_tol;
         let optimal = feasible && (kkt_stationary || barrier_annealed);
         if config.verbose > 0 {
             println!(
@@ -592,13 +635,13 @@ fn solve_ipm_core(
             }
             if n_eq > 0 {
                 let eq_now = primal_eq_inf;
-                if eq_now <= 0.25 * eq_ref {
+                if eq_now <= config.al_contract * eq_ref {
                     for (yi, &c) in y.iter_mut().zip(&c_eq) {
                         *yi += rho * c;
                     }
                     eq_ref = eq_now.max(1e-12);
                 } else {
-                    rho = (rho * 10.0).min(config.rho_max);
+                    rho = (rho * config.rho_growth).min(config.rho_max);
                 }
             }
             iters_at_mu = 0;
@@ -816,6 +859,15 @@ fn solve_ipm_core(
 
         // --- apply steps ---
         iters_at_mu += 1;
+        // Record the relative primal step (scaled space) for the barrier-floor
+        // acceptance gate above: max |Δx| over max(|x|, 1).
+        {
+            let mut step_inf = 0.0_f64;
+            for &d in &dx {
+                step_inf = step_inf.max((alpha * d).abs());
+            }
+            last_rel_step = step_inf / max_abs(&x).max(1.0);
+        }
         x = x_new;
         for j in 0..m_i {
             s_i[j] = s_i_new[j].max(s_min);
@@ -843,14 +895,24 @@ fn solve_ipm_core(
         });
     }
 
-    // Return the best (least-infeasible) iterate — see `x_best`. Its final
-    // infeasibility is at least as good as the stopping iterate's.
+    // Return the best iterate seen (objective-aware among feasible points; see
+    // the `x_best` tracking above). If the stopping iterate is itself feasible
+    // and improves the objective, fold it in.
     let final_infeas = {
         let ce = eval.equality_constraints(&x);
         let ci = eval.inequality_constraints(&x);
         max_abs(&ce).max(max_pos(&ci))
     };
-    let x = if final_infeas <= best_infeas {
+    let x = if final_infeas <= config.constraint_tol {
+        let obj = eval.objective(&x);
+        if !have_feasible || obj < best_obj {
+            x
+        } else {
+            x_best
+        }
+    } else if have_feasible {
+        x_best
+    } else if final_infeas <= best_infeas {
         x
     } else {
         x_best

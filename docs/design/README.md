@@ -20,6 +20,10 @@ Design and diagnosis notes for Apex-14. One folder per feature.
 - [`envelope-qss/recon.md`](envelope-qss/recon.md) — *accepted*. Reconnaissance
   and scope for envelope-QSS free-trajectory optimization (solver state, g_z
   pathway, envelope prerequisites, scope decisions).
+- [`envelope-qss/free-trajectory-ocp.md`](envelope-qss/free-trajectory-ocp.md) —
+  *implemented*. The racing-line OCP that optimizes against the g-g-g envelope
+  (control parameterization, `eps` ruling, IP penalty-ramp tuning, validation:
+  analytic circle 0.02 %, oval corner-cutting, Silverstone cross-check).
 - [`gn-solver-bound-deadlock.md`](gn-solver-bound-deadlock.md) — *diagnosis*.
   Why projection-patched Gauss-Newton deadlocks on bound-binding problems.
   (Legacy flat location; see note below.)

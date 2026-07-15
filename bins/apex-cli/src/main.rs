@@ -71,6 +71,23 @@ enum Commands {
         /// interior-point; resolves the GN bound deadlock on hard tracks)
         #[arg(long, default_value = "gn")]
         solver: String,
+
+        /// Optimize the free racing line against the g-g-g envelope (the
+        /// envelope free-trajectory OCP). Implies the interior-point solver.
+        #[arg(long, default_value_t = false)]
+        envelope: bool,
+
+        /// Envelope safety margin `rho_eff = (1 - eps)*rho` (with `--envelope`).
+        #[arg(long, default_value_t = 0.01)]
+        eps: f64,
+
+        /// Export the optimized trajectory to CSV (with `--envelope`).
+        #[arg(long)]
+        csv: Option<PathBuf>,
+
+        /// Export a racing-line SVG (with `--envelope`).
+        #[arg(long)]
+        svg: Option<PathBuf>,
     },
 
     /// Import a track from TUMFTM CSV format to Apex-14 JSON
@@ -509,7 +526,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             hermite_simpson,
             calibrated,
             solver,
-        } => cmd_optimize(track, car, nodes, hermite_simpson, calibrated, solver),
+            envelope,
+            eps,
+            csv,
+            svg,
+        } => {
+            if envelope {
+                cmd_optimize_envelope(track, car, calibrated, nodes, eps, csv, svg)
+            } else {
+                cmd_optimize(track, car, nodes, hermite_simpson, calibrated, solver)
+            }
+        }
         Commands::ImportTrack {
             input,
             output,
@@ -997,6 +1024,199 @@ fn cmd_optimize(
     println!("Converged: {}", result.converged);
     println!("Eq violation: {:.2e}", result.eq_violation);
 
+    Ok(())
+}
+
+/// Optimize the free racing line against the g-g-g envelope (the envelope
+/// free-trajectory OCP, solved by the interior-point solver). Opt-in; the
+/// default collocation optimizer and its goldens are untouched.
+fn cmd_optimize_envelope(
+    track: Option<PathBuf>,
+    car: Option<PathBuf>,
+    calibrated: bool,
+    nodes: usize,
+    eps: f64,
+    csv: Option<PathBuf>,
+    svg: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use apex_optimizer::envelope_ocp::{EnvelopeOcp, EnvelopeOcpConfig};
+    use apex_physics::{Envelope, EnvelopeGridSpec};
+
+    let track = match track {
+        Some(path) => load_track_from_path(&path)?,
+        None => default_track(),
+    };
+    let params = load_car_params(car, calibrated)?;
+    let tire = apex_physics::PacejkaTire::f1_default();
+    let suspension = apex_physics::SuspensionSystem::f1_default();
+    let aero = apex_physics::AeroModel::f1_default();
+
+    let spec = EnvelopeGridSpec {
+        v_min: 5.0,
+        v_max: 90.0,
+        ..EnvelopeGridSpec::default()
+    };
+    let cache_dir = PathBuf::from(".apex-cache/envelope");
+    let (env, _from_cache) =
+        Envelope::generate_cached(&params, &tire, &suspension, &aero, spec, &cache_dir)?;
+
+    let cfg = EnvelopeOcpConfig {
+        n_nodes: nodes,
+        eps,
+        ..EnvelopeOcpConfig::default()
+    };
+    let ocp = EnvelopeOcp::new(cfg, &track, &params, &env);
+
+    // The OCP mandates the interior-point solver. Scale the iteration budget
+    // and relax the (mixed-unit) feasibility tolerance for coarse meshes on
+    // complex circuits — see docs/design/envelope-qss/free-trajectory-ocp.md.
+    let ip = apex_optimizer::IpmConfig {
+        max_iterations: 1500,
+        constraint_tol: 5e-3,
+        ..EnvelopeOcp::recommended_ip_config()
+    };
+
+    println!("Track: {} ({:.0} m)", track.name, track.total_length);
+    println!("Nodes: {nodes}, eps: {eps}, solver: ip (envelope free-trajectory OCP)");
+    println!("Optimizing racing line against the g-g-g envelope...");
+
+    let t0 = std::time::Instant::now();
+    let r = ocp.solve(&ip);
+    let wall = t0.elapsed();
+
+    let qss = apex_physics::qss_lap_sim(&track, &params);
+    let impr = 100.0 * (qss.lap_time - r.lap_time) / qss.lap_time;
+    println!(
+        "\nStatus:       {:?} ({} iters, {:.1} ms)",
+        r.status,
+        r.iterations,
+        wall.as_secs_f64() * 1e3
+    );
+    println!("OCP lap time: {:.3} s", r.lap_time);
+    println!(
+        "QSS baseline: {:.3} s  (improvement {impr:+.2} %)",
+        qss.lap_time
+    );
+    println!("Eq violation:   {:.2e}", r.eq_violation);
+    println!("Ineq violation: {:.2e}", r.ineq_violation);
+
+    // Provenance for the exported artifacts.
+    let meta = apex_telemetry::RunMetadata::new(
+        apex_physics::car_params_hash(&params),
+        apex_track::processed_track_hash(&track),
+        apex_telemetry::settings_hash_for_mode("optimize.envelope-ocp.ip"),
+        None,
+    );
+
+    // World coordinates of the racing line: centerline position offset by the
+    // left normal times the lateral offset `n`.
+    let mut xs = Vec::with_capacity(r.offsets.len());
+    let mut ys = Vec::with_capacity(r.offsets.len());
+    for k in 0..r.stations.len() {
+        let (cx, cy) = track.position_at(r.stations[k]);
+        let psi = track.heading_at(r.stations[k]);
+        // left normal of the centerline heading
+        let (nx, ny) = (-psi.sin(), psi.cos());
+        xs.push(cx + nx * r.offsets[k]);
+        ys.push(cy + ny * r.offsets[k]);
+    }
+
+    if let Some(csv_path) = csv {
+        apex_telemetry::export_columns_csv(
+            &csv_path,
+            &meta,
+            &[
+                ("s", &r.stations),
+                ("n", &r.offsets),
+                ("xi", &r.headings),
+                ("speed", &r.speeds),
+                ("ax", &r.ax),
+                ("kappa", &r.kappa_cmd),
+                ("x", &xs),
+                ("y", &ys),
+            ],
+        )?;
+        println!("Trajectory CSV written to {}", csv_path.display());
+    }
+
+    if let Some(svg_path) = svg {
+        write_racing_line_svg(&svg_path, &meta, &track, &xs, &ys, &r.speeds, &track.name)?;
+        println!("Racing-line SVG written to {}", svg_path.display());
+    }
+
+    Ok(())
+}
+
+/// Minimal self-contained racing-line SVG: the centerline (grey) and the
+/// optimized line (speed-colored), with a [`RunMetadata`] provenance element.
+fn write_racing_line_svg(
+    path: &std::path::Path,
+    meta: &apex_telemetry::RunMetadata,
+    track: &apex_track::Track,
+    xs: &[f64],
+    ys: &[f64],
+    speeds: &[f64],
+    title: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write as _;
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for s in &track.segments {
+        min_x = min_x.min(s.x);
+        max_x = max_x.max(s.x);
+        min_y = min_y.min(s.y);
+        max_y = max_y.max(s.y);
+    }
+    let pad = 20.0;
+    let w = (max_x - min_x).max(1.0);
+    let h = (max_y - min_y).max(1.0);
+    let scale = (800.0f64 / w).min(800.0f64 / h);
+    // SVG y grows downward; flip.
+    let tx = |x: f64| (x - min_x) * scale + pad;
+    let ty = |y: f64| (max_y - y) * scale + pad;
+
+    let mut svg = String::new();
+    let vw = w * scale + 2.0 * pad;
+    let vh = h * scale + 2.0 * pad;
+    writeln!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{vw:.0}" height="{vh:.0}" viewBox="0 0 {vw:.0} {vh:.0}">"#
+    )?;
+    svg.push_str(&meta.svg_metadata_element());
+    writeln!(svg, r#"<title>{title} — envelope OCP racing line</title>"#)?;
+    // centerline
+    let mut cl = String::new();
+    for s in &track.segments {
+        write!(cl, "{:.1},{:.1} ", tx(s.x), ty(s.y))?;
+    }
+    writeln!(
+        svg,
+        r##"<polyline points="{cl}" fill="none" stroke="#bbb" stroke-width="1"/>"##
+    )?;
+    // racing line, colored by speed
+    let (vmin, vmax) = speeds
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    let span = (vmax - vmin).max(1e-6);
+    let n = xs.len();
+    for k in 0..n {
+        let kn = (k + 1) % n;
+        let t = (speeds[k] - vmin) / span;
+        let (rr, gg, bb) = (
+            (255.0 * (1.0 - t)) as u8,
+            (200.0 * t) as u8,
+            (60.0 + 120.0 * t) as u8,
+        );
+        writeln!(
+            svg,
+            r##"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="#{rr:02x}{gg:02x}{bb:02x}" stroke-width="2.5"/>"##,
+            tx(xs[k]),
+            ty(ys[k]),
+            tx(xs[kn]),
+            ty(ys[kn])
+        )?;
+    }
+    writeln!(svg, "</svg>")?;
+    std::fs::write(path, svg)?;
     Ok(())
 }
 

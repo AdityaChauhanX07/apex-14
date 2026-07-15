@@ -5,6 +5,7 @@
 pub mod cmaes;
 pub mod collocation;
 pub mod direct_solver;
+pub mod envelope_ocp;
 pub mod forward_sim;
 pub mod gauss_newton;
 pub mod ipm;
@@ -27,6 +28,7 @@ pub use collocation::{
 pub use direct_solver::{
     solve_direct, CollocationStructure, DirectSolverConfig, DirectSolverResult,
 };
+pub use envelope_ocp::{EnvelopeOcp, EnvelopeOcpConfig, EnvelopeOcpResult};
 pub use forward_sim::{DetailedTelemetry, ForwardSimulator};
 pub use gauss_newton::{solve_gauss_newton, GaussNewtonConfig, GaussNewtonResult};
 pub use ipm::{solve_ipm, IpmConfig, IpmLog, IpmResult, IpmStatus};
