@@ -1067,9 +1067,11 @@ fn cmd_optimize_envelope(
     };
     let ocp = EnvelopeOcp::new(cfg, &track, &params, &env);
 
-    // The OCP mandates the interior-point solver. Scale the iteration budget
-    // and relax the (mixed-unit) feasibility tolerance for coarse meshes on
-    // complex circuits — see docs/design/envelope-qss/free-trajectory-ocp.md.
+    // The OCP mandates the interior-point solver, run with the shared real-
+    // circuit envelope config (al_contract = 0.1, rho_max = 3e6; see
+    // real-track-convergence.md — this is the tuned schedule, which the CLI
+    // previously did not apply). Scale the iteration budget and relax the
+    // (mixed-unit) feasibility tolerance for coarse meshes on complex circuits.
     let ip = apex_optimizer::IpmConfig {
         max_iterations: 1500,
         constraint_tol: 5e-3,

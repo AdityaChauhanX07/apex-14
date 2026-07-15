@@ -62,8 +62,17 @@ fn circle_matches_closed_form() {
         ..EnvelopeOcpConfig::default()
     };
     let ocp = EnvelopeOcp::new(cfg, &track, &car, &env);
+    // The circle caps `rho_max` at `3e4`, below the shared real-circuit
+    // `rho_max = 3e6`. `rho_max` is a problem-scale knob (see
+    // `recommended_ip_config`): at `3e6` the stiff equality penalty overwhelms
+    // the objective that migrates `n` to the track edge, so the racing line
+    // freezes near the centerline (n stays within ~1 m of the 4 m half-width)
+    // even though the solve reports feasible. At `3e4` the line reaches the
+    // inner edge and the lap matches the closed form. See
+    // `docs/design/envelope-qss/real-track-convergence.md` (mesh-robustness).
     let ip = IpmConfig {
         max_iterations: 800,
+        rho_max: 3e4,
         ..EnvelopeOcp::recommended_ip_config()
     };
     let r = ocp.solve(&ip);
@@ -113,6 +122,56 @@ fn circle_matches_closed_form() {
         r.log.last().unwrap().primal_eq_inf < 1e-3,
         "final equality residual should be feasible, got {}",
         r.log.last().unwrap().primal_eq_inf
+    );
+}
+
+/// Mesh-robustness regression (docs/design/envelope-qss/real-track-convergence.md):
+/// `rho_max` is a problem-scale knob, not a universal constant. The shared
+/// real-circuit `rho_max = 3e6` **freezes the circle's racing line** — the stiff
+/// equality penalty overwhelms the objective that would migrate `n` to the inner
+/// edge — so the line stays near the centerline even though the solve reports
+/// feasible. This locks the reason `circle_matches_closed_form` overrides
+/// `rho_max` down to `3e4` (where the line reaches the edge, checked there). It
+/// is also why no single `rho_max` unifies the gentle synthetic tracks with the
+/// real circuits that need the high ceiling.
+#[test]
+fn circle_high_rho_freezes_line() {
+    let (pts, closed) = circle_track(100.0, 8.0, 240);
+    let track = build_track("circle", &pts, closed);
+    let (car, _, _, _) = point_mass_car();
+    let env = envelope(&car);
+    let cfg = EnvelopeOcpConfig {
+        n_nodes: 60,
+        ..EnvelopeOcpConfig::default()
+    };
+    let ocp = EnvelopeOcp::new(cfg, &track, &car, &env);
+
+    // Shared config: rho_max = 3e6.
+    let hi = ocp.solve(&IpmConfig {
+        max_iterations: 800,
+        ..EnvelopeOcp::recommended_ip_config()
+    });
+    // Scale-matched config: rho_max = 3e4.
+    let lo = ocp.solve(&IpmConfig {
+        max_iterations: 800,
+        rho_max: 3e4,
+        ..EnvelopeOcp::recommended_ip_config()
+    });
+
+    let n_max = |r: &apex_optimizer::envelope_ocp::EnvelopeOcpResult| {
+        r.offsets.iter().cloned().fold(f64::MIN, f64::max)
+    };
+    // At rho_max = 3e4 the line reaches the inner edge (half-width 4 m); at 3e6
+    // it is frozen near the centerline. The gap is the whole point.
+    assert!(
+        n_max(&lo) > 3.5,
+        "rho_max=3e4 line should reach the inner edge, n_max={}",
+        n_max(&lo)
+    );
+    assert!(
+        n_max(&hi) < 2.0,
+        "rho_max=3e6 line should be frozen off the edge, n_max={}",
+        n_max(&hi)
     );
 }
 
@@ -228,14 +287,14 @@ fn determinism_bitwise() {
 /// Regression for the Part-A convergence finding
 /// (docs/design/envelope-qss/real-track-convergence.md): the documented
 /// "MaxIter on Silverstone" is **not** a curvature-discontinuity limit but a
-/// mistuned augmented-Lagrangian schedule. A **config-only** change on existing
-/// `IpmConfig` knobs — `al_contract = 0.1` (favour multiplier updates over
-/// penalty growth) and `rho_max = 3e6` — reaches *machine-tight* feasibility at
+/// mistuned augmented-Lagrangian schedule. The shared config
+/// (`recommended_ip_config`: `al_contract = 0.1` to favour multiplier updates
+/// over penalty growth, `rho_max = 3e6`) reaches *machine-tight* feasibility at
 /// a coarse mesh (N=36). This uses the synthetic `silverstone_circuit` and the
 /// calibrated aero-on car (as the CLI builds it) so it needs no gitignored data.
 ///
 /// It deliberately runs the *same* synthetic circuit that `silverstone_cross_check`
-/// only asserts "improves" on, and shows the tuned config converges it tight.
+/// only asserts "improves" on, and shows the shared config converges it tight.
 #[test]
 fn silverstone_tuned_reaches_tight() {
     let (pts, closed) = silverstone_circuit();
@@ -261,12 +320,11 @@ fn silverstone_tuned_reaches_tight() {
         ..EnvelopeOcpConfig::default()
     };
     let ocp = EnvelopeOcp::new(cfg, &track, &car, &env);
-    // Config-only fix: loosen the AL schedule; raise the penalty ceiling.
+    // The shared config (al_contract = 0.1, rho_max = 3e6) with only the
+    // iteration budget and coarse-mesh tolerance overridden.
     let ip = IpmConfig {
         max_iterations: 1500,
         constraint_tol: 5e-3,
-        al_contract: 0.1,
-        rho_max: 3e6,
         ..EnvelopeOcp::recommended_ip_config()
     };
     let r = ocp.solve(&ip);

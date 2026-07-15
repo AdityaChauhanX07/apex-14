@@ -397,8 +397,9 @@ impl<'a> EnvelopeOcp<'a> {
         }
     }
 
-    /// A tuned interior-point configuration for the envelope OCP. The defaults
-    /// are chosen from the validation sweep (`free-trajectory-ocp.md`):
+    /// The shared interior-point configuration for the envelope OCP on **real
+    /// circuits**. It is the config the mesh/config-robustness study settled on
+    /// (`docs/design/envelope-qss/real-track-convergence.md`):
     /// - `rho_growth = 3.0` — a gentle augmented-Lagrangian penalty ramp. The
     ///   solver's default `10.0` drives feasibility so hard that `rho` saturates
     ///   `rho_max` before the *objective* has moved the line to the track edge,
@@ -406,16 +407,35 @@ impl<'a> EnvelopeOcp<'a> {
     ///   long enough for the racing line to migrate.
     /// - `mu_reduction = 0.5` — a slow barrier anneal, for the same reason: a
     ///   softer barrier lets `n` travel before the schedule terminates.
-    /// - `rho_max = 3e4`, `constraint_tol = 1e-4`, `obj_weight = 1.0`.
+    /// - `al_contract = 0.1` — favour Hestenes–Powell multiplier updates over
+    ///   penalty growth, so real lap-scale problems reach feasibility at a
+    ///   moderate `rho` instead of saturating `rho_max` while still infeasible
+    ///   (the Part-A `InfeasibleDetected` failure).
+    /// - `rho_max = 3e6` — the penalty ceiling several real circuits genuinely
+    ///   need: Monza, Catalunya and Spielberg reach feasibility only once `rho`
+    ///   climbs to `≈ 1e5–1e6`.
+    /// - `constraint_tol = 1e-4`, `obj_weight = 1.0`.
     ///
-    /// Callers may override any field (e.g. `max_iterations`, or a looser
-    /// `constraint_tol` for a coarse mesh on a complex circuit).
+    /// **`rho_max` is a problem-scale knob, not a universal constant.** The
+    /// mesh-robustness study established that no single `rho_max` serves both
+    /// real circuits and the gentle synthetic validation tracks: at `rho_max =
+    /// 3e6` the circle's racing line *freezes* near the centerline (the stiff
+    /// penalty overwhelms the objective that migrates `n` to the edge), so the
+    /// circle validation caps `rho_max` at `3e4`. An online adaptive ceiling was
+    /// prototyped and does not bridge the gap — the circle's equality
+    /// infeasibility makes large-but-stalling progress at high `rho` that is
+    /// indistinguishable from a real circuit's progress-to-feasibility until it
+    /// is too late. See the doc for the full account.
+    ///
+    /// Callers may override any field (e.g. `max_iterations`, a looser
+    /// `constraint_tol` for a coarse mesh, or `rho_max` for a gentle track).
     pub fn recommended_ip_config() -> IpmConfig {
         IpmConfig {
             max_iterations: 1000,
             obj_weight: 1.0,
             constraint_tol: 1e-4,
-            rho_max: 3e4,
+            al_contract: 0.1,
+            rho_max: 3e6,
             rho_growth: 3.0,
             mu_reduction: 0.5,
             ..IpmConfig::default()

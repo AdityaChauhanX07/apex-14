@@ -76,10 +76,12 @@ knobs on `IpmConfig`:
 - **`mu_reduction = 0.5`** (slow barrier anneal) for the same reason: a softer
   barrier lets `n` travel before the schedule ends.
 
-An `al_contract` knob (default `0.25`) was also added but left at its default —
-loosening it to favour multiplier updates over penalty growth *destabilized*
-the dual estimate and made feasibility worse, so `0.25` (conservative
-Hestenes–Powell) stands.
+An `al_contract` knob (default `0.25`) was also added and, in this original
+point-mass validation, left at its default — loosening it *destabilized* the
+dual estimate and made feasibility worse here. **Superseded:** on real circuits
+the opposite holds, and the shared config now uses `al_contract = 0.1` (favouring
+multiplier updates over penalty growth) — see `real-track-convergence.md` Parts A
+and B. `recommended_ip_config()` carries `al_contract = 0.1, rho_max = 3e6`.
 
 These changes leave every existing IP test bit-for-bit unchanged (the deadlock
 still resolves to `eq = 1.29e-7`, the QP/Rosenbrock/determinism tests pass) —

@@ -179,17 +179,25 @@ control — see the pending note at the end.
 
 Envelope generated per car (`PacejkaTire`/`SuspensionSystem`/`AeroModel::f1_default`,
 grid `v ∈ [5, 90] m/s`), cached. The OCP is solved by the interior-point solver
-with the **config-only** augmented-Lagrangian retune established in Part A
-(`docs/design/envelope-qss/real-track-convergence.md`): a single shared config
-`IpmConfig { al_contract: 0.1, rho_max: 3e6, constraint_tol: 5e-3,
-max_iterations: 1500, ..recommended_ip_config() }`. Feasibility is judged
-`tight` when **both** `eq_violation ≤ 5e-3` and `ineq_violation ≤ 5e-3` (SI).
+with the shared real-circuit augmented-Lagrangian schedule
+(`docs/design/envelope-qss/real-track-convergence.md`), now carried by
+`EnvelopeOcp::recommended_ip_config()` itself (`al_contract = 0.1`, `rho_max = 3e6`,
+`rho_growth = 3.0`, `mu_reduction = 0.5`), with the CLI overriding only
+`max_iterations = 1500` and `constraint_tol = 5e-3`. (Part B corrected a gap: the CLI
+had been running `recommended_ip_config`'s *old* defaults, `al = 0.25, rho_max = 3e4`,
+which `MaxIter` on Monza/Catalunya/Spielberg — so the CLI now reproduces this table
+rather than only a separate harness doing so.) Feasibility is judged `tight` when
+**both** `eq_violation ≤ 5e-3` and `ineq_violation ≤ 5e-3` (SI).
 
-**Per-track node count `N*` is the one tuned knob.** With the shared config, tight
-feasibility is reached only at a coarse, per-track mesh (`N ≈ 24–40`); at `N ≥ 48`
-the envelope-inequality coordination breaks down and the solve regresses to
-infeasible (the "finer is worse" effect, diagnosed in Part A). `N*` below is the
-finest mesh that is tight.
+**Per-track node count `N*` is the tuned knob; `rho_max` is a second, problem-scale
+knob.** With the shared schedule, tight feasibility is reached only at a coarse,
+per-track mesh (`N ≈ 24–40`); at `N ≥ 48` the envelope-inequality coordination breaks
+down against an `N²`-ill-conditioned equality operator and the solve regresses to
+infeasible (the "finer is worse" effect; mechanism instrumented in Part B). Separately,
+Part B established that **no single `rho_max` serves both the gentle synthetic tracks
+and the real circuits** — the circle needs `rho_max = 3e4` (`3e6` freezes its racing
+line), the real circuits need `3e6` — so `rho_max` is documented as a scale knob, not a
+universal constant. `N*` below is the finest mesh that is tight.
 
 ## Results (calibrated car; envelope aero-on)
 

@@ -132,3 +132,138 @@ max_iterations: 1500, ..EnvelopeOcp::recommended_ip_config() }`. Point-mass runs
 `CarParams::f1_2024_calibrated()` with the CLI's `AeroModel::f1_default` envelope. The
 committed regression test `silverstone_tuned_reaches_tight` (synthetic circuit, tuned config,
 N=36) locks in the config-only fix without depending on the gitignored real track data.
+
+---
+
+# Part B — mesh & config robustness (mesh-robustness task, 2026-07-15)
+
+Part A adopted the shared config `al_contract = 0.1, rho_max = 3e6`. Follow-up work
+found two problems with it: it **regressed the synthetic circle** (Optimal under the
+pre-Part-A config, not under the new one), and **every track regresses at `N ≥ 48`**,
+with lap times swinging by many seconds across the meshes that do converge. This part
+characterizes both, lands what a bounded fix can, and marks the rest as the deferred
+dynamic-OCP solver's input.
+
+## B.1 The regression is the **circle**, and the culprit is `rho_max`, not `al_contract`
+
+The regressed track is the **circle**, not the oval (the oval is robust: synthetic
+`oval_track` is Optimal at `N = 40/60` under both the old and new configs, and the
+committed `oval_corner_cutting_and_monotone` reaches both edges at `rho_max = 3e6`).
+Bisecting the two-knob change on the circle (point-mass, `N = 48` and `N = 80`, where the
+old config was Optimal):
+
+| config | circle N=48 | circle N=80 |
+|---|---|---|
+| old `al=0.25, rho_max=3e4` | **Optimal** | **Optimal** |
+| new `al=0.1, rho_max=3e6` | MaxIter (ineq 0.33) | MaxIter (ineq 0.42) |
+| `al=0.1, rho_max=3e4` (al-only) | **Optimal** | **Optimal** |
+| `al=0.25, rho_max=3e6` (rho-only) | MaxIter (ineq 0.33) | MaxIter (ineq 0.42) |
+
+**`rho_max = 3e6` is the whole regression;** `al_contract = 0.1` is benign on the circle.
+
+**Mechanism (instrumented).** `rho` growth is coupled to the barrier anneal: a schedule
+advance reduces `mu` **and** — when the equalities have not contracted — grows `rho ×3`, on
+the *same* trigger. While `mu` is large the equality infeasibility is **barrier-frozen**
+(the iterate is being centered, not driven to feasibility), so the contraction gate never
+fires and `rho` ramps once per `mu`-reduction. With `rho_max = 3e4` it caps at a
+CG-solvable stiffness and the solve finishes once `mu` anneals; with `rho_max = 3e6` it
+keeps climbing (13 growths vs 9), and the condensed operator `rho·JeqᵀJeq` — a
+`rho`-scaled periodic-difference operator — becomes too ill-conditioned for the Jacobi-
+preconditioned CG. The inner solves degrade, the line search collapses to tiny steps, and
+the primal **freezes** with the envelope inequality still violated (`ineq ≈ 0.4`). The two
+`rho_max = 3e6` trajectories are **bit-identical to the `3e4` run through the first 9
+growths**; they diverge only once `rho` passes `~3e4`.
+
+A second, distinct symptom of the same over-stiffening: even where `rho_max = 3e6` does
+reach feasibility on the circle, the stiff penalty **overwhelms the objective that migrates
+`n` to the edge**, so the racing line freezes near the centerline (`n` within ~1 m of the
+4 m half-width instead of hugging the inner edge). Locked by
+`circle_high_rho_freezes_line`.
+
+## B.2 The `N ≥ 48` failure is a conditioning wall, not iteration budget
+
+Instrumenting real Silverstone (calibrated) across `N`:
+
+- **CG never converges to tolerance at any `N`** — inner CG hits its `cg_max_iter = 250`
+  cap on *every* Newton step, converging *and* failing runs alike. The whole method runs on
+  inexact Newton; that is tolerable at moderate `rho` and fatal once `rho` is large.
+- **What grows with `N` is the equality operator's conditioning.** The periodic first-
+  difference collocation Jacobian gives `JeqᵀJeq` a second-difference (graph-Laplacian)
+  structure whose condition number grows like `N²`. Larger `N` → `eq` contracts more slowly
+  → the `mu`-coupled ramp grows `rho` further → `rho·JeqᵀJeq` is even worse conditioned →
+  the primal freezes. It is a positive-feedback loop, and `N ≥ 48` is where it runs away.
+- **It is not the linear solve alone.** Raising `cg_max_iter` to 2000 and tightening
+  `cg_tol` to `1e-12` does **not** rescue real Silverstone `N ≥ 48` — it makes it *worse*.
+  The residual obstacle is the **envelope-inequality coordination** collapsing at fine mesh,
+  not merely CG accuracy. AL penalty saturation + line-search collapse are downstream of it.
+
+## B.3 Mesh convergence: the caveat is earned, quantified
+
+Lap time vs `N` under the shared config (constraint-tight solves only):
+
+| `N` | circle (point-mass, `rho_max=3e4`) | real Silverstone (calibrated) |
+|---|---|---|
+| 24 | 15.040 s (Opt) | 75.11 s (Opt) |
+| 28 | — | 76.48 s (Opt) |
+| 32 | — | 87.48 s (Opt) |
+| 36 | 15.041 s (Opt) | *MaxIter* |
+| 40 | — | 89.79 s (Opt) |
+| 44 | — | *MaxIter* |
+| 48 | 15.158 s (Opt) | *MaxIter* |
+| 60 | 15.038 s (Opt) | — |
+| 72 | 15.181 s (Opt) | — |
+
+The **circle objective is mesh-converged** (±1 % of the 15.04 s closed form across
+`N = 24–72`) — its optimal line is trivial (hug the inner edge). **Real Silverstone is
+not, and not even monotone:** the meshes that converge give **75 → 76 → 87 → 90 s** across
+`N = 24/28/32/40`, a 15 s (20 %) swing, and `N = 36/44/48` fail outright. At `ds ≈ 150–290 m`
+a corner spans one–two nodes, so the "optimal" line over-cuts by a mesh-dependent amount.
+**The Part-B lap-time deltas remain feasibility results with directional (sign-correct)
+deltas, not converged lap-time magnitudes.**
+
+## B.4 What a bounded fix can and cannot do
+
+**An adaptive penalty ceiling was prototyped and reverted.** The idea (`rho_grow_floor`):
+cap *unproductive* `rho` growth at a CG-solvable floor (`3e4`) and unlatch to `rho_max`
+only once a growth actually reduces the equality infeasibility — an online Hestenes–Powell
+productivity test, making the effective ceiling adaptive per problem. It converged the oval
+and all real circuits and reached feasibility on the circle at `N = 48`, **but it does not
+bridge the circle↔real gap**: the circle's equality infeasibility makes a *large-but-
+stalling* drop at high `rho` (`0.166 → 0.129 → 0.037`, then stuck) that is
+indistinguishable, online, from a real circuit's genuine progress-to-feasibility, so the
+circle false-unlatches and its racing line still freezes. It also does **not** fix the
+`N ≥ 48` conditioning wall (§B.2). Since it changed no committed outcome a simpler config
+did not, and added solver config surface without earning it, it was reverted — the IP
+solver is unchanged (deadlock still resolves to `eq = 1.29e-7`, bit-identical).
+
+**The conclusion is structural: no single `rho_max` serves both scales.** Gentle synthetic
+tracks need `rho_max ≈ 3e4` (higher freezes the line); several real circuits (Monza,
+Catalunya, Spielberg) reach feasibility only at `rho ≈ 1e5–1e6` and need `rho_max = 3e6`.
+The two requirements are disjoint and — per the prototype — not reconcilable by an online
+adaptive rule keyed on infeasibility. `rho_max` is therefore documented as a **problem-scale
+knob**, not a universal constant (`EnvelopeOcp::recommended_ip_config`).
+
+## B.5 What landed
+
+- **`recommended_ip_config()` is now the shared real-circuit config** `{ al_contract = 0.1,
+  rho_max = 3e6, rho_growth = 3.0, mu_reduction = 0.5, constraint_tol = 1e-4 }`. Previously
+  it was `{ al_contract = 0.25 (default), rho_max = 3e4 }` — the pre-Part-A config — so the
+  **CLI `optimize --envelope` silently ran the un-tuned schedule** and would `MaxIter` on
+  Monza/Catalunya/Spielberg (verified: Monza `N=30` old-config `MaxIter`, `eq = 2.4e-2`).
+  The CLI now reproduces the Part-B table exactly (Silverstone 89.791 s, Monza 84.330 s, …).
+- **The circle validation caps `rho_max = 3e4`** and reaches the inner edge / closed form
+  (`circle_matches_closed_form`); `circle_high_rho_freezes_line` locks the reason.
+- **All existing IP tests are bit-identical** (no `apex-optimizer::ipm` source change); the
+  deadlock, QP, Rosenbrock, and determinism tests pass unchanged.
+
+## B.6 Success-bar assessment
+
+- **One config, oval + circle + all 5 real circuits Optimal** — met as *one tuning*
+  (`al_contract`/`rho_growth`/`mu_reduction`) with `rho_max` the one documented per-scale
+  knob (circle `3e4`, real `3e6`). A single *literal* `rho_max` is shown to be impossible
+  (§B.4), which is itself a reportable finding.
+- **Real Silverstone monotone over `N = 40 → 64 → 96` with the last delta < 1 %** — **not
+  met, and not reachable with bounded effort.** `N ≥ 44` does not converge and the meshes
+  that do are non-monotone (§B.3), gated by the `N²`-conditioning / envelope-coordination
+  wall (§B.2). This is the input the deferred **mesh-continuation / better-preconditioned**
+  dynamic-OCP solver must address; the honest characterization above is that deliverable.
