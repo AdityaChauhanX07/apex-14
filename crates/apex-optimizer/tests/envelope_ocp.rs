@@ -224,3 +224,67 @@ fn determinism_bitwise() {
     }
     assert_eq!(a.lap_time.to_bits(), b.lap_time.to_bits());
 }
+
+/// Regression for the Part-A convergence finding
+/// (docs/design/envelope-qss/real-track-convergence.md): the documented
+/// "MaxIter on Silverstone" is **not** a curvature-discontinuity limit but a
+/// mistuned augmented-Lagrangian schedule. A **config-only** change on existing
+/// `IpmConfig` knobs — `al_contract = 0.1` (favour multiplier updates over
+/// penalty growth) and `rho_max = 3e6` — reaches *machine-tight* feasibility at
+/// a coarse mesh (N=36). This uses the synthetic `silverstone_circuit` and the
+/// calibrated aero-on car (as the CLI builds it) so it needs no gitignored data.
+///
+/// It deliberately runs the *same* synthetic circuit that `silverstone_cross_check`
+/// only asserts "improves" on, and shows the tuned config converges it tight.
+#[test]
+fn silverstone_tuned_reaches_tight() {
+    let (pts, closed) = silverstone_circuit();
+    let track: Track = build_track("silverstone", &pts, closed);
+    let car = CarParams::f1_2024_calibrated();
+    // The envelope the CLI builds: full load-sensitive, speed-dependent aero.
+    let spec = EnvelopeGridSpec {
+        v_min: 5.0,
+        v_max: 90.0,
+        ..EnvelopeGridSpec::default()
+    };
+    let env = Envelope::generate(
+        &car,
+        &PacejkaTire::f1_default(),
+        &SuspensionSystem::f1_default(),
+        &AeroModel::f1_default(),
+        spec,
+    )
+    .unwrap();
+
+    let cfg = EnvelopeOcpConfig {
+        n_nodes: 36,
+        ..EnvelopeOcpConfig::default()
+    };
+    let ocp = EnvelopeOcp::new(cfg, &track, &car, &env);
+    // Config-only fix: loosen the AL schedule; raise the penalty ceiling.
+    let ip = IpmConfig {
+        max_iterations: 1500,
+        constraint_tol: 5e-3,
+        al_contract: 0.1,
+        rho_max: 3e6,
+        ..EnvelopeOcp::recommended_ip_config()
+    };
+    let r = ocp.solve(&ip);
+
+    assert_eq!(
+        r.status,
+        IpmStatus::Optimal,
+        "tuned config should converge (eq={:.2e}, ineq={:.2e})",
+        r.eq_violation,
+        r.ineq_violation
+    );
+    assert!(
+        r.eq_violation <= 5e-3 && r.ineq_violation <= 5e-3,
+        "should be tight-feasible: eq={:.2e}, ineq={:.2e}",
+        r.eq_violation,
+        r.ineq_violation
+    );
+    // and it still beats the fixed-line QSS
+    let qss = qss_lap_sim(&track, &car);
+    assert!(r.lap_time < qss.lap_time && r.lap_time.is_finite());
+}

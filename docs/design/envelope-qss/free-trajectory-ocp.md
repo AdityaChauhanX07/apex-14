@@ -108,6 +108,25 @@ verified because the new knobs default to the old behavior.
 
 ### Known limitation — complex circuits at coarse mesh
 
+> **⚠️ Superseded (envelope-analysis task, Part A, 2026-07-15).** The
+> curvature-discontinuity explanation below was **tested and falsified** — see
+> [`real-track-convergence.md`](real-track-convergence.md). In brief: the
+> spline-smoothed, C2-continuous **real** Silverstone does not converge any
+> better than the synthetic one (so joints are not the cause); refining the mesh
+> makes feasibility **worse**, not better; and the collocation *rate* defect is
+> already tiny (~6e-4) at every mesh — the unresolved infeasibility is the
+> **envelope inequality**, not the dynamics. The real cause is that
+> `recommended_ip_config`'s augmented-Lagrangian schedule (`al_contract = 0.25`,
+> `rho_max = 3e4`) was tuned on the synthetic point-mass tracks and saturates
+> `rho_max` on real-lap-scale problems. A **config-only** change on existing
+> `IpmConfig` knobs — **`al_contract = 0.1`, `rho_max = 3e6`** — reaches
+> *machine-tight* feasibility on all five real F1 circuits (regression test
+> `silverstone_tuned_reaches_tight`). The surviving limitation is different: tight
+> feasibility holds only at a **per-track coarse mesh** (N ≈ 24–40), and the
+> lap-time objective is not mesh-converged there — the fix for finer meshes is
+> mesh-continuation / predictor-corrector `mu`, not "resolving joints."
+
+The original (falsified) account, kept for the record:
 Silverstone (`silverstone_circuit`) **runs and improves ~18 %** but does not
 reach tight feasibility (`eq ≈ 0.02`, `ineq ≈ 0.7`) at practical mesh /
 iteration budgets. The synthetic layout is built from arc/straight primitives

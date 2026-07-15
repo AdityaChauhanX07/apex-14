@@ -69,6 +69,15 @@ below). All five passed every hygiene check (event match, align scale ∈
 > the complete 3D-track-model validation story (geometry, physics, this finding, scope
 > ledger): [`track3d.md`](track3d.md).
 > No parameter was tuned to force the criterion; higher-fidelity models are deferred.
+>
+> **Load-transfer grip tested too (envelope-analysis task, Part C).** A further check asked
+> whether **load-transfer physics** (the load-sensitive g-g-g envelope grip, vs the point-mass
+> friction circle) recovers Spa's `power_scale`/descent over-carry. **It does not** — the
+> Pouhon→Stavelot descent is not grip-limited (median grip utilization 0.45), so no grip law
+> can move it; the over-carry is longitudinal/energy-management. This isolates the residual
+> further to transient/driver effects. Details + a calibration-mismatch finding (the fitted
+> effective `lift_coeff` and the envelope's ride-height aero are different representations):
+> [`correlation_spa_envelope.md`](correlation_spa_envelope.md).
 
 ## Parameter scatter — the key analysis
 

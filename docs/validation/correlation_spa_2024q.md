@@ -94,3 +94,15 @@ can't match, tyre thermal, or transient descent/energy-management behaviour) —
 domain of the **deferred single-track / four-wheel / 14-DOF work** (PHYSICS_CHANGE
 2026-07-07). The committed `cars/spa_2024q_fitted.toml` is left at the flat fit;
 the 3D fit is not "better" and was not promoted.
+
+## Load-transfer grip tested too — also insufficient
+
+A follow-up (envelope-analysis task, Part C) asked whether the residual is **load-transfer
+physics**: does swapping the point-mass friction circle for the **load-sensitive g-g-g
+envelope** shrink the descent over-carry? **It does not, and cannot** — the
+Pouhon→Stavelot descent is **not grip-limited** (median grip utilization 0.45; only 8 % of
+descent stations near the limit), so no grip law can change its speed. The over-carry is
+longitudinal/energy-management, not grip. This **further isolates the Spa residual to
+transient/driver effects** (the dynamic-OCP domain). Full analysis, the calibration-mismatch
+finding, and why re-identification was not run:
+[`correlation_spa_envelope.md`](correlation_spa_envelope.md).
