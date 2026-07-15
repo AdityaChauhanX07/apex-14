@@ -153,6 +153,22 @@ impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> {
         self.scaling
             .scale_jacobian(&j_si, &self.scaling.c_ineq_scale)
     }
+
+    fn objective_hessian_vec(&self, x: &[f64], v: &[f64]) -> Vec<f64> {
+        // f_scaled(x_s) = f(X·x_s), so ∇²f_scaled = X·∇²f·X (X = diag(x_scale)).
+        // Hence H_scaled·v = x_scale ⊙ ( H_si · (x_scale ⊙ v) ).
+        let x_si = self.scaling.unscale_x(x);
+        let xv: Vec<f64> = v
+            .iter()
+            .zip(&self.scaling.x_scale)
+            .map(|(&vi, &s)| vi * s)
+            .collect();
+        let hv = self.inner.objective_hessian_vec(&x_si, &xv);
+        hv.iter()
+            .zip(&self.scaling.x_scale)
+            .map(|(&h, &s)| h * s)
+            .collect()
+    }
 }
 
 #[cfg(test)]

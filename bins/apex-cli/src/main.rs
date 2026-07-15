@@ -66,6 +66,11 @@ enum Commands {
         /// Use calibrated parameters
         #[arg(long, default_value_t = false)]
         calibrated: bool,
+
+        /// NLP solver: `gn` (default Gauss-Newton) or `ip` (bound-capable
+        /// interior-point; resolves the GN bound deadlock on hard tracks)
+        #[arg(long, default_value = "gn")]
+        solver: String,
     },
 
     /// Import a track from TUMFTM CSV format to Apex-14 JSON
@@ -503,7 +508,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             nodes,
             hermite_simpson,
             calibrated,
-        } => cmd_optimize(track, car, nodes, hermite_simpson, calibrated),
+            solver,
+        } => cmd_optimize(track, car, nodes, hermite_simpson, calibrated, solver),
         Commands::ImportTrack {
             input,
             output,
@@ -945,6 +951,7 @@ fn cmd_optimize(
     nodes: usize,
     hermite_simpson: bool,
     calibrated: bool,
+    solver: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let track = match track {
         Some(path) => load_track_from_path(&path)?,
@@ -966,11 +973,25 @@ fn cmd_optimize(
 
     println!("Track: {} ({:.0} m)", track.name, track.total_length);
     println!("Nodes: {}, Method: {:?}", nodes, method);
+    println!("Solver: {solver}");
     println!("Optimizing...");
 
     let optimizer = apex_optimizer::CollocationOptimizer::new(config, &track, &params);
-    let solver_config = apex_optimizer::GaussNewtonConfig::default();
-    let result = optimizer.optimize_gn(&solver_config);
+    let result = match solver.as_str() {
+        "ip" => {
+            // Bound-capable interior-point; feasibility-first weighting matches
+            // the near-linear lap-time objective.
+            let ip_config = apex_optimizer::IpmConfig {
+                max_iterations: 300,
+                obj_weight: 1e-2,
+                constraint_tol: 1e-6,
+                ..apex_optimizer::IpmConfig::default()
+            };
+            optimizer.optimize_ip(&ip_config)
+        }
+        "gn" => optimizer.optimize_gn(&apex_optimizer::GaussNewtonConfig::default()),
+        other => return Err(format!("unknown solver '{other}'; use 'gn' or 'ip'").into()),
+    };
 
     println!("\nLap time:  {:.3} s", result.lap_time);
     println!("Converged: {}", result.converged);

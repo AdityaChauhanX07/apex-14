@@ -105,15 +105,23 @@ factor, and it is delivered directly by `HermiteGrid`.
 
 Interpolated `rho` vs a direct `boundary_radius` solve at off-grid points:
 
-| Grid `(theta x v x g_z)` | Max relative error |
-|---|---|
-| `16 x 6 x 4` (deliberately coarse) | **1.31 %** |
+| Grid `(theta x v x g_z)` | Max relative error | Worst-error sign |
+|---|---|---|
+| `16 x 6 x 4` (deliberately coarse) | **1.31 %** | over-estimate (`+0.0131`) |
+| `24 x 10 x 6` (**default**) | **0.76 %** | **over-estimate** (`+0.0076`) |
 
-The default grid (`24 x 10 x 6`) is finer and lower-error; `1.31 %` is the
-reported worst case on a coarse grid, a conservative bound for OCP use. (The
-error is dominated by the `v` and `g_z` axes where downforce curves the boundary;
-the friction-circle limit is reproduced essentially exactly — see the point-mass
-test below.)
+The error is dominated by the `v` and `g_z` axes where downforce curves the
+boundary; the friction-circle limit is reproduced essentially exactly (see the
+point-mass test). Both grids' worst case is an **over-estimate** — the
+interpolant reports a slightly *larger* feasible radius than the true boundary.
+
+> **OCP safety-margin note (deferred).** The default grid's worst-case
+> over-estimate (`+0.76 %`) exceeds `0.5 %`. An over-estimated `rho` means the
+> constraint `|a|/rho <= 1` admits accelerations marginally outside the true
+> envelope. The free-trajectory OCP should therefore apply a small safety-margin
+> factor (`rho_eff = (1 - epsilon)·rho`, `epsilon >~ 0.01`) so the constraint
+> stays conservative between grid nodes. **Decision deferred to the OCP task**;
+> recorded here so it is not lost.
 
 ## 5. Cache format & versioning
 

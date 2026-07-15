@@ -7,6 +7,7 @@ pub mod collocation;
 pub mod direct_solver;
 pub mod forward_sim;
 pub mod gauss_newton;
+pub mod ipm;
 pub mod layout_optimizer;
 pub mod mesh_refinement;
 pub mod nlp;
@@ -28,6 +29,7 @@ pub use direct_solver::{
 };
 pub use forward_sim::{DetailedTelemetry, ForwardSimulator};
 pub use gauss_newton::{solve_gauss_newton, GaussNewtonConfig, GaussNewtonResult};
+pub use ipm::{solve_ipm, IpmConfig, IpmLog, IpmResult, IpmStatus};
 pub use layout_optimizer::{optimize_layout, LayoutOptConfig, LayoutOptResult};
 pub use mesh_refinement::{
     optimize_with_refinement, LevelResult, MeshRefinementConfig, RefinedResult,

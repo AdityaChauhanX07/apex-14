@@ -44,4 +44,20 @@ pub trait NlpEvaluator {
     /// Evaluate the Jacobian of the inequality constraints.
     /// Returns a CsrMatrix of shape (n_ineq, n_vars).
     fn inequality_jacobian(&self, x: &[f64]) -> apex_math::CsrMatrix;
+
+    /// Hessian-vector product of the **objective** at `x`: returns `H_f(x) · v`.
+    ///
+    /// Default: the zero vector — appropriate for a linear objective, or when
+    /// the objective's curvature is modeled elsewhere (the collocation lap-time
+    /// objective is linear; its solver models constraint curvature by a
+    /// Gauss-Newton term, not an objective Hessian). A genuinely nonlinear
+    /// objective (e.g. a QP `½xᵀQx` or a least-squares residual) should override
+    /// this so the interior-point solver ([`crate::ipm`]) has second-order
+    /// objective information; the product form keeps it matrix-free (no Hessian
+    /// is ever assembled). It is fine to return a Gauss-Newton (positive
+    /// semidefinite) approximation instead of the exact Hessian.
+    fn objective_hessian_vec(&self, x: &[f64], v: &[f64]) -> Vec<f64> {
+        let _ = x;
+        vec![0.0; v.len()]
+    }
 }

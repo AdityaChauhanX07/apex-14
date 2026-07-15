@@ -651,6 +651,51 @@ impl<'a> CollocationOptimizer<'a> {
         self.extract_result_gn(&result)
     }
 
+    /// Run optimization using the primal-dual **interior-point** solver
+    /// ([`crate::ipm`]). Unlike [`optimize_gn`](Self::optimize_gn), which handles
+    /// the control bounds by post-hoc projection (and deadlocks when a bound must
+    /// bind — see `docs/design/gn-solver-bound-deadlock.md`), the interior-point
+    /// solver carries genuine bound multipliers via a log-barrier, so a saturated
+    /// `f_drive` on a straight produces the correct implicit multiplier instead of
+    /// a cancelled step.
+    ///
+    /// The solver builds its own variable scaling internally (see
+    /// `docs/design/nlp-scaling.md`); this call passes the **unscaled** problem
+    /// and recomputes the reported `eq_violation`/`ineq_violation` in SI.
+    pub fn optimize_ip(&self, config: &crate::ipm::IpmConfig) -> OptimizationResult {
+        let x0 = self.initial_guess();
+        self.optimize_ip_from(&x0, config)
+    }
+
+    /// Interior-point optimization from an explicit warm start `x0` (SI units).
+    pub fn optimize_ip_from(
+        &self,
+        x0: &[f64],
+        config: &crate::ipm::IpmConfig,
+    ) -> OptimizationResult {
+        let problem = self.build_nlp_problem();
+        let evaluator = CollocationEvaluator { optimizer: self };
+        let result = crate::ipm::solve_ipm(&problem, &evaluator, x0, config);
+        self.extract_result_ip(&result)
+    }
+
+    fn extract_result_ip(&self, result: &crate::ipm::IpmResult) -> OptimizationResult {
+        let vars = self.unpack(&result.x);
+        OptimizationResult {
+            speeds: vars.v.clone(),
+            offsets: vars.n.clone(),
+            headings: vars.alpha.clone(),
+            stations: vars.s.clone(),
+            drive_forces: vars.f_drive.clone(),
+            curvature_cmds: vars.curvature_cmd.clone(),
+            time_steps: vars.dt.clone(),
+            lap_time: result.objective,
+            eq_violation: result.eq_violation,
+            converged: result.converged,
+            brake_bias: vars.brake_bias.clone(),
+        }
+    }
+
     /// Optimize with brake bias as an additional control variable.
     ///
     /// Adds one bounded variable per node (`brake_bias_front` in `[0.50, 0.80]`)

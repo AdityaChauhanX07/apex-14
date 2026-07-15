@@ -754,29 +754,64 @@ mod tests {
 
     // --- interpolation error vs direct solve at off-grid points ---
 
-    #[test]
-    fn interpolation_matches_direct_solve() {
-        let (c, t, s, a) = rig();
-        let spec = small_spec();
-        let env = Envelope::generate(&c, &t, &s, &a, spec).unwrap();
-        // Sample off-grid points and compare interpolated rho to a direct
-        // boundary solve. Report the max relative error.
+    /// Max relative interpolation error `(interp - direct)/direct` over a set of
+    /// off-grid points, plus the *signed* worst error (its sign says whether the
+    /// interpolant over- or under-estimates rho at that point).
+    fn interp_error(
+        c: &CarParams,
+        t: &PacejkaTire,
+        s: &SuspensionSystem,
+        a: &AeroModel,
+        env: &Envelope,
+    ) -> (f64, f64) {
         let mut max_rel = 0.0_f64;
+        let mut worst_signed = 0.0_f64;
         for &theta in &[0.3, 1.1, 2.2, 3.7, 4.9] {
             for &v in &[22.0, 41.0, 63.0] {
                 for &gz in &[9.5, 10.7] {
                     let interp = env.rho(theta, v, gz);
-                    let direct = boundary_radius(&c, &t, &s, &a, theta, v, gz, env.spec()).unwrap();
-                    let rel = (interp - direct).abs() / direct.max(1e-6);
-                    max_rel = max_rel.max(rel);
+                    let direct = boundary_radius(c, t, s, a, theta, v, gz, env.spec()).unwrap();
+                    let signed = (interp - direct) / direct.max(1e-6);
+                    if signed.abs() > max_rel {
+                        max_rel = signed.abs();
+                        worst_signed = signed;
+                    }
                 }
             }
         }
-        // Documented interpolation error bound at this resolution.
-        eprintln!("max relative interpolation error (16x6x4 grid) = {max_rel:.4}");
+        (max_rel, worst_signed)
+    }
+
+    #[test]
+    fn interpolation_matches_direct_solve() {
+        let (c, t, s, a) = rig();
+        // Coarse grid (deliberately low resolution).
+        let env_coarse = Envelope::generate(&c, &t, &s, &a, small_spec()).unwrap();
+        let (coarse_rel, coarse_signed) = interp_error(&c, &t, &s, &a, &env_coarse);
+        eprintln!(
+            "max relative interpolation error (16x6x4 grid) = {coarse_rel:.4} \
+             (worst signed {coarse_signed:+.4})"
+        );
         assert!(
-            max_rel < 0.05,
-            "max relative interpolation error {max_rel} exceeds 5%"
+            coarse_rel < 0.05,
+            "max relative interpolation error {coarse_rel} exceeds 5%"
+        );
+
+        // Default grid (24x10x6) — the number quoted in the design doc.
+        let env_default = Envelope::generate(&c, &t, &s, &a, EnvelopeGridSpec::default()).unwrap();
+        let (def_rel, def_signed) = interp_error(&c, &t, &s, &a, &env_default);
+        eprintln!(
+            "max relative interpolation error (24x10x6 default grid) = {def_rel:.4} \
+             (worst signed {def_signed:+.4}, {})",
+            if def_signed > 0.0 {
+                "OVER-estimate"
+            } else {
+                "under-estimate"
+            }
+        );
+        assert!(
+            def_rel < 0.05,
+            "default-grid interpolation error {def_rel} exceeds 5%"
         );
     }
 
