@@ -14,6 +14,7 @@ pub mod mesh_refinement;
 pub mod nlp;
 pub mod overtaking;
 pub mod racing_quality;
+pub mod rank_stability;
 pub mod scaling;
 pub mod settings_hash;
 pub mod setup;
@@ -39,6 +40,7 @@ pub use mesh_refinement::{
 pub use nlp::{NlpEvaluator, NlpProblem};
 pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
 pub use racing_quality::{compute_racing_quality, RacingQuality};
+pub use rank_stability::{discordant_pairs, kendall_tau, ranking, spearman};
 pub use scaling::{ScaledEvaluator, Scaling};
 pub use settings_hash::{
     al_solver_settings_hash, cmaes_settings_hash, direct_solver_settings_hash,
@@ -47,6 +49,6 @@ pub use settings_hash::{
 pub use setup::{SetupParam, SetupSpace};
 pub use setup_eval::{
     evaluate_batch, evaluate_setup, export_setup_toml, optimize_setup, GenerationRecord,
-    SetupEvalConfig, SetupOptResult,
+    InnerObjective, SetupEvalConfig, SetupOptResult,
 };
 pub use solver::{solve_nlp, SolverConfig, SolverResult};

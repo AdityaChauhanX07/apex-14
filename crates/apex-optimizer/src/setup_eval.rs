@@ -4,11 +4,45 @@
 //! time as the fitness value (lower is better), and drives the [`CmaEs`]
 //! optimizer over the [`SetupSpace`] to search for a faster setup.
 
-use apex_physics::{export_car_toml, qss_lap_sim, CarParams};
+use std::path::PathBuf;
+
+use apex_physics::{
+    export_car_toml, qss_lap_sim, AeroModel, CarParams, Envelope, EnvelopeGridSpec, PacejkaTire,
+    SuspensionSystem,
+};
 use apex_track::Track;
 
 use crate::cmaes::{CmaEs, CmaEsConfig};
+use crate::envelope_ocp::{EnvelopeOcp, EnvelopeOcpConfig};
+use crate::ipm::IpmConfig;
 use crate::setup::SetupSpace;
+
+/// Which lap-time model scores a setup candidate.
+///
+/// The default [`InnerObjective::Qss`] preserves the historical behavior. The
+/// opt-in [`InnerObjective::Envelope`] uses the load-sensitive envelope
+/// free-trajectory OCP; its absolute lap time is *not* mesh-converged, but at a
+/// fixed `N` the ranking of setups is stable (the rank-stability gate,
+/// `docs/design/envelope-qss/setup-envelope.md`), which is all CMA-ES needs.
+#[derive(Debug, Clone)]
+pub enum InnerObjective {
+    /// Fixed-line quasi-steady-state lap (the friction-circle model). Fast; the
+    /// default so no existing behavior changes.
+    Qss,
+    /// Envelope free-trajectory OCP at a **fixed** mesh (`nodes`), solved with
+    /// the shared real-circuit IP config. Load-sensitive (responds to CoG height
+    /// and weight distribution, which the point-mass QSS ignores) but blind to
+    /// `lift_coeff`/`aero_balance` (the envelope's downforce comes from the
+    /// `AeroModel`, not the `CarParams` aero fields — see setup-envelope.md).
+    Envelope {
+        /// OCP node count, held fixed across the whole search (ranking is only
+        /// mesh-stable *at fixed `N`*; a per-candidate `N` would reshuffle).
+        nodes: usize,
+        /// Optional content-hash cache directory for generated envelopes. `None`
+        /// regenerates every time (no disk side effects — used by tests).
+        cache_dir: Option<PathBuf>,
+    },
+}
 
 /// Configuration for setup evaluation.
 pub struct SetupEvalConfig {
@@ -18,32 +52,109 @@ pub struct SetupEvalConfig {
     pub base_car: CarParams,
     /// Setup parameter space definition.
     pub space: SetupSpace,
+    /// Which lap-time model scores each candidate (default [`InnerObjective::Qss`]).
+    pub inner: InnerObjective,
 }
 
 impl SetupEvalConfig {
     /// Create an evaluation config for a given track and base car, using the
-    /// standard F1 setup space.
+    /// standard F1 setup space and the fixed-line QSS objective.
     pub fn new(track: Track, base_car: CarParams) -> Self {
         Self {
             track,
             base_car,
             space: SetupSpace::f1_standard(),
+            inner: InnerObjective::Qss,
+        }
+    }
+
+    /// Set the inner objective (builder style).
+    pub fn with_inner(mut self, inner: InnerObjective) -> Self {
+        self.inner = inner;
+        self
+    }
+}
+
+/// Penalty returned for a setup whose envelope OCP does not reach tight
+/// feasibility (or whose envelope cannot be generated). Chosen far above any
+/// physical lap time so a non-converged candidate always ranks below every
+/// feasible one; the constraint residual is added so that, among non-converged
+/// candidates, the less-infeasible ones rank better (a mild gradient back toward
+/// feasibility).
+const ENVELOPE_REJECT_PENALTY: f64 = 1.0e4;
+
+/// Feasibility tolerance for the envelope inner loop (SI). Matches the CLI /
+/// gate: `eq` and `ineq` violations must both be `<= 5e-3`.
+const ENVELOPE_TIGHT_TOL: f64 = 5.0e-3;
+
+/// Evaluate a single parameter vector under the configured inner objective.
+///
+/// Returns the lap time in seconds (lower is better). QSS returns
+/// [`f64::INFINITY`] for a non-finite lap; the envelope path returns a large
+/// finite penalty (never the un-converged lap, which is optimistically biased by
+/// coarse-mesh over-cutting and would mislead the search toward infeasible
+/// setups — see [`ENVELOPE_REJECT_PENALTY`]).
+pub fn evaluate_setup(params: &[f64], config: &SetupEvalConfig) -> f64 {
+    let car = config.space.apply(&config.base_car, params);
+    match &config.inner {
+        InnerObjective::Qss => {
+            let t = qss_lap_sim(&config.track, &car).lap_time;
+            if t.is_finite() && t > 0.0 {
+                t
+            } else {
+                f64::INFINITY
+            }
+        }
+        InnerObjective::Envelope { nodes, cache_dir } => {
+            evaluate_setup_envelope(&car, &config.track, *nodes, cache_dir.as_deref())
         }
     }
 }
 
-/// Evaluate a single parameter vector.
-///
-/// Returns the lap time in seconds (lower is better), or [`f64::INFINITY`] if
-/// the simulation produces a non-finite or non-positive lap time.
-pub fn evaluate_setup(params: &[f64], config: &SetupEvalConfig) -> f64 {
-    let car = config.space.apply(&config.base_car, params);
-    let result = qss_lap_sim(&config.track, &car);
-    let t = result.lap_time;
-    if t.is_finite() && t > 0.0 {
-        t
+/// Envelope free-trajectory OCP objective for one setup. Regenerates the g-g-g
+/// envelope for the (setup-modified) car — its content hash changes with the
+/// setup, so a fresh envelope is mandatory — then solves the OCP at the fixed
+/// mesh and returns the lap time, or [`ENVELOPE_REJECT_PENALTY`] if it does not
+/// reach tight feasibility.
+fn evaluate_setup_envelope(
+    car: &CarParams,
+    track: &Track,
+    nodes: usize,
+    cache_dir: Option<&std::path::Path>,
+) -> f64 {
+    let spec = EnvelopeGridSpec {
+        v_min: 5.0,
+        v_max: 90.0,
+        ..EnvelopeGridSpec::default()
+    };
+    let tire = PacejkaTire::f1_default();
+    let susp = SuspensionSystem::f1_default();
+    let aero = AeroModel::f1_default();
+    let env = match cache_dir {
+        Some(dir) => Envelope::generate_cached(car, &tire, &susp, &aero, spec, dir).map(|(e, _)| e),
+        None => Envelope::generate(car, &tire, &susp, &aero, spec),
+    };
+    let env = match env {
+        Ok(e) => e,
+        Err(_) => return ENVELOPE_REJECT_PENALTY,
+    };
+
+    let cfg = EnvelopeOcpConfig {
+        n_nodes: nodes,
+        ..EnvelopeOcpConfig::default()
+    };
+    let ip = IpmConfig {
+        max_iterations: 1500,
+        constraint_tol: ENVELOPE_TIGHT_TOL,
+        ..EnvelopeOcp::recommended_ip_config()
+    };
+    let r = EnvelopeOcp::new(cfg, track, car, &env).solve(&ip);
+
+    let tight = r.eq_violation <= ENVELOPE_TIGHT_TOL && r.ineq_violation <= ENVELOPE_TIGHT_TOL;
+    if tight && r.lap_time.is_finite() && r.lap_time > 0.0 {
+        r.lap_time
     } else {
-        f64::INFINITY
+        ENVELOPE_REJECT_PENALTY + r.eq_violation + r.ineq_violation
     }
 }
 
@@ -203,7 +314,7 @@ pub fn export_setup_toml(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use apex_track::{build_track, oval_track};
+    use apex_track::{build_track, oval_track, silverstone_circuit};
 
     /// Build a closed oval track with long straights (so drag matters).
     fn oval() -> Track {
@@ -295,6 +406,134 @@ mod tests {
         assert_eq!(fitnesses.len(), 5);
         for f in fitnesses {
             assert!(f.is_finite(), "batch fitness should be finite");
+        }
+    }
+
+    // --- envelope inner-loop integration (docs/design/envelope-qss/setup-envelope.md) ---
+
+    /// The synthetic Silverstone circuit + calibrated car: the fast, reliable
+    /// case the envelope OCP reaches tight feasibility on at a coarse mesh
+    /// (mirrors `envelope_ocp::silverstone_tuned_reaches_tight`). Needs no
+    /// gitignored real-track data.
+    fn syn_silverstone() -> Track {
+        let (pts, closed) = silverstone_circuit();
+        build_track("silverstone", &pts, closed)
+    }
+
+    /// Params that reproduce the calibrated car's own tuned fields (so `apply`
+    /// is ~identity and the car stays the known-converging calibrated one).
+    fn calibrated_params() -> (CarParams, Vec<f64>) {
+        let car = CarParams::f1_2024_calibrated();
+        let params = SetupSpace::f1_standard().extract(&car);
+        (car, params)
+    }
+
+    #[test]
+    fn envelope_inner_evaluates_finite_and_below_penalty() {
+        let (car, params) = calibrated_params();
+        let cfg =
+            SetupEvalConfig::new(syn_silverstone(), car).with_inner(InnerObjective::Envelope {
+                nodes: 24,
+                cache_dir: None,
+            });
+        let t = evaluate_setup(&params, &cfg);
+        assert!(
+            t.is_finite() && t > 0.0,
+            "envelope lap should be finite: {t}"
+        );
+        assert!(
+            t < ENVELOPE_REJECT_PENALTY,
+            "calibrated Silverstone should converge tight (got {t})"
+        );
+        assert!((50.0..120.0).contains(&t), "envelope lap {t}s out of range");
+    }
+
+    #[test]
+    fn envelope_objective_is_load_sensitive_where_qss_is_blind() {
+        // The payoff: CoG height (index 4) moves the envelope lap but NOT the
+        // point-mass QSS lap — the reason envelope- and QSS-optimized setups
+        // differ. Both CoG values must still converge (below the penalty).
+        let (car, base) = calibrated_params();
+        let space = SetupSpace::f1_standard();
+        let qss_cfg = SetupEvalConfig::new(syn_silverstone(), car.clone());
+        let env_cfg =
+            SetupEvalConfig::new(syn_silverstone(), car).with_inner(InnerObjective::Envelope {
+                nodes: 24,
+                cache_dir: None,
+            });
+
+        let mut lo = base.clone();
+        let mut hi = base.clone();
+        lo[4] = space.params()[4].min; // cog_height low (0.25)
+        hi[4] = space.params()[4].max; // cog_height high (0.35)
+
+        let (q_lo, q_hi) = (evaluate_setup(&lo, &qss_cfg), evaluate_setup(&hi, &qss_cfg));
+        let (e_lo, e_hi) = (evaluate_setup(&lo, &env_cfg), evaluate_setup(&hi, &env_cfg));
+
+        assert!(
+            (q_lo - q_hi).abs() < 1e-6,
+            "point-mass QSS is blind to CoG height: {q_lo} vs {q_hi}"
+        );
+        assert!(
+            e_lo < ENVELOPE_REJECT_PENALTY && e_hi < ENVELOPE_REJECT_PENALTY,
+            "both CoG values should converge: {e_lo}, {e_hi}"
+        );
+        assert!(
+            (e_lo - e_hi).abs() > 1e-3,
+            "envelope should respond to CoG height: {e_lo} vs {e_hi}"
+        );
+    }
+
+    #[test]
+    fn envelope_penalizes_nonconverging_setup() {
+        // The Simple Oval sample has sharp low-speed hairpins the coarse envelope
+        // OCP cannot make feasible (docs/analysis.md), so the calibrated car
+        // never reaches tight feasibility -> the reject penalty, NOT a (low,
+        // over-cut) un-converged lap that would mislead the search.
+        let track =
+            apex_track::load_track_json(std::path::Path::new("../../tracks/oval_simple.json"))
+                .expect("load tracks/oval_simple.json");
+        let cfg = SetupEvalConfig::new(track, CarParams::f1_2024_calibrated()).with_inner(
+            InnerObjective::Envelope {
+                nodes: 24,
+                cache_dir: None,
+            },
+        );
+        let t = evaluate_setup(&cfg.space.baseline_vec(), &cfg);
+        assert!(
+            t >= ENVELOPE_REJECT_PENALTY,
+            "non-converging setup must be penalized, got {t}"
+        );
+    }
+
+    #[test]
+    fn envelope_inner_optimize_is_deterministic() {
+        // Seeded CMA-ES + deterministic envelope inner loop -> bitwise-identical
+        // argmin across two independent runs.
+        let cmaes_config = CmaEsConfig {
+            population_size: Some(3),
+            max_generations: 1,
+            seed: 7,
+            ..Default::default()
+        };
+        let run = || {
+            let cfg = SetupEvalConfig::new(syn_silverstone(), CarParams::f1_2024_calibrated())
+                .with_inner(InnerObjective::Envelope {
+                    nodes: 24,
+                    cache_dir: None,
+                });
+            optimize_setup(&cfg, cmaes_config.clone())
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(
+            a.best_time.to_bits(),
+            b.best_time.to_bits(),
+            "best_time differs"
+        );
+        assert_eq!(a.best_params.len(), b.best_params.len());
+        for (i, (x, y)) in a.best_params.iter().zip(&b.best_params).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "best_params[{i}] differs");
         }
     }
 }

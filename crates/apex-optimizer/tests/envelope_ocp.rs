@@ -1,11 +1,10 @@
 //! Validation for the envelope free-trajectory OCP (`apex_optimizer::envelope_ocp`).
 //!
-//! These assert *objective values*, not just feasibility:
-//! - the analytic circle lap time against the closed form,
-//! - monotone improvement over the fixed-line QSS on every track,
-//! - corner-cutting (the line reaches the track edge on an oval),
-//! - a Silverstone cross-check,
-//! plus solver determinism and IP-log sanity.
+//! These assert *objective values*, not just feasibility: the analytic circle
+//! lap time against the closed form, monotone improvement over the fixed-line
+//! QSS on every track, corner-cutting (the line reaches the track edge on an
+//! oval), and a Silverstone cross-check — plus solver determinism and IP-log
+//! sanity.
 //!
 //! All solves use a point-mass-like car (aero/drag/load-sensitivity off) so the
 //! circle has a closed-form optimum. The OCP is opt-in (`--solver ip`); the
@@ -20,12 +19,14 @@ use apex_physics::{
 use apex_track::{build_track, circle_track, oval_track, silverstone_circuit, Track};
 
 fn point_mass_car() -> (CarParams, PacejkaTire, SuspensionSystem, AeroModel) {
-    let mut car = CarParams::default();
-    car.lift_coeff = 0.0;
-    car.drag_coeff = 0.0;
-    car.cog_height = 0.05;
-    car.max_drive_force = 1e7;
-    car.max_brake_force = 1e7;
+    let car = CarParams {
+        lift_coeff: 0.0,
+        drag_coeff: 0.0,
+        cog_height: 0.05,
+        max_drive_force: 1e7,
+        max_brake_force: 1e7,
+        ..CarParams::default()
+    };
     let mut tire = PacejkaTire::f1_default();
     tire.load_sensitivity = 0.0;
     let mut aero = AeroModel::f1_default();

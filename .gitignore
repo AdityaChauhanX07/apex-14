@@ -85,3 +85,7 @@ __pycache__/
 *.safetensors
 *.safetensors.meta.json
 training_data.json
+
+# Envelope g-g-g content-hash cache (runtime artifact from `optimize --envelope`
+# and `setup-optimize --inner envelope`); regenerated on demand, never committed.
+/.apex-cache/

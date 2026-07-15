@@ -401,6 +401,18 @@ enum Commands {
         #[arg(long)]
         calibrated: bool,
 
+        /// Inner lap-time model that scores each candidate: `qss` (default,
+        /// fixed-line friction circle) or `envelope` (load-sensitive envelope
+        /// free-trajectory OCP; slower, and rank-stable but not mesh-converged —
+        /// see docs/design/envelope-qss/setup-envelope.md).
+        #[arg(long, default_value = "qss")]
+        inner: String,
+
+        /// Envelope-OCP node count (only used with `--inner envelope`). Held
+        /// fixed across the search; ranking is mesh-stable only at fixed N.
+        #[arg(long, default_value_t = 32)]
+        nodes: usize,
+
         /// Random seed for CMA-ES reproducibility. Defaults to 42 when omitted.
         #[arg(long)]
         seed: Option<u64>,
@@ -658,9 +670,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             generations,
             sigma,
             calibrated,
+            inner,
+            nodes,
             seed,
             output,
-        } => cmd_setup_optimize(track, generations, sigma, calibrated, seed, output),
+        } => cmd_setup_optimize(
+            track,
+            generations,
+            sigma,
+            calibrated,
+            inner,
+            nodes,
+            seed,
+            output,
+        ),
         Commands::RaceSim {
             track,
             laps,
@@ -3013,11 +3036,14 @@ fn cmd_race_sim(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_setup_optimize(
     track: String,
     generations: usize,
     sigma: f64,
     calibrated: bool,
+    inner: String,
+    nodes: usize,
     seed: Option<u64>,
     output: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -3027,6 +3053,18 @@ fn cmd_setup_optimize(
         apex_physics::CarParams::f1_2024_calibrated()
     } else {
         apex_physics::CarParams::default()
+    };
+
+    // Resolve the inner objective.
+    let inner_obj = match inner.as_str() {
+        "qss" => apex_optimizer::InnerObjective::Qss,
+        "envelope" => apex_optimizer::InnerObjective::Envelope {
+            nodes,
+            cache_dir: Some(std::path::PathBuf::from(".apex-cache/envelope")),
+        },
+        other => {
+            return Err(format!("unknown --inner '{other}' (expected 'qss' or 'envelope')").into())
+        }
     };
 
     println!(
@@ -3041,10 +3079,17 @@ fn cmd_setup_optimize(
             "default"
         }
     );
+    match &inner_obj {
+        apex_optimizer::InnerObjective::Qss => println!("Inner objective: fixed-line QSS"),
+        apex_optimizer::InnerObjective::Envelope { nodes, .. } => println!(
+            "Inner objective: envelope free-trajectory OCP (N={nodes}) \
+             [load-sensitive; rank-stable, not mesh-converged]"
+        ),
+    }
     println!("CMA-ES: {} generations, sigma {:.2}", generations, sigma);
 
     let track_name = track_data.name.clone();
-    let config = apex_optimizer::SetupEvalConfig::new(track_data, base_car);
+    let config = apex_optimizer::SetupEvalConfig::new(track_data, base_car).with_inner(inner_obj);
     let cmaes_config = apex_optimizer::CmaEsConfig {
         max_generations: generations,
         initial_sigma: sigma,
