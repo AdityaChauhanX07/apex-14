@@ -84,6 +84,23 @@ The naive swap's aggregate numbers (envelope sim lap 123.6 s, overall RMSE 11.3 
 descent RMSE +90 %) are therefore reported here **only as evidence of the calibration
 mismatch**, not as a physics result. They are not a fair envelope-vs-friction comparison.
 
+> **Update (aero-bridge task, 2026): obstacle #2 is fixed; the verdict is
+> unchanged.** [`AeroModel::scaled_for_car`] now bridges the fitted
+> `car.lift_coeff`/`drag_coeff`/`aero_balance` into the envelope's ride-height
+> `AeroModel` (`docs/design/envelope-qss/setup-envelope.md`), so the envelope no
+> longer runs at the *default* aero — the ~35 m/s high-speed under-grip artifact
+> that swamped the effect under test is removed at its source. **Spa is
+> deliberately not re-run here.** The decisive result above — the descent is *not
+> grip-limited* (median grip utilisation 0.45, only 8 % of stations near the
+> limit) — is **calibration-free**: it is inferred from measured speed, independent
+> of any envelope aero, so a bridged envelope cannot change it. The remaining
+> obstacle #1 (per-iteration envelope regeneration for a full LM re-identification)
+> also stands. So the escalation criterion is still **not met**, `power_scale` is
+> still expected ~0.80, and the residual remains isolated to longitudinal /
+> transient / driver effects for the deferred dynamic OCP. The fix strengthens the
+> honesty of the *diagnostic* (a future envelope re-identification would no longer
+> be corrupted by the aero mismatch) without altering this page's conclusion.
+
 ## Conclusion
 
 - **Escalation criterion (build the full re-identification only if the envelope materially

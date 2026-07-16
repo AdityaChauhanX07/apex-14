@@ -3,6 +3,18 @@
 //! F1 ground-effect downforce depends strongly on ride height: too high and the
 //! floor loses ground effect, too low and it stalls. This module captures that
 //! with separate front/rear downforce maps plus pitch-sensitive drag.
+//!
+//! # CarParams → AeroModel bridge
+//!
+//! The point-mass QSS and the setup space carry aero as three scalars on
+//! [`CarParams`] (`lift_coeff`, `drag_coeff`, `aero_balance_front`), whereas this
+//! ride-height model carries per-axle coefficients. Envelope generation consumes
+//! *this* model, so a `CarParams`-only aero change (e.g. the setup optimizer's
+//! `lift_coeff` lever) was previously invisible to the envelope — the
+//! "aero-blindness" documented in
+//! `docs/design/envelope-qss/setup-envelope.md`. [`AeroModel::scaled_for_car`]
+//! bridges them by multiplicatively scaling this model's coefficients to match a
+//! car's `CarParams` aero, so the envelope sees the setup's downforce/drag/balance.
 
 /// Aerodynamic model with ride-height-sensitive downforce.
 ///
@@ -50,6 +62,89 @@ impl AeroModel {
             stall_ride_height: 0.010,  // 10mm — floor stalls below this
             high_ride_height: 0.060,   // 60mm — ground effect fading
             drag_pitch_sensitivity: 0.5,
+        }
+    }
+
+    /// Bridge a car's [`CarParams`] aero (`lift_coeff`, `drag_coeff`,
+    /// `aero_balance_front`) into this ride-height model by multiplicatively
+    /// scaling its coefficients, returning a new [`AeroModel`]. This is what lets
+    /// envelope generation see a `CarParams`-only aero change (the setup
+    /// optimizer's `lift_coeff` lever, fitted-car downforce, …) instead of always
+    /// running the fixed `f1_default` aero — the aero-blindness fix
+    /// (`docs/design/envelope-qss/setup-envelope.md`).
+    ///
+    /// **Reference condition — the design ride height.** This model's
+    /// coefficients are nominal at `design_ride_height`, where
+    /// `ride_height_factor == 1.0`; that is the natural, documented reference
+    /// (it is where `cl_*_base` and `cd_base` are literally defined). The
+    /// reference effective coefficients are therefore
+    /// - `ref_lift  = cl_front_base + cl_rear_base` (total downforce coeff),
+    /// - `ref_balance = cl_front_base / ref_lift`   (front fraction),
+    /// - `ref_drag  = cd_base`.
+    ///
+    /// The bridge scales this model to the car:
+    /// - total downforce coeff → `car.lift_coeff` via `lift_scale = lift/ref_lift`,
+    /// - drag coeff → `car.drag_coeff` via `drag_scale = drag/ref_drag`,
+    /// - front/rear split → `car.aero_balance_front` via per-axle ratios
+    ///   `bf = aero_balance/ref_balance`, `br = (1−aero_balance)/(1−ref_balance)`
+    ///   (which preserve the scaled total and are identity when the balance
+    ///   matches the reference).
+    ///
+    /// **Exact identity for the reference car.** A car whose aero equals the
+    /// reference yields all three scales *exactly* `1.0`, so every coefficient is
+    /// `x * 1.0 == x` (IEEE-754 exact) and the returned model is **bit-identical**
+    /// to `self`. `CarParams::default` (`lift 3.5, drag 0.9, balance 0.45`) is
+    /// exactly this reference for `AeroModel::f1_default` (`1.575 + 1.925 = 3.5`,
+    /// `0.9`, `1.575/3.5 == 0.45` bit-for-bit), so the default car's envelope is
+    /// unchanged. **Note:** `f1_2024_calibrated` (`lift 2.80, drag 1.10, balance
+    /// 0.44`) does *not* match the reference, so its bridged envelope legitimately
+    /// changes — see the doc's byte-stability finding.
+    ///
+    /// `frontal_area` / `air_density` are **not** bridged: downforce is
+    /// `q·area·cl`, and every config here shares `area = 1.5, ρ = 1.225`, so
+    /// matching the coefficients matches the force. (If a car ever diverged in
+    /// area/density, that ratio would need folding in — recorded, not handled.)
+    ///
+    /// Degenerate references (a zeroed-downforce test aero, `ref_lift == 0`, or
+    /// `ref_drag == 0`) are guarded: the corresponding scale is `1.0` (no
+    /// meaningful ratio), so such models pass through unchanged.
+    pub fn scaled_for_car(&self, car: &crate::car_params::CarParams) -> AeroModel {
+        let ref_lift = self.cl_front_base + self.cl_rear_base;
+        let ref_drag = self.cd_base;
+
+        let lift_scale = if ref_lift != 0.0 {
+            car.lift_coeff / ref_lift
+        } else {
+            1.0
+        };
+        let drag_scale = if ref_drag != 0.0 {
+            car.drag_coeff / ref_drag
+        } else {
+            1.0
+        };
+
+        // Front/rear redistribution to hit `car.aero_balance_front` while
+        // preserving the scaled total. Ratios are exactly 1.0 when the car's
+        // balance equals the reference front fraction.
+        let ref_balance = if ref_lift != 0.0 {
+            self.cl_front_base / ref_lift
+        } else {
+            0.5
+        };
+        let (bf_ratio, br_ratio) = if ref_balance > 0.0 && ref_balance < 1.0 {
+            (
+                car.aero_balance_front / ref_balance,
+                (1.0 - car.aero_balance_front) / (1.0 - ref_balance),
+            )
+        } else {
+            (1.0, 1.0)
+        };
+
+        AeroModel {
+            cd_base: self.cd_base * drag_scale,
+            cl_front_base: self.cl_front_base * lift_scale * bf_ratio,
+            cl_rear_base: self.cl_rear_base * lift_scale * br_ratio,
+            ..*self
         }
     }
 
@@ -354,6 +449,123 @@ mod tests {
             f.downforce_total,
             cp
         );
+    }
+
+    // --- CarParams -> AeroModel bridge (docs/design/envelope-qss/setup-envelope.md) ---
+
+    fn bits9(a: &AeroModel) -> [u64; 9] {
+        [
+            a.cd_base.to_bits(),
+            a.frontal_area.to_bits(),
+            a.air_density.to_bits(),
+            a.cl_front_base.to_bits(),
+            a.cl_rear_base.to_bits(),
+            a.design_ride_height.to_bits(),
+            a.stall_ride_height.to_bits(),
+            a.high_ride_height.to_bits(),
+            a.drag_pitch_sensitivity.to_bits(),
+        ]
+    }
+
+    #[test]
+    fn bridge_default_car_is_bit_identical() {
+        // CarParams::default aero (3.5 / 0.9 / 0.45) IS the f1_default reference,
+        // so the bridge must be exact identity -> unchanged envelope bytes.
+        let base = AeroModel::f1_default();
+        let bridged = base.scaled_for_car(&CarParams::default());
+        assert_eq!(
+            bits9(&base),
+            bits9(&bridged),
+            "default car must bridge to a bit-identical AeroModel"
+        );
+    }
+
+    #[test]
+    fn bridge_calibrated_car_changes_coefficients() {
+        // f1_2024_calibrated aero (2.80 / 1.10 / 0.44) does NOT match the
+        // reference, so the bridge legitimately changes the model (the byte-
+        // stability anchor is the default car, not the calibrated one).
+        let base = AeroModel::f1_default();
+        let car = CarParams::f1_2024_calibrated();
+        let bridged = base.scaled_for_car(&car);
+        // total downforce coeff now == car.lift_coeff (2.80 < 3.5): less grip.
+        let total = bridged.cl_front_base + bridged.cl_rear_base;
+        assert!((total - car.lift_coeff).abs() < 1e-12, "total cl {total}");
+        assert!((bridged.cd_base - car.drag_coeff).abs() < 1e-12);
+        assert!(bits9(&base) != bits9(&bridged), "calibrated should differ");
+    }
+
+    #[test]
+    fn bridge_lift_scales_total_downforce_monotone() {
+        let base = AeroModel::f1_default();
+        let mut prev = 0.0;
+        for scale in [0.6_f64, 0.8, 1.0, 1.2, 1.4] {
+            let car = CarParams {
+                lift_coeff: 3.5 * scale,
+                ..CarParams::default()
+            };
+            let a = base.scaled_for_car(&car);
+            let df = a.compute(80.0, 0.030, 0.030, 0.0).downforce_total;
+            // downforce at the design ride height scales linearly with lift.
+            let expect = base.compute(80.0, 0.030, 0.030, 0.0).downforce_total * scale;
+            assert!((df - expect).abs() / expect < 1e-12, "scale {scale}: {df}");
+            assert!(df > prev, "monotone increasing in lift scale");
+            prev = df;
+        }
+    }
+
+    #[test]
+    fn bridge_drag_scales_drag() {
+        let base = AeroModel::f1_default();
+        let car = CarParams {
+            drag_coeff: 0.9 * 1.25,
+            ..CarParams::default()
+        };
+        let a = base.scaled_for_car(&car);
+        let d0 = base.compute(80.0, 0.030, 0.030, 0.0).drag;
+        let d1 = a.compute(80.0, 0.030, 0.030, 0.0).drag;
+        assert!((d1 / d0 - 1.25).abs() < 1e-12, "drag ratio {}", d1 / d0);
+    }
+
+    #[test]
+    fn bridge_balance_shifts_split_preserving_total() {
+        // Shifting aero_balance_front forward moves downforce front->rear split
+        // while keeping the total at car.lift_coeff.
+        let base = AeroModel::f1_default();
+        // lift 3.5; more front than the 0.45 reference.
+        let car = CarParams {
+            aero_balance_front: 0.50,
+            ..CarParams::default()
+        };
+        let a = base.scaled_for_car(&car);
+        let f = a.compute(80.0, 0.030, 0.030, 0.0);
+        let total = f.downforce_front + f.downforce_rear;
+        let base_total = base.compute(80.0, 0.030, 0.030, 0.0).downforce_total;
+        assert!(
+            (total - base_total).abs() / base_total < 1e-12,
+            "total preserved"
+        );
+        // front fraction of downforce == car.aero_balance_front.
+        assert!(
+            (f.downforce_front / total - 0.50).abs() < 1e-12,
+            "front frac {}",
+            f.downforce_front / total
+        );
+    }
+
+    #[test]
+    fn bridge_zero_reference_passes_through() {
+        // A zeroed-downforce test aero (ref_lift == 0, the envelope_ocp
+        // point_mass_car helper) must not divide by zero; it passes through.
+        let mut base = AeroModel::f1_default();
+        base.cl_front_base = 0.0;
+        base.cl_rear_base = 0.0;
+        let car = CarParams {
+            lift_coeff: 0.0,
+            ..CarParams::default()
+        };
+        let a = base.scaled_for_car(&car);
+        assert_eq!(bits9(&base), bits9(&a), "zero-ref aero unchanged");
     }
 
     #[test]

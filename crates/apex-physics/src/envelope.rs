@@ -882,6 +882,84 @@ mod tests {
         assert_ne!(base, envelope_key(&c, &t, &s, &a2, &small_spec()));
     }
 
+    // --- CarParams -> AeroModel bridge (setup-envelope.md aero-blindness fix) ---
+
+    #[test]
+    fn bridge_default_car_envelope_is_byte_identical() {
+        // The default car's aero == the f1_default reference, so generating the
+        // envelope with f1_default directly vs via the bridge must be identical —
+        // same key (cache hits), same bytes (no committed envelope moves).
+        let (c, t, s, a) = rig();
+        let bridged = a.scaled_for_car(&c);
+        assert_eq!(
+            envelope_key(&c, &t, &s, &a, &small_spec()),
+            envelope_key(&c, &t, &s, &bridged, &small_spec()),
+            "default-car bridge must preserve the envelope key"
+        );
+        let e_direct = Envelope::generate(&c, &t, &s, &a, small_spec()).unwrap();
+        let e_bridge = Envelope::generate(&c, &t, &s, &bridged, small_spec()).unwrap();
+        assert_eq!(
+            e_direct.to_bytes(),
+            e_bridge.to_bytes(),
+            "default-car envelope bytes must be identical through the bridge"
+        );
+    }
+
+    #[test]
+    fn bridge_calibrated_car_changes_envelope_key() {
+        // Finding: f1_2024_calibrated aero (2.80/1.10/0.44) != the reference, so
+        // its bridged envelope legitimately differs. The byte-stability anchor is
+        // the default car, not the calibrated one (see setup-envelope.md).
+        let (_, t, s, a) = rig();
+        let car = CarParams::f1_2024_calibrated();
+        let bridged = a.scaled_for_car(&car);
+        assert_ne!(
+            envelope_key(&car, &t, &s, &a, &small_spec()),
+            envelope_key(&car, &t, &s, &bridged, &small_spec()),
+            "calibrated-car bridge should change the envelope"
+        );
+    }
+
+    #[test]
+    fn bridge_more_downforce_grows_cornering_rho() {
+        // More downforce (lift scaled up through the bridge) must raise the grip
+        // envelope in pure cornering at high speed, monotonically — the whole
+        // point of the fix. Spot-checked directly via boundary_radius
+        // (-> solve_operating_point), not just the interpolated rho.
+        let (base_car, t, s, a) = rig();
+        let theta = std::f64::consts::FRAC_PI_2; // pure lateral (cornering)
+        let (v, gz) = (75.0, 10.5);
+        let spec = small_spec();
+
+        let mut prev = 0.0;
+        for scale in [0.8_f64, 1.0, 1.2, 1.4] {
+            let mut car = base_car.clone();
+            car.lift_coeff = 3.5 * scale;
+            let aero = a.scaled_for_car(&car);
+            let env = Envelope::generate(&car, &t, &s, &aero, spec).unwrap();
+            let rho = env.rho(theta, v, gz);
+            assert!(
+                rho > prev,
+                "cornering rho must grow with downforce (scale {scale}: {rho} <= {prev})"
+            );
+            prev = rho;
+        }
+
+        // Direct feasibility-boundary spot-check (no interpolation).
+        let mut lo = base_car.clone();
+        lo.lift_coeff = 3.5 * 0.8;
+        let mut hi = base_car.clone();
+        hi.lift_coeff = 3.5 * 1.4;
+        let r_lo =
+            boundary_radius(&lo, &t, &s, &a.scaled_for_car(&lo), theta, v, gz, &spec).unwrap();
+        let r_hi =
+            boundary_radius(&hi, &t, &s, &a.scaled_for_car(&hi), theta, v, gz, &spec).unwrap();
+        assert!(
+            r_hi > r_lo,
+            "boundary radius must grow with downforce: {r_hi} vs {r_lo}"
+        );
+    }
+
     #[test]
     fn rho_grad_matches_finite_difference() {
         let (c, t, s, a) = rig();

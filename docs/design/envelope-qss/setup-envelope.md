@@ -73,21 +73,22 @@ Two structural facts fall out, both load-bearing for the integration:
    physics payoff: the envelope is load-sensitive where the friction circle is
    blind.
 
-2. **Aero-blindness (a real limitation).** `lift_coeff` is QSS's single biggest
-   lever (14.4 s) but the envelope barely responds (0.4 s). The reason is
-   architectural: the point-mass QSS computes downforce from
-   `CarParams::downforce(v)` (i.e. `lift_coeff`), whereas the envelope's downforce
-   comes from the **independent `AeroModel`** (`aero.compute(...)`), which the
-   sweep holds at `AeroModel::f1_default`. So `lift_coeff` and `aero_balance_front`
-   (also an `AeroModel`-side quantity) **do not reach the envelope at all** — only
-   `drag_coeff` (through the OCP *dynamics*, not the grip) and the mechanical
-   load parameters do. Bridging `CarParams` aero → `AeroModel` is deferred (it is
-   a physics-modelling decision, not a wiring change).
+2. **Aero-blindness — RESOLVED (2026, aero-bridge task; see §"Aero bridge"
+   below).** As originally integrated, `lift_coeff` was QSS's single biggest
+   lever (14.4 s) but the envelope barely responded (0.4 s), because the
+   point-mass QSS computes downforce from `CarParams::downforce(v)` while the
+   envelope's downforce came from the **independent `AeroModel`** held at
+   `f1_default`. The [`AeroModel::scaled_for_car`] bridge now scales the
+   `AeroModel` to the car's `CarParams` aero, so `lift_coeff` (0.4 → **6.2 s**)
+   and `aero_balance_front` (0.0 → **0.35 s**) reach the envelope. The pre-bridge
+   table above is kept as the "before"; the post-bridge table is in the aero-
+   bridge section.
 
-Net: of the seven setup knobs, the envelope objective responds to **three**
-(drag, CoG height, weight distribution), the QSS objective to **two** (drag,
-lift), with only **drag shared**. Three knobs (aero balance, brake bias, tyre
-stiffness) move neither model on this track.
+Net (**pre-bridge**): the envelope objective responded to three knobs (drag, CoG
+height, weight distribution), QSS to two (drag, lift), only drag shared. **Post-
+bridge** the envelope also responds to lift and aero balance, so envelope and QSS
+now share the two big aero levers (drag, lift) while the envelope keeps its
+exclusive load-sensitive levers (CoG, weight).
 
 ## Part 2 — integration
 
@@ -149,18 +150,98 @@ inner loop is ~1 ms/candidate, so the envelope inner loop is ~1000× costlier �
 price of the load-sensitive model. The content-hash cache only helps across exact
 setup repeats, which CMA-ES rarely produces; the cost is intrinsic.
 
+## Aero bridge — resolving the aero-blindness (2026, aero-bridge task)
+
+[`AeroModel::scaled_for_car`] (crate `apex-physics`, `aero.rs`) multiplicatively
+scales the ride-height `AeroModel` so its **effective coefficients match a car's
+`CarParams` aero** (`lift_coeff`, `drag_coeff`, `aero_balance_front`). Envelope
+generation now consumes the bridged model at its two committed consumers — the
+setup inner loop (`evaluate_setup_envelope`) and the CLI `optimize --envelope`
+path — so a `CarParams`-only aero change reaches the envelope.
+
+**Reference condition — the design ride height.** The `AeroModel`'s coefficients
+are nominal at `design_ride_height` (where `ride_height_factor == 1.0`); that is
+where `cl_front_base`, `cl_rear_base`, `cd_base` are literally defined, so it is
+the natural reference. There: `ref_lift = cl_front_base + cl_rear_base`,
+`ref_balance = cl_front_base/ref_lift`, `ref_drag = cd_base`. The bridge sets
+`lift_scale = car.lift_coeff/ref_lift`, `drag_scale = car.drag_coeff/ref_drag`,
+and per-axle balance ratios `bf = aero_balance/ref_balance`,
+`br = (1−aero_balance)/(1−ref_balance)` (identity when the balance matches).
+`frontal_area`/`air_density` are not bridged — every config here shares
+`area = 1.5, ρ = 1.225`, so matching the coefficients matches the force
+`q·area·cl` (recorded; fold in the ratio if a car ever diverges).
+
+**Byte-stability — the anchor is the DEFAULT car, not the calibrated car (a
+finding).** The task expected the *calibrated* car to bridge to scales exactly
+1.0. It does **not**: `f1_2024_calibrated` aero is `lift 2.80, drag 1.10, balance
+0.44`, which does **not** equal the `f1_default` reference `3.5 / 0.9 / 0.45`. It
+is **`CarParams::default`** whose aero *is* the reference (`1.575 + 1.925 = 3.5`,
+`0.9`, and `1.575/3.5 == 0.45` bit-for-bit). So:
+
+- **Default car:** all three scales are exactly `1.0`, every coefficient is
+  `x * 1.0 == x` (IEEE-754 exact), and the bridged `AeroModel` — and the whole
+  generated envelope — is **byte-identical** to pre-bridge. Locked by
+  `aero::bridge_default_car_is_bit_identical` and
+  `envelope::bridge_default_car_envelope_is_byte_identical` (key + `to_bytes`).
+- **Calibrated car:** the bridge *legitimately changes* its envelope (its true
+  `lift 2.80 < 3.5` means less downforce than the old fixed `f1_default` gave it).
+  This is the fix working, not a regression. Locked by
+  `bridge_calibrated_car_changes_envelope_key`.
+
+This is reported, not forced: making the calibrated car bridge to identity would
+require altering its aero (breaking its own QSS goldens) or the reference — both
+wrong. The envelope content hash already distinguishes cars by
+`car_params_hash`, which **includes** `lift_coeff`/`drag_coeff`/`aero_balance_front`
+(verified against the frozen field-sensitivity vector), so no hash change was
+needed.
+
+**Post-bridge per-parameter sensitivity** (Silverstone, calibrated, N=32):
+
+| setup parameter | Δ QSS (s) | Δ env pre-bridge (s) | Δ env **post-bridge** (s) |
+|---|---:|---:|---:|
+| drag_coeff | 3.47 | 3.94 | 3.94 |
+| **lift_coeff** | 14.39 | 0.40 | **6.20** |
+| **aero_balance_front** | 0.00 | 0.00 | **0.35** |
+| cog_height | 0.00 | 0.66 | 0.66 |
+| weight_dist_front | 0.00 | 0.46 | 0.46 |
+| brake_bias_front | 0.00 | 0.00 | 0.00 |
+| tire_radial_stiffness | 0.00 | 0.00 | 0.00 |
+
+`lift_coeff` now moves the envelope by **6.2 s** (was 0.4). It is below QSS's
+14.4 s — expected: envelope downforce feeds the **load-sensitive tyre trim**
+(diminishing grip at high load) and only re-grips the cornering-limited sections,
+whereas the friction circle scales grip with downforce everywhere. `aero_balance`
+now bites (0.35 s) via the front/rear split; the load-sensitive levers (CoG,
+weight) are unchanged.
+
+**Post-bridge sanity re-run** (Silverstone, calibrated, seed 42, 12 gen, N=32):
+
+| parameter | QSS-optimized | env-opt (pre-bridge) | env-opt (**post-bridge**) |
+|---|---:|---:|---:|
+| drag_coeff | 0.700 (min) | 0.700 | 0.700 (min) |
+| lift_coeff | 4.500 (max) | 3.091 (blind) | **4.500 (max)** |
+| cog_height (m) | 0.284 | 0.250 | **0.259** (low) |
+| weight_dist_front | 0.546 | 0.580 | **0.580** (max) |
+| aero_balance_front | 0.424 | 0.430 | 0.400 (min) |
+| improvement | 7.007 s | 1.749 s (2.0 %) | **4.053 s (4.7 %)** |
+
+The envelope now **drives `lift_coeff` to its maximum**, agreeing with QSS on the
+big aero levers (lift↑, drag↓) — the aero-blindness is gone. It **still differs
+from QSS in the load-sensitive directions** (CoG 0.259 vs 0.284, weight 0.580 vs
+0.546), so the load-transfer payoff survives *on top of* correct aero. The
+improvement rose 2.0 → 4.7 % because the envelope can finally exploit downforce.
+
 ## Limitations & future work
 
-- **Aero-blindness.** `lift_coeff` / `aero_balance_front` do not reach the
-  envelope. Until a `CarParams`-aero → `AeroModel` bridge exists, the envelope
-  inner loop optimises only the mechanical/load setup (plus drag) and lets the
-  aero knobs drift as CMA-ES noise. On aero-dominated tracks this is a serious
-  gap; the drag/CoG/weight optimisation is still valid.
 - **Not mesh-converged.** Absolute lap times (and the improvement magnitudes)
   are not trustworthy — only rankings. The gate is what licenses using it as a
   CMA-ES objective at all.
 - **Cost.** ~1000× the QSS inner loop. Fine for a deliberate envelope run;
   the default stays QSS.
+- **Bridge scope.** The bridge matches the effective (design-ride-height)
+  coefficients; it does not re-parameterise the car's aero into a full
+  ride-height *map* (front/rear ride-height sensitivity stays at the `f1_default`
+  shape). Adequate for the setup levers; a fitted ride-height map is future work.
 
 ## Reproduction
 

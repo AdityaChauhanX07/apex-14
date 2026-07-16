@@ -891,10 +891,14 @@ fn cmd_envelope(
 
     let params = load_car_params(car, calibrated)?;
     // Tire / suspension / aero models: the operating-point trim needs all four;
-    // the car TOML carries CarParams, the rest use the F1 model defaults.
+    // the car TOML carries CarParams, the tire/suspension use the F1 defaults.
+    // The aero is bridged from the car's CarParams aero (lift/drag/balance) so
+    // the generated envelope reflects the car's downforce rather than always the
+    // fixed f1_default (setup-envelope.md aero-blindness fix); the default car
+    // bridges to a bit-identical f1_default.
     let tire = apex_physics::PacejkaTire::f1_default();
     let suspension = apex_physics::SuspensionSystem::f1_default();
-    let aero = apex_physics::AeroModel::f1_default();
+    let aero = apex_physics::AeroModel::f1_default().scaled_for_car(&params);
 
     let (v_min, v_max) = parse_range(&v_range, "v-range")?;
     let (gz_min, gz_max) = parse_range(&gz_range, "gz-range")?;
@@ -1072,7 +1076,10 @@ fn cmd_optimize_envelope(
     let params = load_car_params(car, calibrated)?;
     let tire = apex_physics::PacejkaTire::f1_default();
     let suspension = apex_physics::SuspensionSystem::f1_default();
-    let aero = apex_physics::AeroModel::f1_default();
+    // Bridge the car's CarParams aero (lift/drag/balance) into the ride-height
+    // AeroModel so the envelope reflects the car's downforce (setup-envelope.md
+    // aero-blindness fix). The default car bridges to a bit-identical f1_default.
+    let aero = apex_physics::AeroModel::f1_default().scaled_for_car(&params);
 
     let spec = EnvelopeGridSpec {
         v_min: 5.0,

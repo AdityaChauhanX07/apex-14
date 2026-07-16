@@ -129,7 +129,11 @@ fn evaluate_setup_envelope(
     };
     let tire = PacejkaTire::f1_default();
     let susp = SuspensionSystem::f1_default();
-    let aero = AeroModel::f1_default();
+    // Bridge the setup's CarParams aero (lift/drag/balance) into the ride-height
+    // AeroModel so the envelope actually sees the setup's downforce — without
+    // this the inner loop is aero-blind (setup-envelope.md). The default car
+    // bridges to a bit-identical f1_default.
+    let aero = AeroModel::f1_default().scaled_for_car(car);
     let env = match cache_dir {
         Some(dir) => Envelope::generate_cached(car, &tire, &susp, &aero, spec, dir).map(|(e, _)| e),
         None => Envelope::generate(car, &tire, &susp, &aero, spec),
