@@ -91,9 +91,14 @@ verified because the new knobs default to the old behavior.
 
 | Track | Nodes | Status | OCP lap | Baseline | Result |
 |-------|------:|--------|--------:|---------:|--------|
-| Circle R=100, w=8 | 60 | Optimal (~234 it, ~9 s) | 15.038 s | analytic **15.041 s** | **0.02 % error** |
-| Oval L=200 R=80 w=12 | 40 | Optimal (277 it, ~10 s) | 19.449 s | QSS 21.015 s | **−7.45 %**, line reaches **both** edges (`n = ±6`) |
-| Silverstone (synthetic) | 60 | MaxIter (~52 s) | 77.54 s | QSS 94.33 s | −17.8 %; see limitation |
+| Circle R=100, w=8 | 60 | Optimal (~234 it) | 15.038 s | analytic **15.041 s** | **0.02 % error** |
+| Oval L=200 R=80 w=12 | 40 | Optimal (277 it) | 19.449 s | QSS 21.015 s | **−7.45 %**, line reaches **both** edges (`n = ±6`) |
+| Silverstone (synthetic) | 60 | MaxIter | 77.54 s | QSS 94.33 s | −17.8 %; see limitation |
+
+*(The wall times originally quoted here — "~9 s / ~10 s / ~52 s" — predated the
+`real-track-convergence.md` retuning and no longer hold; the circle now solves sub-second.
+Iteration counts and lap times are current. Wall is machine/config-dependent — not a
+headline. The circle lap `15.038 s` is re-verified in the close audit.)*
 
 - **Analytic circle.** On a circle the fastest line hugs the inner edge
   (radius `R − w_left`) at the envelope-limited speed; with aero off `rho` is

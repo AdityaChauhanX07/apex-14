@@ -192,6 +192,7 @@ rings, reusing the telemetry SVG conventions (a forced `RunMetadata`
 
 Existing suite: **783 tests + 3 goldens unchanged** (`golden_oval_qss`,
 `golden_silverstone_qss`, `golden_circle_optimize` all pass untouched); the 26
-new tests bring the total to 809. All additive — no existing code path changed,
+new tests bring the total to 809 (point-in-time at this task's landing; the current
+workspace count is **841** — see [`CLOSE.md`](CLOSE.md)). All additive — no existing code path changed,
 so no golden moves and no `PHYSICS_CHANGE.md` entry (this task produces no
 simulation-output drift).

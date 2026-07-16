@@ -133,11 +133,19 @@ Configuration: oval (`oval_track(1000, 100, 12, 400)`), Hermite-Simpson, N=50,
 | Solver | Final `eq_violation` | Converged |
 |---|---|---|
 | Gauss-Newton (100 iters) | `3.40e-1` | no (deadlock) |
-| **Interior-point** | **`1.08e-7`** | **yes** |
+| **Interior-point** | **`1.287e-7`** | **yes** |
 
-- Iterations to convergence: ≈110 outer iterations.
-- **Wall time: ≈110 ms** (release, dev machine), returning the best feasible
-  iterate.
+- **Wall time: ≈110 ms** (release, dev machine, ~110 outer iterations), returning
+  the best feasible iterate.
+
+> **Number updated (close audit, 2026).** This originally read `1.08e-7`. The current,
+> reproducible value is **`1.287e-7`** (`= 1.29e-7` as quoted in `free-trajectory-ocp.md`
+> and `real-track-convergence.md`). The iterate path shifted after the IP solver landed —
+> an intervening `f1_2024_calibrated` trim fix (`fdac21e`, 14-DOF operating point → loaded-
+> tire equilibrium) changed the deadlock's grip budget. It is **not** a regression: still
+> ≪ the `1e-6` tolerance, still converges, GN still deadlocks at `3.40e-1`. The
+> augmented-Lagrangian *config* retunes (`free-trajectory-ocp.md`) are separately
+> bit-identical because their new knobs default to the old behavior.
 
 Test: `ip_resolves_gn_bound_deadlock` (asserts `eq_violation <= 1e-6`).
 On the circle (where GN already converges), `ip_matches_gn_on_circle` confirms

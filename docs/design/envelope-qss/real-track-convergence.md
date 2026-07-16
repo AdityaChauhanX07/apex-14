@@ -110,7 +110,8 @@ Two caveats survive the fix and are load-bearing for how the Part B numbers may 
    count is a per-track knob** — itself the reportable finding the task asked for.
 2. **The lap-time objective is NOT mesh-converged at these meshes.** Constraint-tight ≠
    objective-accurate. Synthetic Silverstone, all three tight: N = 24 / 30 / 36 →
-   **81.3 / 73.5 / 66.2 s** (a 15 s spread). Real Silverstone: N=30 → 83.9 s, N=40 → 89.8 s.
+   **81.3 / 73.5 / 66.2 s** (a 15 s spread). Real Silverstone (pre-bridge): N=30 → 83.9 s,
+   N=40 → 89.8 s (post-bridge N=40 no longer converges — see the Part B banner).
    At `ds ≈ 200 m` a corner spans one or two nodes, so the "optimal" line over-cuts and the
    lap time is optimistically biased and mesh-dependent. **The tight-feasible QSS-vs-OCP
    deltas are therefore directionally valid (the free line beats the fixed line) but are
@@ -143,6 +144,15 @@ pre-Part-A config, not under the new one), and **every track regresses at `N ≥
 with lap times swinging by many seconds across the meshes that do converge. This part
 characterizes both, lands what a bounded fix can, and marks the rest as the deferred
 dynamic-OCP solver's input.
+
+> **⚠️ Part B is PRE-BRIDGE.** The B.3/B.5 *calibrated*-car lap numbers below ran the
+> calibrated car through the fixed `f1_default` aero (`lift 3.5`), over-gripping it. The
+> later aero bridge (`setup-envelope.md`) gives it its true `lift 2.80`, so those numbers
+> shifted — most notably **Silverstone's `N* = 40` no longer reaches tight feasibility
+> (`N = 32` does)**, and every calibrated lap is ~1–2 s slower. The regenerated table is in
+> `analysis.md`; the mechanism characterization below (circle bisection, the `N²`/`rho`
+> wall, the reverted adaptive-`rho` prototype) is point-mass or config-level and stands
+> unchanged. Point-mass rows (§B.1, §B.3 circle column) are bridge-independent.
 
 ## B.1 The regression is the **circle**, and the culprit is `rho_max`, not `al_contract`
 
@@ -250,7 +260,9 @@ knob**, not a universal constant (`EnvelopeOcp::recommended_ip_config`).
   it was `{ al_contract = 0.25 (default), rho_max = 3e4 }` — the pre-Part-A config — so the
   **CLI `optimize --envelope` silently ran the un-tuned schedule** and would `MaxIter` on
   Monza/Catalunya/Spielberg (verified: Monza `N=30` old-config `MaxIter`, `eq = 2.4e-2`).
-  The CLI now reproduces the Part-B table exactly (Silverstone 89.791 s, Monza 84.330 s, …).
+  The CLI reproduced this table exactly at the time (Silverstone 89.791 s, Monza 84.330 s,
+  …); **post-bridge those shifted** (Silverstone 89.084 s at `N=32`, Monza 85.676 s — see
+  the Part B banner and the regenerated `analysis.md`).
 - **The circle validation caps `rho_max = 3e4`** and reaches the inner edge / closed form
   (`circle_matches_closed_form`); `circle_high_rho_freezes_line` locks the reason.
 - **All existing IP tests are bit-identical** (no `apex-optimizer::ipm` source change); the
