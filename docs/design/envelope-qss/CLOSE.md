@@ -77,10 +77,27 @@ proved, beyond unblocking the envelope OCP:
 | **Mesh convergence + preconditioning** | absolute lap times swing ~20 % across `N`; `N ≥ 44` fails against the `N²`-Laplacian/`rho` wall (§B.2) | **dynamic-OCP solver work** — a better preconditioner (block/Laplacian) and/or mesh-continuation warm-start ladder |
 | **Adaptive `s`-meshing** | uniform mesh over-cuts corners at coarse `N` | dynamic-OCP objective-accuracy pass (refine at high curvature — *not* to "resolve joints", which were falsified) |
 | **Envelope vs dynamic-OCP gap** | every number here is envelope-QSS vs fixed-line QSS, both quasi-steady | the deferred transient 7-/14-DOF OCP (`PHYSICS_CHANGE.md` 2026-07-07) — only it values the transient fidelity |
-| **Spa residual (`power_scale ≈ 0.80`, descent over-carry)** | formally isolated to **longitudinal / transient / driver** effects; not grip-limited (calibration-free, `correlation_spa_envelope.md`) | the dynamic OCP (throttle/brake management + load-transfer dynamics) — this is its business case |
+| **Spa residual (`power_scale ≈ 0.80`, descent over-carry)** | formally isolated to **longitudinal / transient / driver** effects; not grip-limited (calibration-free, `correlation_spa_envelope.md`) | the dynamic OCP — but as an **attribution** test, not a recovery one; see the box below |
 | **Rank-gate margin** | post-bridge the setup-envelope gate is **marginal**: 5/8 variants commonly tight, Spearman **exactly 0.900** (was 8/8, 0.976) | revisit if a finer-mesh/continuation solver lands (which would restore common tightness) — see `setup-envelope.md` post-bridge box |
 | **Full ride-height aero map in the bridge** | the bridge matches design-ride-height coefficients, not a fitted front/rear ride-height *sensitivity* map | a future aero re-parameterization (would also enable the deferred Spa envelope re-identification) |
 | **`d0cae03` stray cache file** | a committed `.apex-cache/envelope/*.apexenv` predating the `.gitignore` entry | **cleaned in this close** (`git rm --cached`; `/.apex-cache/` is now ignored) |
+
+> **Amendment (dynamic-ocp reconnaissance): the Spa item is an ATTRIBUTION test, not a
+> recovery one.** This close originally called the descent over-carry "the business case"
+> for the dynamic OCP, implying that OCP would *recover* the measured descent speed. It
+> cannot, and the reason is structural rather than a matter of fidelity: the dynamic OCP is
+> specified with **no driver model** and a **minimum-time** objective, while the measured
+> driver ran the descent at median throttle **0.71** with median grip utilization **0.45**
+> — conserving, not limited. A minimum-time solver will go *faster* through that section,
+> not slower, so "the dynamic OCP recovers the descent over-carry" is not an achievable
+> acceptance criterion as worded. What the dynamic OCP can do is **bound and attribute** the
+> residual: if min-time-with-transients is still at or above QSS through the descent, the
+> residual is **confirmed driver behaviour** and `power_scale ≈ 0.80` is correctly read as
+> an effective parameter absorbing driver conservatism (exonerating the correlation model);
+> if it comes out meaningfully *slower*, then transient/load-transfer physics QSS ignores
+> genuinely costs time there and part of the residual is model physics after all. Both
+> outcomes are results. Full reasoning and the proposed test in
+> [`../dynamic-ocp/recon.md`](../dynamic-ocp/recon.md) §6.3 (contradiction **C1** in §7.1).
 
 ## 4. Negative results — stated as results
 

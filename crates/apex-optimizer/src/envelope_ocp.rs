@@ -442,6 +442,38 @@ impl<'a> EnvelopeOcp<'a> {
         }
     }
 
+    /// [`recommended_ip_config`](Self::recommended_ip_config) with the
+    /// **block-tridiagonal** preconditioner and the regularization it requires.
+    ///
+    /// Two changes from the Jacobi config, and the second is not optional:
+    ///
+    /// - `preconditioner = BlockTridiag` — inverts the node-coupling structure
+    ///   exactly (see [`crate::precond`]), which collapses inner CG from a
+    ///   saturated 250 iterations to a median of ~2–6 and lets real circuits
+    ///   converge past the documented `N >= 44` wall.
+    /// - **`reg = 1e-1`, up from `1e-8`.** `Jeq` is `3N x 5N`, so `JeqᵀJeq` is
+    ///   rank-deficient by `2N`: the `a_x` and `kappa` control directions carry
+    ///   no bounds and hence no barrier term, leaving `reg` as their only
+    ///   regularization. Truncated Jacobi-CG never resolved those directions and
+    ///   so regularized them *implicitly* (the classical iterative-regularization
+    ///   property of CG). An exact solve does resolve them, amplifying them by
+    ///   `1/reg`, and the line search collapses. Restoring an explicit `reg` is
+    ///   what makes the exact solve usable. Measured: at `N = 96`, `reg = 1e-8`
+    ///   gives `LineSearchFailure` at `eq = 26`; `reg = 1e-1` gives `Optimal` at
+    ///   `eq = 1.2e-5`.
+    ///
+    /// `reg = 1e-1` is the measured sweet spot: `1e-2` still stalls at `N = 128`,
+    /// while `1e0` converges everywhere but visibly biases the objective
+    /// (Silverstone 108 s vs 88 s — over-damped). See
+    /// `docs/design/dynamic-ocp/kkt-precond.md` for the sweep.
+    pub fn recommended_block_ip_config() -> IpmConfig {
+        IpmConfig {
+            preconditioner: crate::ipm::Preconditioner::BlockTridiag,
+            reg: 1e-1,
+            ..Self::recommended_ip_config()
+        }
+    }
+
     /// Solve the OCP with the interior-point solver.
     pub fn solve(&self, ip_config: &IpmConfig) -> EnvelopeOcpResult {
         let x0 = self.warm_start();
@@ -646,6 +678,21 @@ impl NlpEvaluator for EnvelopeOcpEvaluator<'_, '_> {
             }
         }
         b.build()
+    }
+
+    /// One block per mesh node, holding that node's `{n, xi, v, a_x, kappa}`.
+    ///
+    /// The layout is block-contiguous by quantity (`idx_n(k) = k`,
+    /// `idx_xi(k) = N + k`, …), so node `k`'s variables sit at stride `N` — which
+    /// is exactly what [`BlockStructure::strided`] describes. This is index
+    /// metadata; nothing is repacked, so the Jacobi path is unaffected.
+    ///
+    /// The trapezoidal defect for interval `i` touches only nodes `i` and
+    /// `(i+1) % N`, and the envelope inequality at node `k` touches only node
+    /// `k`, so the condensed operator is block-tridiagonal apart from the
+    /// flying-lap wrap.
+    fn block_structure(&self) -> Option<crate::precond::BlockStructure> {
+        Some(crate::precond::BlockStructure::strided(self.ocp.n(), 5))
     }
 
     fn inequality_jacobian(&self, x: &[f64]) -> CsrMatrix {

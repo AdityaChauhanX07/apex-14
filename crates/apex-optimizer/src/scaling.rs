@@ -169,6 +169,13 @@ impl<E: NlpEvaluator> NlpEvaluator for ScaledEvaluator<'_, E> {
             .map(|(&h, &s)| h * s)
             .collect()
     }
+
+    /// Forwarded unchanged. Scaling is **diagonal**, so it permutes nothing: a
+    /// variable keeps its index and therefore its node. The block grouping is
+    /// identical in SI and scaled space.
+    fn block_structure(&self) -> Option<crate::precond::BlockStructure> {
+        self.inner.block_structure()
+    }
 }
 
 #[cfg(test)]

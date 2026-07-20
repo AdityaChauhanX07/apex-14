@@ -53,7 +53,50 @@
 use apex_math::CsrMatrix;
 
 use crate::nlp::{NlpEvaluator, NlpProblem};
+use crate::precond::{BlockStructure, BlockTridiag};
 use crate::scaling::{floor_scale, ScaledEvaluator, Scaling};
+
+/// Which preconditioner the inner conjugate-gradient solve uses.
+///
+/// **`Jacobi` is the default and must stay so.** Every committed envelope-OCP
+/// number, the `analysis.md` lap table, and the setup-envelope rank gate (which
+/// sits at Spearman *exactly* 0.900) were produced under it. `BlockTridiag` is
+/// opt-in; switching the default is a separate, deliberate decision with the
+/// rank gate re-measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Preconditioner {
+    /// Scalar `1/diag(M)`. Cheap, and exhausted on periodic collocation problems
+    /// (`docs/design/envelope-qss/real-track-convergence.md` §B.2).
+    #[default]
+    Jacobi,
+    /// Block-tridiagonal (block-Thomas) inversion of the node-coupled structure,
+    /// via [`crate::precond::BlockTridiag`]. Requires the evaluator to supply a
+    /// [`BlockStructure`]; **falls back to `Jacobi`** if it does not, if the
+    /// structure is malformed, or if a diagonal block is numerically singular.
+    BlockTridiag,
+}
+
+/// The preconditioner actually in force for one Newton step.
+enum PrecondOp<'a> {
+    Jacobi(&'a [f64]),
+    Block(&'a BlockTridiag),
+}
+
+impl PrecondOp<'_> {
+    #[inline]
+    fn apply(&self, r: &[f64], z: &mut [f64]) {
+        match self {
+            // Byte-identical to the pre-existing inline expression, so the
+            // default path's arithmetic is unchanged.
+            PrecondOp::Jacobi(minv) => {
+                for (zi, (&ri, &mi)) in z.iter_mut().zip(r.iter().zip(minv.iter())) {
+                    *zi = ri * mi;
+                }
+            }
+            PrecondOp::Block(bt) => bt.apply(r, z),
+        }
+    }
+}
 
 /// Terminal status of an interior-point solve. No silent failure — every exit
 /// maps to one of these.
@@ -173,6 +216,10 @@ pub struct IpmConfig {
     pub al_contract: f64,
     /// How far to push the initial point strictly inside its bounds.
     pub bound_push: f64,
+    /// Inner-CG preconditioner. **Defaults to [`Preconditioner::Jacobi`]**, which
+    /// is the behaviour every committed result was produced under; see
+    /// [`Preconditioner`] and `docs/design/dynamic-ocp/kkt-precond.md`.
+    pub preconditioner: Preconditioner,
     /// Verbosity: `0` silent, `>0` prints the iteration log.
     pub verbose: usize,
 }
@@ -198,6 +245,7 @@ impl Default for IpmConfig {
             rho_growth: 10.0,
             al_contract: 0.25,
             bound_push: 1e-2,
+            preconditioner: Preconditioner::Jacobi,
             verbose: 0,
         }
     }
@@ -224,6 +272,7 @@ impl apex_math::ContentHash for IpmConfig {
             rho_growth,
             al_contract,
             bound_push,
+            preconditioner,
             verbose: _, // cosmetic
         } = self;
         w.usize(*max_iterations);
@@ -244,6 +293,10 @@ impl apex_math::ContentHash for IpmConfig {
         w.f64(*rho_growth);
         w.f64(*al_contract);
         w.f64(*bound_push);
+        w.usize(match preconditioner {
+            Preconditioner::Jacobi => 0,
+            Preconditioner::BlockTridiag => 1,
+        });
     }
 }
 
@@ -266,12 +319,12 @@ fn max_pos(a: &[f64]) -> f64 {
 }
 
 /// Preconditioned conjugate gradient for an SPD operator supplied as a closure.
-/// `minv` is the diagonal (Jacobi) preconditioner (`1/diag`). Returns the
-/// solution and the iteration count.
+/// `precond` applies the preconditioner (`z = M_p⁻¹ r`). Returns the solution
+/// and the iteration count.
 fn pcg(
     apply: impl Fn(&[f64]) -> Vec<f64>,
     rhs: &[f64],
-    minv: &[f64],
+    precond: &PrecondOp<'_>,
     max_iter: usize,
     tol: f64,
 ) -> (Vec<f64>, usize) {
@@ -282,7 +335,8 @@ fn pcg(
     if norm(&r) / bnorm < tol {
         return (x, 0);
     }
-    let mut z: Vec<f64> = r.iter().zip(minv).map(|(&ri, &mi)| ri * mi).collect();
+    let mut z = vec![0.0; n];
+    precond.apply(&r, &mut z);
     let mut p = z.clone();
     let mut rz = dot(&r, &z);
     let mut iters = 0;
@@ -300,9 +354,7 @@ fn pcg(
         if norm(&r) / bnorm < tol {
             break;
         }
-        for (zi, (&ri, &mi)) in z.iter_mut().zip(r.iter().zip(minv)) {
-            *zi = ri * mi;
-        }
+        precond.apply(&r, &mut z);
         let rz_new = dot(&r, &z);
         let beta = rz_new / (rz + 1e-30);
         for (pi, &zi) in p.iter_mut().zip(&z) {
@@ -406,6 +458,18 @@ fn solve_ipm_core(
         .collect();
     let lb_val: Vec<f64> = lb_idx.iter().map(|&i| problem.lower_bounds[i]).collect();
     let ub_val: Vec<f64> = ub_idx.iter().map(|&i| problem.upper_bounds[i]).collect();
+
+    // --- block structure for the block-tridiagonal preconditioner ---
+    // Resolved once. Any failure to supply or validate a structure degrades
+    // silently to Jacobi rather than erroring: the preconditioner is a
+    // convergence accelerator, never a correctness dependency.
+    let block_layout: Option<(BlockStructure, Vec<(usize, usize)>)> =
+        if config.preconditioner == Preconditioner::BlockTridiag {
+            eval.block_structure()
+                .and_then(|s| s.validate(n).map(|map| (s, map)))
+        } else {
+            None
+        };
 
     // --- interior initial point ---
     let mut x = x0.to_vec();
@@ -734,7 +798,41 @@ fn solve_ipm_core(
         }
         let minv: Vec<f64> = diagm.iter().map(|&d| 1.0 / d.max(1e-30)).collect();
 
-        let (dx, cg_iters) = pcg(apply, &rhs, &minv, config.cg_max_iter, config.cg_tol);
+        // --- optional block-tridiagonal preconditioner ---
+        // Assembled fresh each Newton step (the barrier weights `Σ` and the
+        // penalty `rho` both move). `diag_extra` is exactly the part of
+        // `diag(M)` that is NOT already captured by the Jacobian outer products
+        // the block assembly walks, so the two together reproduce `M`'s band.
+        let block_precond = block_layout.as_ref().and_then(|(structure, var_map)| {
+            let diag_extra: Vec<f64> = (0..n)
+                .map(|i| sig_l_full[i] + sig_u_full[i] + config.reg)
+                .collect();
+            BlockTridiag::assemble(structure, var_map, &j_eq, rho, &j_ineq, &sig_i, &diag_extra)
+        });
+        let precond = match &block_precond {
+            Some(bt) => PrecondOp::Block(bt),
+            None => PrecondOp::Jacobi(&minv),
+        };
+
+        // Diagnostic (verbose > 1): how well does the preconditioner invert the
+        // true operator? Probe with a fixed deterministic vector v: form r = M v,
+        // then z = P⁻¹ r, and report ‖z - v‖/‖v‖. Near zero == near-exact.
+        if config.verbose > 1 {
+            let v: Vec<f64> = (0..n).map(|i| ((i % 7) as f64 - 3.0) + 0.5).collect();
+            let mv = apply(&v);
+            let mut z = vec![0.0; n];
+            precond.apply(&mv, &mut z);
+            let err: f64 = norm(&z.iter().zip(&v).map(|(&a, &b)| a - b).collect::<Vec<_>>())
+                / norm(&v).max(1e-30);
+            let kind = if block_precond.is_some() {
+                "block"
+            } else {
+                "jacobi"
+            };
+            println!("    precond[{kind}] inverse-error {err:.3e}  rho {rho:.2e} mu {mu:.2e}");
+        }
+
+        let (dx, cg_iters) = pcg(apply, &rhs, &precond, config.cg_max_iter, config.cg_tol);
 
         // --- recover slack / multiplier steps ---
         let jineq_dx = if m_i > 0 { j_ineq.mul_vec(&dx) } else { vec![] };

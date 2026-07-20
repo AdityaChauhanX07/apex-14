@@ -1,5 +1,7 @@
 //! Nonlinear programming (NLP) problem definition.
 
+use crate::precond::BlockStructure;
+
 /// A general-purpose nonlinear programming problem definition.
 ///
 /// Minimize f(x)
@@ -59,5 +61,23 @@ pub trait NlpEvaluator {
     fn objective_hessian_vec(&self, x: &[f64], v: &[f64]) -> Vec<f64> {
         let _ = x;
         vec![0.0; v.len()]
+    }
+
+    /// Node-contiguous grouping of the decision variables, when the problem has
+    /// collocation structure.
+    ///
+    /// Default `None` — the problem has no exploitable block structure and any
+    /// block-structured preconditioner falls back to Jacobi. A collocation NLP
+    /// should return one block per mesh node listing that node's variables (see
+    /// [`BlockStructure::strided`] for the common
+    /// block-contiguous-by-quantity layout), which lets
+    /// [`crate::precond::BlockTridiag`] invert the graph-Laplacian structure the
+    /// scalar Jacobi preconditioner cannot see.
+    ///
+    /// This is **structural metadata only**: it describes an index grouping, not
+    /// a reordering. The solver never permutes the decision vector, so returning
+    /// a structure cannot change results on the default (Jacobi) path.
+    fn block_structure(&self) -> Option<BlockStructure> {
+        None
     }
 }

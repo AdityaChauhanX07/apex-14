@@ -13,6 +13,7 @@ pub mod layout_optimizer;
 pub mod mesh_refinement;
 pub mod nlp;
 pub mod overtaking;
+pub mod precond;
 pub mod racing_quality;
 pub mod rank_stability;
 pub mod scaling;
@@ -32,13 +33,14 @@ pub use direct_solver::{
 pub use envelope_ocp::{EnvelopeOcp, EnvelopeOcpConfig, EnvelopeOcpResult};
 pub use forward_sim::{DetailedTelemetry, ForwardSimulator};
 pub use gauss_newton::{solve_gauss_newton, GaussNewtonConfig, GaussNewtonResult};
-pub use ipm::{solve_ipm, IpmConfig, IpmLog, IpmResult, IpmStatus};
+pub use ipm::{solve_ipm, IpmConfig, IpmLog, IpmResult, IpmStatus, Preconditioner};
 pub use layout_optimizer::{optimize_layout, LayoutOptConfig, LayoutOptResult};
 pub use mesh_refinement::{
     optimize_with_refinement, LevelResult, MeshRefinementConfig, RefinedResult,
 };
 pub use nlp::{NlpEvaluator, NlpProblem};
 pub use overtaking::{optimize_overtaking, LeaderTrajectory, OvertakingConfig, OvertakingResult};
+pub use precond::{BlockStructure, BlockTridiag};
 pub use racing_quality::{compute_racing_quality, RacingQuality};
 pub use rank_stability::{discordant_pairs, kendall_tau, ranking, spearman};
 pub use scaling::{ScaledEvaluator, Scaling};
